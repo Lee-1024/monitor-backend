@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package collector;
+
+option go_package = "monitor-backend/proto";
+
+// Collector服务定义
+service Collector {
+  // 注册Agent
+  rpc RegisterAgent(RegisterRequest) returns (RegisterResponse);
+  
+  // 上报指标数据
+  rpc ReportMetrics(MetricsRequest) returns (MetricsResponse);
+  
+  // 心跳
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// 注册请求
+message RegisterRequest {
+  string host_id = 1;
+  string hostname = 2;
+  string ip = 3;
+  string os = 4;
+  string arch = 5;
+  map<string, string> tags = 6;
+}
+
+// 注册响应
+message RegisterResponse {
+  bool success = 1;
+  string message = 2;
+  int64 collect_interval = 3;
+}
+
+// 指标上报请求
+message MetricsRequest {
+  string host_id = 1;
+  int64 timestamp = 2;
+  
+  CPUMetrics cpu = 3;
+  MemoryMetrics memory = 4;
+  DiskMetrics disk = 5;
+  NetworkMetrics network = 6;
+}
+
+// CPU指标
+message CPUMetrics {
+  double usage_percent = 1;
+  double load_avg_1 = 2;
+  double load_avg_5 = 3;
+  double load_avg_15 = 4;
+  int32 core_count = 5;
+}
+
+// 内存指标
+message MemoryMetrics {
+  uint64 total = 1;
+  uint64 used = 2;
+  uint64 free = 3;
+  double used_percent = 4;
+  uint64 available = 5;
+}
+
+// 磁盘指标
+message DiskMetrics {
+  repeated PartitionMetrics partitions = 1;
+}
+
+// 分区指标
+message PartitionMetrics {
+  string device = 1;
+  string mountpoint = 2;
+  string fstype = 3;
+  uint64 total = 4;
+  uint64 used = 5;
+  uint64 free = 6;
+  double used_percent = 7;
+}
+
+// 网络指标
+message NetworkMetrics {
+  repeated InterfaceMetrics interfaces = 1;
+}
+
+// 网卡指标
+message InterfaceMetrics {
+  string name = 1;
+  uint64 bytes_sent = 2;
+  uint64 bytes_recv = 3;
+  uint64 packets_sent = 4;
+  uint64 packets_recv = 5;
+  uint64 errin = 6;
+  uint64 errout = 7;
+}
+
+// 指标上报响应
+message MetricsResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 心跳请求
+message HeartbeatRequest {
+  string host_id = 1;
+  int64 timestamp = 2;
+}
+
+// 心跳响应
+message HeartbeatResponse {
+  bool success = 1;
+  int64 server_time = 2;
+}

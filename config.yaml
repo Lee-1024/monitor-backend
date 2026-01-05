@@ -1,0 +1,19 @@
+grpc_addr: ":50051"
+
+influxdb:
+  url: "http://localhost:8086"
+  token: "cHfXu1O9XyjMrYV041gi6uN6nE_0-yaqWWHj4xtPAToMnqYzoa1EcnOKoSaWsotOk60DmapD3DiamzcWiWeQBQ=="
+  org: "monitor"
+  bucket: "metrics"
+
+postgresql:
+  host: "localhost"
+  port: 5433
+  user: "monitor"
+  password: "monitor123"
+  database: "monitor"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0

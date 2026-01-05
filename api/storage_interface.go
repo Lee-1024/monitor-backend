@@ -1,0 +1,76 @@
+// ============================================
+// 文件: api/storage_interface.go
+// ============================================
+package api
+
+import "time"
+
+// StorageInterface 存储接口
+type StorageInterface interface {
+	// Agent相关
+	ListAgents(status string, page, pageSize int) ([]AgentInfo, int64, error)
+	GetAgent(hostID string) (*AgentInfo, error)
+	DeleteAgent(hostID string) error
+
+	// 指标相关
+	GetMetrics(hostID, metricType, start, end string) ([]MetricPoint, error)
+	GetLatestMetrics(hostID string) (*LatestMetrics, error)
+	GetHistoryMetrics(hostID, metricType, start, end, interval string) ([]MetricPoint, error)
+	GetAggregateMetrics(metricType, aggregation, start, end string) ([]AggregateMetric, error)
+
+	// 统计相关
+	GetOverview() (*Overview, error)
+	GetTopMetrics(metricType string, limit int, order string) ([]TopMetric, error)
+}
+
+// AgentInfo Agent信息
+type AgentInfo struct {
+	HostID    string            `json:"host_id"`
+	Hostname  string            `json:"hostname"`
+	IP        string            `json:"ip"`
+	OS        string            `json:"os"`
+	Arch      string            `json:"arch"`
+	Tags      map[string]string `json:"tags"`
+	Status    string            `json:"status"`
+	LastSeen  time.Time         `json:"last_seen"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+// MetricPoint 指标数据点
+type MetricPoint struct {
+	Timestamp time.Time              `json:"timestamp"`
+	Values    map[string]interface{} `json:"values"`
+}
+
+// LatestMetrics 最新指标
+type LatestMetrics struct {
+	HostID    string                 `json:"host_id"`
+	Timestamp time.Time              `json:"timestamp"`
+	CPU       map[string]interface{} `json:"cpu"`
+	Memory    map[string]interface{} `json:"memory"`
+	Disk      map[string]interface{} `json:"disk"`
+	Network   map[string]interface{} `json:"network"`
+}
+
+// AggregateMetric 聚合指标
+type AggregateMetric struct {
+	HostID string                 `json:"host_id"`
+	Values map[string]interface{} `json:"values"`
+}
+
+// Overview 概览统计
+type Overview struct {
+	TotalAgents   int64   `json:"total_agents"`
+	OnlineAgents  int64   `json:"online_agents"`
+	OfflineAgents int64   `json:"offline_agents"`
+	AvgCPU        float64 `json:"avg_cpu"`
+	AvgMemory     float64 `json:"avg_memory"`
+	TotalMetrics  int64   `json:"total_metrics"`
+}
+
+// TopMetric Top指标
+type TopMetric struct {
+	HostID   string  `json:"host_id"`
+	Hostname string  `json:"hostname"`
+	Value    float64 `json:"value"`
+}
