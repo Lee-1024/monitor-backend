@@ -1,5 +1,5 @@
 // ============================================
-// 文件: service.go
+// 文件: service.go (完整版本)
 // ============================================
 package main
 
@@ -22,38 +22,67 @@ func NewCollectorService(storage *Storage) *CollectorService {
 	}
 }
 
-// RegisterAgent 注册Agent
+// RegisterAgent 注册Agent（支持重复注册，自动更新）
 func (s *CollectorService) RegisterAgent(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	log.Printf("Agent registered: %s (%s)", req.HostId, req.Hostname)
+	log.Printf("Agent registering: %s (%s)", req.HostId, req.Hostname)
 
-	// 保存Agent信息到PostgreSQL
-	agent := &Agent{
-		HostID:   req.HostId,
-		Hostname: req.Hostname,
-		IP:       req.Ip,
-		OS:       req.Os,
-		Arch:     req.Arch,
-		Tags:     req.Tags,
-		Status:   "online",
-		LastSeen: time.Now(),
-	}
+	// 先尝试查找已存在的Agent
+	var existingAgent Agent
+	result := s.storage.postgres.Where("host_id = ?", req.HostId).First(&existingAgent)
 
-	if err := s.storage.SaveAgent(agent); err != nil {
-		log.Printf("Failed to save agent: %v", err)
-		return &pb.RegisterResponse{
-			Success: false,
-			Message: "Failed to register agent",
-		}, err
+	now := time.Now()
+
+	if result.Error == nil {
+		// Agent已存在，更新信息
+		existingAgent.Hostname = req.Hostname
+		existingAgent.IP = req.Ip
+		existingAgent.OS = req.Os
+		existingAgent.Arch = req.Arch
+		existingAgent.Tags = req.Tags
+		existingAgent.Status = "online"
+		existingAgent.LastSeen = now
+
+		if err := s.storage.postgres.Save(&existingAgent).Error; err != nil {
+			log.Printf("Failed to update agent: %v", err)
+			return &pb.RegisterResponse{
+				Success: false,
+				Message: "Failed to update agent",
+			}, err
+		}
+
+		log.Printf("Agent updated: %s (%s)", req.HostId, req.Hostname)
+	} else {
+		// Agent不存在，创建新记录
+		agent := &Agent{
+			HostID:   req.HostId,
+			Hostname: req.Hostname,
+			IP:       req.Ip,
+			OS:       req.Os,
+			Arch:     req.Arch,
+			Tags:     req.Tags,
+			Status:   "online",
+			LastSeen: now,
+		}
+
+		if err := s.storage.postgres.Create(agent).Error; err != nil {
+			log.Printf("Failed to create agent: %v", err)
+			return &pb.RegisterResponse{
+				Success: false,
+				Message: "Failed to register agent",
+			}, err
+		}
+
+		log.Printf("Agent registered: %s (%s)", req.HostId, req.Hostname)
 	}
 
 	return &pb.RegisterResponse{
 		Success:         true,
 		Message:         "Agent registered successfully",
-		CollectInterval: 10, // 默认10秒
+		CollectInterval: 10,
 	}, nil
 }
 
-// ReportMetrics 接收指标数据
+// ReportMetrics 接收指标数据（完整版 - 包含磁盘和网络）
 func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsRequest) (*pb.MetricsResponse, error) {
 	log.Printf("Received metrics from: %s", req.HostId)
 
@@ -86,6 +115,44 @@ func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsReq
 			UsedPercent: req.Memory.UsedPercent,
 			Available:   req.Memory.Available,
 		}
+	}
+
+	// 磁盘指标 - 新增
+	if req.Disk != nil && len(req.Disk.Partitions) > 0 {
+		metrics.Disk = DiskMetrics{
+			Partitions: make([]PartitionMetrics, 0, len(req.Disk.Partitions)),
+		}
+		for _, p := range req.Disk.Partitions {
+			metrics.Disk.Partitions = append(metrics.Disk.Partitions, PartitionMetrics{
+				Device:      p.Device,
+				Mountpoint:  p.Mountpoint,
+				Fstype:      p.Fstype,
+				Total:       p.Total,
+				Used:        p.Used,
+				Free:        p.Free,
+				UsedPercent: p.UsedPercent,
+			})
+		}
+		log.Printf("  Disk: %d partitions", len(metrics.Disk.Partitions))
+	}
+
+	// 网络指标 - 新增
+	if req.Network != nil && len(req.Network.Interfaces) > 0 {
+		metrics.Network = NetworkMetrics{
+			Interfaces: make([]InterfaceMetrics, 0, len(req.Network.Interfaces)),
+		}
+		for _, iface := range req.Network.Interfaces {
+			metrics.Network.Interfaces = append(metrics.Network.Interfaces, InterfaceMetrics{
+				Name:        iface.Name,
+				BytesSent:   iface.BytesSent,
+				BytesRecv:   iface.BytesRecv,
+				PacketsSent: iface.PacketsSent,
+				PacketsRecv: iface.PacketsRecv,
+				Errin:       iface.Errin,
+				Errout:      iface.Errout,
+			})
+		}
+		log.Printf("  Network: %d interfaces", len(metrics.Network.Interfaces))
 	}
 
 	// 保存到InfluxDB

@@ -4,6 +4,8 @@
 package api
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -246,4 +248,162 @@ func (s *APIServer) getTopMetrics(c *gin.Context) {
 		Message: "Success",
 		Data:    metrics,
 	})
+}
+
+// getCrashEvents 获取宕机事件列表
+func (s *APIServer) getCrashEvents(c *gin.Context) {
+	hostID := c.Query("host_id")
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil {
+			limit = parsed
+		}
+	}
+
+	events, err := s.storage.GetCrashEvents(hostID, limit)
+	if err != nil {
+		log.Printf("Failed to get crash events: %v", err)
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get crash events: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    events,
+	})
+}
+
+// getCrashEventDetail 获取宕机事件详情
+func (s *APIServer) getCrashEventDetail(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid event ID",
+		})
+		return
+	}
+
+	event, err := s.storage.GetCrashEventDetail(uint(id))
+	if err != nil {
+		c.JSON(http.StatusNotFound, Response{
+			Code:    404,
+			Message: "Crash event not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    event,
+	})
+}
+
+// getCrashAnalysis 获取主机宕机分析
+func (s *APIServer) getCrashAnalysis(c *gin.Context) {
+	hostID := c.Param("host_id")
+
+	// 获取最近的宕机事件
+	events, err := s.storage.GetCrashEvents(hostID, 10)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get crash analysis",
+		})
+		return
+	}
+
+	// 统计分析
+	analysis := map[string]interface{}{
+		"total_crashes":   len(events),
+		"recent_crashes":  events,
+		"crash_frequency": calculateCrashFrequency(events),
+		"main_reasons":    analyzeMainReasons(events),
+		"avg_downtime":    calculateAvgDowntime(events),
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    analysis,
+	})
+}
+
+func calculateCrashFrequency(events []CrashEvent) string {
+	if len(events) == 0 {
+		return "无宕机记录"
+	}
+
+	if len(events) == 1 {
+		return "仅有1次宕机"
+	}
+
+	// 计算最早和最晚宕机的时间跨度
+	first := events[len(events)-1].OfflineTime
+	last := events[0].OfflineTime
+	days := last.Sub(first).Hours() / 24
+
+	if days < 1 {
+		return fmt.Sprintf("1天内宕机%d次", len(events))
+	}
+
+	freq := float64(len(events)) / days
+	return fmt.Sprintf("平均每天宕机%.1f次", freq)
+}
+
+func analyzeMainReasons(events []CrashEvent) map[string]int {
+	reasons := make(map[string]int)
+
+	for _, event := range events {
+		if event.LastCPU > 90 {
+			reasons["CPU过高"]++
+		}
+		if event.LastMemory > 95 {
+			reasons["内存不足"]++
+		}
+		if event.LastDisk > 95 {
+			reasons["磁盘满"]++
+		}
+		if event.LastCPU < 90 && event.LastMemory < 95 && event.LastDisk < 95 {
+			reasons["网络/其他"]++
+		}
+	}
+
+	return reasons
+}
+
+func calculateAvgDowntime(events []CrashEvent) string {
+	if len(events) == 0 {
+		return "0分钟"
+	}
+
+	var totalDuration int64
+	resolvedCount := 0
+
+	for _, event := range events {
+		if event.IsResolved {
+			totalDuration += event.Duration
+			resolvedCount++
+		}
+	}
+
+	if resolvedCount == 0 {
+		return "暂无恢复记录"
+	}
+
+	avgSeconds := totalDuration / int64(resolvedCount)
+	minutes := avgSeconds / 60
+
+	if minutes < 60 {
+		return fmt.Sprintf("%d分钟", minutes)
+	}
+
+	hours := minutes / 60
+	return fmt.Sprintf("%d小时%d分钟", hours, minutes%60)
 }

@@ -21,6 +21,11 @@ type StorageInterface interface {
 	// 统计相关
 	GetOverview() (*Overview, error)
 	GetTopMetrics(metricType string, limit int, order string) ([]TopMetric, error)
+
+	// 宕机分析相关（新增）
+	GetCrashEvents(hostID string, limit int) ([]CrashEvent, error)
+	GetCrashEventDetail(id uint) (*CrashEvent, error)
+	GetCrashAnalysis(hostID string) (*CrashAnalysis, error)
 }
 
 // AgentInfo Agent信息
@@ -73,4 +78,30 @@ type TopMetric struct {
 	HostID   string  `json:"host_id"`
 	Hostname string  `json:"hostname"`
 	Value    float64 `json:"value"`
+}
+
+// CrashEvent 宕机事件
+type CrashEvent struct {
+	ID              uint       `json:"id"`
+	HostID          string     `json:"host_id"`
+	Hostname        string     `json:"hostname"`
+	OfflineTime     time.Time  `json:"offline_time"`
+	OnlineTime      *time.Time `json:"online_time,omitempty"`
+	Duration        int64      `json:"duration"`
+	LastCPU         float64    `json:"last_cpu"`
+	LastMemory      float64    `json:"last_memory"`
+	LastDisk        float64    `json:"last_disk"`
+	LastNetwork     string     `json:"last_network"`
+	Reason          string     `json:"reason"`
+	IsResolved      bool       `json:"is_resolved"`
+	MetricsSnapshot string     `json:"metrics_snapshot"`
+}
+
+// CrashAnalysis 宕机分析
+type CrashAnalysis struct {
+	TotalCrashes   int            `json:"total_crashes"`
+	RecentCrashes  []CrashEvent   `json:"recent_crashes"`
+	CrashFrequency string         `json:"crash_frequency"`
+	MainReasons    map[string]int `json:"main_reasons"`
+	AvgDowntime    string         `json:"avg_downtime"`
 }

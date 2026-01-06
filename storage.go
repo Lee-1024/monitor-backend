@@ -11,6 +11,7 @@ import (
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
+	"github.com/influxdata/influxdb-client-go/v2/api/write"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -55,7 +56,7 @@ func NewStorage(config *Config) *Storage {
 	}
 
 	// 自动迁移数据库表
-	storage.postgres.AutoMigrate(&Agent{})
+	storage.postgres.AutoMigrate(&Agent{}, &CrashEvent{})
 
 	// 初始化Redis
 	storage.redis = redis.NewClient(&redis.Options{
@@ -100,22 +101,250 @@ func (s *Storage) UpdateAgentLastSeen(hostID string) error {
 		}).Error
 }
 
-// MarkAgentOffline 标记超时的Agent为离线
+// MarkAgentOffline 标记超时的Agent为离线（增强版）
 func (s *Storage) MarkAgentOffline(timeout time.Duration) error {
 	cutoffTime := time.Now().Add(-timeout)
-	result := s.postgres.Model(&Agent{}).
-		Where("last_seen < ? AND status = ?", cutoffTime, "online").
-		Update("status", "offline")
 
-	if result.Error != nil {
-		return result.Error
-	}
+	// 查找需要标记为离线的Agent
+	var agents []Agent
+	s.postgres.Where("last_seen < ? AND status = ?", cutoffTime, "online").
+		Find(&agents)
 
-	if result.RowsAffected > 0 {
+	if len(agents) > 0 {
+		// 批量更新状态
+		result := s.postgres.Model(&Agent{}).
+			Where("last_seen < ? AND status = ?", cutoffTime, "online").
+			Update("status", "offline")
+
+		if result.Error != nil {
+			return result.Error
+		}
+
 		log.Printf("Marked %d agents as offline", result.RowsAffected)
+
+		// 为每个离线的Agent创建宕机事件记录
+		for _, agent := range agents {
+			go s.CreateCrashEvent(agent.HostID, agent.Hostname, agent.LastSeen)
+
+			// 推送WebSocket通知
+			// if s.wsHub != nil {
+			// 	s.wsHub.BroadcastAgentStatus(agent.HostID, "offline")
+			// }
+		}
 	}
 
 	return nil
+}
+
+// CreateCrashEvent 创建宕机事件记录
+func (s *Storage) CreateCrashEvent(hostID, hostname string, lastSeen time.Time) {
+	//ctx := context.Background()
+
+	// 获取离线前最后一次的指标数据
+	lastMetrics, err := s.GetLastMetricsBeforeTime(hostID, lastSeen)
+	if err != nil {
+		log.Printf("Failed to get last metrics for %s: %v", hostID, err)
+		lastMetrics = &LastMetrics{}
+	}
+
+	// 分析宕机原因
+	reason := s.AnalyzeCrashReason(lastMetrics)
+
+	// 创建宕机事件
+	event := &CrashEvent{
+		HostID:          hostID,
+		Hostname:        hostname,
+		OfflineTime:     time.Now(),
+		LastCPU:         lastMetrics.CPU,
+		LastMemory:      lastMetrics.Memory,
+		LastDisk:        lastMetrics.Disk,
+		LastNetwork:     lastMetrics.Network,
+		Reason:          reason,
+		IsResolved:      false,
+		MetricsSnapshot: lastMetrics.Snapshot,
+	}
+
+	if err := s.postgres.Create(event).Error; err != nil {
+		log.Printf("Failed to create crash event: %v", err)
+	} else {
+		log.Printf("Created crash event for %s: %s", hostID, reason)
+	}
+}
+
+// LastMetrics 最后的指标数据
+type LastMetrics struct {
+	CPU      float64
+	Memory   float64
+	Disk     float64
+	Network  string
+	Snapshot string
+}
+
+// GetLastMetricsBeforeTime 获取指定时间前最后一次指标
+func (s *Storage) GetLastMetricsBeforeTime(hostID string, beforeTime time.Time) (*LastMetrics, error) {
+	ctx := context.Background()
+
+	// 查询离线前5分钟的数据
+	startTime := beforeTime.Add(-5 * time.Minute).Format(time.RFC3339)
+	endTime := beforeTime.Format(time.RFC3339)
+
+	// 查询CPU
+	cpuQuery := fmt.Sprintf(`
+		from(bucket: "%s")
+		|> range(start: %s, stop: %s)
+		|> filter(fn: (r) => r["_measurement"] == "cpu")
+		|> filter(fn: (r) => r["host_id"] == "%s")
+		|> filter(fn: (r) => r["_field"] == "usage_percent")
+		|> last()
+	`, s.config.InfluxDB.Bucket, startTime, endTime, hostID)
+
+	var cpu float64
+	queryAPI := s.influxClient.QueryAPI(s.config.InfluxDB.Org)
+	result, err := queryAPI.Query(ctx, cpuQuery)
+	if err == nil {
+		for result.Next() {
+			if val, ok := result.Record().Value().(float64); ok {
+				cpu = val
+			}
+		}
+		result.Close()
+	}
+
+	// 查询内存
+	memQuery := fmt.Sprintf(`
+		from(bucket: "%s")
+		|> range(start: %s, stop: %s)
+		|> filter(fn: (r) => r["_measurement"] == "memory")
+		|> filter(fn: (r) => r["host_id"] == "%s")
+		|> filter(fn: (r) => r["_field"] == "used_percent")
+		|> last()
+	`, s.config.InfluxDB.Bucket, startTime, endTime, hostID)
+
+	var memory float64
+	result, err = queryAPI.Query(ctx, memQuery)
+	if err == nil {
+		for result.Next() {
+			if val, ok := result.Record().Value().(float64); ok {
+				memory = val
+			}
+		}
+		result.Close()
+	}
+
+	// 查询磁盘（取最高使用率的分区）
+	diskQuery := fmt.Sprintf(`
+		from(bucket: "%s")
+		|> range(start: %s, stop: %s)
+		|> filter(fn: (r) => r["_measurement"] == "disk")
+		|> filter(fn: (r) => r["host_id"] == "%s")
+		|> filter(fn: (r) => r["_field"] == "used_percent")
+		|> max()
+	`, s.config.InfluxDB.Bucket, startTime, endTime, hostID)
+
+	var disk float64
+	result, err = queryAPI.Query(ctx, diskQuery)
+	if err == nil {
+		for result.Next() {
+			if val, ok := result.Record().Value().(float64); ok {
+				disk = val
+			}
+		}
+		result.Close()
+	}
+
+	return &LastMetrics{
+		CPU:      cpu,
+		Memory:   memory,
+		Disk:     disk,
+		Network:  "normal",
+		Snapshot: fmt.Sprintf(`{"cpu":%.2f,"memory":%.2f,"disk":%.2f}`, cpu, memory, disk),
+	}, nil
+}
+
+// AnalyzeCrashReason 分析宕机原因
+func (s *Storage) AnalyzeCrashReason(metrics *LastMetrics) string {
+	reasons := make([]string, 0)
+
+	// CPU过高
+	if metrics.CPU > 90 {
+		reasons = append(reasons, fmt.Sprintf("CPU负载过高(%.1f%%)", metrics.CPU))
+	}
+
+	// 内存不足
+	if metrics.Memory > 95 {
+		reasons = append(reasons, fmt.Sprintf("内存不足(%.1f%%)", metrics.Memory))
+	}
+
+	// 磁盘满
+	if metrics.Disk > 95 {
+		reasons = append(reasons, fmt.Sprintf("磁盘空间不足(%.1f%%)", metrics.Disk))
+	}
+
+	if len(reasons) == 0 {
+		return "未知原因，可能是网络中断或主机关机"
+	}
+
+	result := "可能原因："
+	for i, r := range reasons {
+		if i > 0 {
+			result += "；"
+		}
+		result += r
+	}
+
+	return result
+}
+
+// ResolveCrashEvent 标记宕机事件已恢复
+func (s *Storage) ResolveCrashEvent(hostID string) error {
+	now := time.Now()
+
+	// 查找未解决的宕机事件
+	var event CrashEvent
+	err := s.postgres.Where("host_id = ? AND is_resolved = ?", hostID, false).
+		Order("offline_time DESC").
+		First(&event).Error
+
+	if err != nil {
+		return err
+	}
+
+	// 计算离线持续时间
+	duration := now.Sub(event.OfflineTime).Seconds()
+
+	// 更新事件
+	return s.postgres.Model(&event).Updates(map[string]interface{}{
+		"online_time": &now,
+		"duration":    int64(duration),
+		"is_resolved": true,
+	}).Error
+}
+
+// GetCrashEvents 获取宕机事件列表
+func (s *Storage) GetCrashEvents(hostID string, limit int) ([]CrashEvent, error) {
+	var events []CrashEvent
+	query := s.postgres.Order("offline_time DESC")
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Find(&events).Error
+	return events, err
+}
+
+// GetCrashEventDetail 获取单个宕机事件详情
+func (s *Storage) GetCrashEventDetail(id uint) (*CrashEvent, error) {
+	var event CrashEvent
+	err := s.postgres.First(&event, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
 }
 
 // StartAgentMonitor 启动Agent状态监控（定期检查并标记离线Agent）
@@ -125,7 +354,7 @@ func (s *Storage) StartAgentMonitor() {
 		defer ticker.Stop()
 
 		for range ticker.C {
-			// 2分钟未上报视为离
+			// 2分钟未上报视为离线
 			if err := s.MarkAgentOffline(2 * time.Minute); err != nil {
 				log.Printf("Failed to mark agents offline: %v", err)
 			}
@@ -153,9 +382,10 @@ func (s *Storage) GetAgentStatus(hostID string) (string, error) {
 	return agent.Status, nil
 }
 
-// SaveMetrics 保存指标数据到InfluxDB
+// SaveMetrics 保存指标数据到InfluxDB（完整版）
 func (s *Storage) SaveMetrics(metrics *Metrics) error {
 	ctx := context.Background()
+	var points []*write.Point
 
 	// CPU指标
 	cpuPoint := influxdb2.NewPoint(
@@ -170,6 +400,7 @@ func (s *Storage) SaveMetrics(metrics *Metrics) error {
 		},
 		metrics.Timestamp,
 	)
+	points = append(points, cpuPoint)
 
 	// 内存指标
 	memPoint := influxdb2.NewPoint(
@@ -184,13 +415,60 @@ func (s *Storage) SaveMetrics(metrics *Metrics) error {
 		},
 		metrics.Timestamp,
 	)
+	points = append(points, memPoint)
 
-	// 批量写入
-	if err := s.influxWrite.WritePoint(ctx, cpuPoint); err != nil {
-		return err
+	// 磁盘指标 - 为每个分区创建数据点
+	if len(metrics.Disk.Partitions) > 0 {
+		for _, partition := range metrics.Disk.Partitions {
+			diskPoint := influxdb2.NewPoint(
+				"disk",
+				map[string]string{
+					"host_id":    metrics.HostID,
+					"device":     partition.Device,
+					"mountpoint": partition.Mountpoint,
+					"fstype":     partition.Fstype,
+				},
+				map[string]interface{}{
+					"total":        partition.Total,
+					"used":         partition.Used,
+					"free":         partition.Free,
+					"used_percent": partition.UsedPercent,
+				},
+				metrics.Timestamp,
+			)
+			points = append(points, diskPoint)
+		}
 	}
-	if err := s.influxWrite.WritePoint(ctx, memPoint); err != nil {
-		return err
+
+	// 网络指标 - 为每个网卡创建数据点
+	if len(metrics.Network.Interfaces) > 0 {
+		for _, iface := range metrics.Network.Interfaces {
+			netPoint := influxdb2.NewPoint(
+				"network",
+				map[string]string{
+					"host_id":   metrics.HostID,
+					"interface": iface.Name,
+				},
+				map[string]interface{}{
+					"bytes_sent":   iface.BytesSent,
+					"bytes_recv":   iface.BytesRecv,
+					"packets_sent": iface.PacketsSent,
+					"packets_recv": iface.PacketsRecv,
+					"errin":        iface.Errin,
+					"errout":       iface.Errout,
+				},
+				metrics.Timestamp,
+			)
+			points = append(points, netPoint)
+		}
+	}
+
+	// 批量写入所有数据点
+	for _, point := range points {
+		if err := s.influxWrite.WritePoint(ctx, point); err != nil {
+			log.Printf("Failed to write point: %v", err)
+			return err
+		}
 	}
 
 	return nil
@@ -340,32 +618,3 @@ func (s *Storage) GetStats() map[string]interface{} {
 
 	return stats
 }
-
-// ============================================
-// 使用示例
-// ============================================
-/*
-// 在main.go中使用
-
-storage := NewStorage(config)
-defer storage.Close()
-
-// 定期检查存储健康状态
-go func() {
-	ticker := time.NewTicker(1 * time.Minute)
-	for range ticker.C {
-		if err := storage.Ping(); err != nil {
-			log.Printf("Storage health check failed: %v", err)
-		}
-	}
-}()
-
-// 定期输出统计信息
-go func() {
-	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		stats := storage.GetStats()
-		log.Printf("Storage stats: %+v", stats)
-	}
-}()
-*/

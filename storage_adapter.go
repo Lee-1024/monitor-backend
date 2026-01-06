@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"monitor-backend/api"
@@ -157,13 +158,72 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 	measurements := []string{"cpu", "memory", "disk", "network"}
 
 	for _, measurement := range measurements {
-		query := fmt.Sprintf(`
-			from(bucket: "%s")
-			|> range(start: -5m)
-			|> filter(fn: (r) => r["_measurement"] == "%s")
-			|> filter(fn: (r) => r["host_id"] == "%s")
-			|> last()
-		`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
+		var query string
+		
+		// 对于磁盘和网络，需要特殊处理多个分区/接口的情况
+		if measurement == "disk" {
+			// 磁盘：先尝试查询根分区，如果没有则查询所有分区
+			// 先检查是否有根分区数据
+			checkQuery := fmt.Sprintf(`
+				from(bucket: "%s")
+				|> range(start: -5m)
+				|> filter(fn: (r) => r["_measurement"] == "%s")
+				|> filter(fn: (r) => r["host_id"] == "%s")
+				|> filter(fn: (r) => r["mountpoint"] == "/")
+				|> limit(n: 1)
+			`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
+			
+			checkAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
+			checkResult, err := checkAPI.Query(ctx, checkQuery)
+			hasRootPartition := false
+			if err == nil {
+				hasRootPartition = checkResult.Next()
+				checkResult.Close()
+			}
+			
+			if hasRootPartition {
+				// 有根分区，查询根分区的最新数据
+				query = fmt.Sprintf(`
+					from(bucket: "%s")
+					|> range(start: -5m)
+					|> filter(fn: (r) => r["_measurement"] == "%s")
+					|> filter(fn: (r) => r["host_id"] == "%s")
+					|> filter(fn: (r) => r["mountpoint"] == "/")
+					|> last()
+				`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
+			} else {
+				// 没有根分区，查询所有分区的最新数据
+				query = fmt.Sprintf(`
+					from(bucket: "%s")
+					|> range(start: -5m)
+					|> filter(fn: (r) => r["_measurement"] == "%s")
+					|> filter(fn: (r) => r["host_id"] == "%s")
+					|> group(columns: ["mountpoint", "device"])
+					|> last()
+				`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
+			}
+		} else if measurement == "network" {
+			// 网络：聚合所有接口的数据，按字段名分组求和
+			query = fmt.Sprintf(`
+				from(bucket: "%s")
+				|> range(start: -5m)
+				|> filter(fn: (r) => r["_measurement"] == "%s")
+				|> filter(fn: (r) => r["host_id"] == "%s")
+				|> group(columns: ["_field"])
+				|> aggregateWindow(every: 1m, fn: sum, createEmpty: false)
+				|> last()
+				|> group()
+			`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
+		} else {
+			// CPU和内存：直接获取最新数据
+			query = fmt.Sprintf(`
+				from(bucket: "%s")
+				|> range(start: -5m)
+				|> filter(fn: (r) => r["_measurement"] == "%s")
+				|> filter(fn: (r) => r["host_id"] == "%s")
+				|> last()
+			`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
+		}
 
 		queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 		result, err := queryAPI.Query(ctx, query)
@@ -174,12 +234,183 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 		values := make(map[string]interface{})
 		var timestamp time.Time
 
-		for result.Next() {
-			record := result.Record()
-			timestamp = record.Time()
-			values[record.Field()] = record.Value()
+		// 对于磁盘，返回所有分区数据，前端可以选择显示
+		if measurement == "disk" {
+			// 如果查询已经过滤了根分区，直接处理结果
+			hasRootFilter := false
+			if query != "" {
+				hasRootFilter = strings.Contains(query, `r["mountpoint"] == "/"`)
+			}
+			
+			if hasRootFilter {
+				// 直接处理根分区的数据
+				for result.Next() {
+					record := result.Record()
+					timestamp = record.Time()
+					fieldName := record.Field()
+					if fieldName != "" {
+						values[fieldName] = record.Value()
+					}
+				}
+				result.Close()
+				// 添加分区标识
+				values["_mountpoint"] = "/"
+				log.Printf("Found root partition disk data with %d fields", len(values))
+			} else {
+				// 处理多个分区，返回所有分区数据（以根分区为主，其他分区作为额外信息）
+				partitions := make(map[string]map[string]interface{})
+				partitionTimestamps := make(map[string]time.Time)
+				var maxTotal uint64
+				var mainMountpoint string
+				var allPartitions []map[string]interface{}
+				
+				recordCount := 0
+				for result.Next() {
+					record := result.Record()
+					recordCount++
+					
+					// 从 tag 中获取 mountpoint
+					mountpoint := ""
+					mountpointVal := record.ValueByKey("mountpoint")
+					if mountpointVal != nil {
+						if mpStr, ok := mountpointVal.(string); ok {
+							mountpoint = mpStr
+						}
+					}
+					
+					// 如果还是没有，尝试从其他方式获取
+					if mountpoint == "" {
+						// 尝试从所有 tag 中查找
+						for key, val := range record.Values() {
+							if key == "mountpoint" {
+								if mpStr, ok := val.(string); ok {
+									mountpoint = mpStr
+									break
+								}
+							}
+						}
+					}
+					
+					if mountpoint == "" {
+						log.Printf("Warning: disk record %d has no mountpoint tag", recordCount)
+						continue
+					}
+					
+					if partitions[mountpoint] == nil {
+						partitions[mountpoint] = make(map[string]interface{})
+						partitionTimestamps[mountpoint] = record.Time()
+					}
+					
+					fieldName := record.Field()
+					if fieldName != "" {
+						partitions[mountpoint][fieldName] = record.Value()
+					}
+					
+					// 如果是根分区，优先选择
+					if mountpoint == "/" {
+						mainMountpoint = mountpoint
+					}
+				}
+				result.Close()
+				
+				log.Printf("Found %d disk records, %d partitions", recordCount, len(partitions))
+				
+				// 如果没有找到根分区，选择最大的分区
+				if mainMountpoint == "" {
+					for mp, partData := range partitions {
+						var total uint64
+						if totalVal, ok := partData["total"]; ok {
+							switch v := totalVal.(type) {
+							case uint64:
+								total = v
+							case int64:
+								total = uint64(v)
+							case float64:
+								total = uint64(v)
+							}
+							if total > maxTotal {
+								maxTotal = total
+								mainMountpoint = mp
+							}
+						}
+					}
+				}
+				
+				// 如果还是没有，选择第一个分区
+				if mainMountpoint == "" && len(partitions) > 0 {
+					for mp := range partitions {
+						mainMountpoint = mp
+						break
+					}
+				}
+				
+				// 设置主分区数据
+				if mainMountpoint != "" && partitions[mainMountpoint] != nil {
+					values = partitions[mainMountpoint]
+					values["_mountpoint"] = mainMountpoint
+					timestamp = partitionTimestamps[mainMountpoint]
+					
+					// 收集所有分区信息（用于前端展示）
+					for mp, partData := range partitions {
+						if mp != mainMountpoint {
+							partInfo := make(map[string]interface{})
+							for k, v := range partData {
+								partInfo[k] = v
+							}
+							partInfo["_mountpoint"] = mp
+							allPartitions = append(allPartitions, partInfo)
+						}
+					}
+					
+					// 如果有其他分区，添加到values中
+					if len(allPartitions) > 0 {
+						values["_partitions"] = allPartitions
+					}
+					
+					log.Printf("Selected disk partition: %s with %d fields, %d other partitions", mainMountpoint, len(values), len(allPartitions))
+				} else {
+					log.Printf("Warning: No disk partition selected, found %d partitions", len(partitions))
+				}
+			}
+		} else if measurement == "network" {
+			// 网络：聚合所有接口的数据
+			for result.Next() {
+				record := result.Record()
+				timestamp = record.Time()
+				fieldName := record.Field()
+				if fieldName != "" {
+					// 累加相同字段的值（多个接口的数据）
+					if existingValue, exists := values[fieldName]; exists {
+						// 如果已存在，累加
+						if existingNum, ok := existingValue.(float64); ok {
+							if newNum, ok := record.Value().(float64); ok {
+								values[fieldName] = existingNum + newNum
+							} else if newNum, ok := record.Value().(int64); ok {
+								values[fieldName] = existingNum + float64(newNum)
+							}
+						} else if existingNum, ok := existingValue.(int64); ok {
+							if newNum, ok := record.Value().(int64); ok {
+								values[fieldName] = existingNum + newNum
+							} else if newNum, ok := record.Value().(float64); ok {
+								values[fieldName] = float64(existingNum) + newNum
+							}
+						}
+					} else {
+						// 如果不存在，直接设置
+						values[fieldName] = record.Value()
+					}
+				}
+			}
+			result.Close()
+		} else {
+			// CPU和内存：正常处理
+			for result.Next() {
+				record := result.Record()
+				timestamp = record.Time()
+				values[record.Field()] = record.Value()
+			}
+			result.Close()
 		}
-		result.Close()
 
 		if !timestamp.IsZero() {
 			latest.Timestamp = timestamp
@@ -204,18 +435,88 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, interval string) ([]api.MetricPoint, error) {
 	ctx := context.Background()
 
-	// 构建Flux查询 - 简化版本，只使用start参数
-	// Flux语法要求：range的参数必须直接是时间值，不能是字符串变量
-	query := fmt.Sprintf(`from(bucket: "%s")
+	// 构建Flux查询 - 对于磁盘，需要选择主分区（根分区或最大分区）
+	var query string
+	if metricType == "disk" {
+		// 磁盘：先尝试查询根分区，如果没有则查询所有分区并选择最大的
+		// 先检查是否有根分区数据
+		checkQuery := fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> filter(fn: (r) => r["mountpoint"] == "/")
+  |> limit(n: 1)`,
+			s.storage.config.InfluxDB.Bucket,
+			start,
+			metricType,
+			hostID)
+		
+		queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
+		checkResult, err := queryAPI.Query(ctx, checkQuery)
+		hasRootPartition := false
+		if err == nil {
+			hasRootPartition = checkResult.Next()
+			checkResult.Close()
+		}
+		
+		if hasRootPartition {
+			// 有根分区，查询根分区数据
+			query = fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> filter(fn: (r) => r["mountpoint"] == "/")
+  |> aggregateWindow(every: %s, fn: mean, createEmpty: false)`,
+				s.storage.config.InfluxDB.Bucket,
+				start,
+				metricType,
+				hostID,
+				interval)
+		} else {
+			// 没有根分区，查询所有分区，按total排序选择最大的
+			query = fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> group(columns: ["mountpoint"])
+  |> aggregateWindow(every: %s, fn: mean, createEmpty: false)
+  |> group()
+  |> sort(columns: ["total"], desc: true)
+  |> limit(n: 1)
+  |> group()`,
+				s.storage.config.InfluxDB.Bucket,
+				start,
+				metricType,
+				hostID,
+				interval)
+		}
+	} else if metricType == "network" {
+		// 网络：聚合所有接口的数据，按字段分组求和
+		query = fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> group(columns: ["_field"])
+  |> aggregateWindow(every: %s, fn: sum, createEmpty: false)
+  |> group()`,
+			s.storage.config.InfluxDB.Bucket,
+			start,
+			metricType,
+			hostID,
+			interval)
+	} else {
+		// CPU和内存：正常查询
+		query = fmt.Sprintf(`from(bucket: "%s")
   |> range(start: %s)
   |> filter(fn: (r) => r["_measurement"] == "%s")
   |> filter(fn: (r) => r["host_id"] == "%s")
   |> aggregateWindow(every: %s, fn: mean, createEmpty: false)`,
-		s.storage.config.InfluxDB.Bucket,
-		start, // 直接使用 -1h, -6h 等
-		metricType,
-		hostID,
-		interval) // 直接使用 1m, 5m 等
+			s.storage.config.InfluxDB.Bucket,
+			start,
+			metricType,
+			hostID,
+			interval)
+	}
 
 	log.Printf("Executing InfluxDB query for %s/%s", hostID, metricType)
 	log.Printf("Query: %s", query)
@@ -253,8 +554,37 @@ func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, inter
 		fieldName := record.Field()
 		fieldValue := record.Value()
 
-		if fieldValue != nil {
-			pointsMap[timestamp][fieldName] = fieldValue
+		if fieldValue != nil && fieldName != "" {
+			// 对于网络数据，如果字段已存在，需要累加（多个接口的数据）
+			if metricType == "network" {
+				if existingValue, exists := pointsMap[timestamp][fieldName]; exists {
+					// 累加相同字段的值
+					if existingNum, ok := existingValue.(float64); ok {
+						if newNum, ok := fieldValue.(float64); ok {
+							pointsMap[timestamp][fieldName] = existingNum + newNum
+						} else if newNum, ok := fieldValue.(int64); ok {
+							pointsMap[timestamp][fieldName] = existingNum + float64(newNum)
+						} else {
+							pointsMap[timestamp][fieldName] = fieldValue
+						}
+					} else if existingNum, ok := existingValue.(int64); ok {
+						if newNum, ok := fieldValue.(int64); ok {
+							pointsMap[timestamp][fieldName] = existingNum + newNum
+						} else if newNum, ok := fieldValue.(float64); ok {
+							pointsMap[timestamp][fieldName] = float64(existingNum) + newNum
+						} else {
+							pointsMap[timestamp][fieldName] = fieldValue
+						}
+					} else {
+						pointsMap[timestamp][fieldName] = fieldValue
+					}
+				} else {
+					pointsMap[timestamp][fieldName] = fieldValue
+				}
+			} else {
+				// 其他指标：直接设置
+				pointsMap[timestamp][fieldName] = fieldValue
+			}
 		}
 	}
 
@@ -466,4 +796,172 @@ func (s *StorageAdapter) GetTopMetrics(metricType string, limit int, order strin
 	}
 
 	return metrics, nil
+}
+
+// ============================================
+// 宕机分析相关方法
+// ============================================
+
+// GetCrashEvents 获取宕机事件列表
+func (s *StorageAdapter) GetCrashEvents(hostID string, limit int) ([]api.CrashEvent, error) {
+	var events []CrashEvent
+	query := s.storage.postgres.Order("offline_time DESC")
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Find(&events).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换为API格式
+	result := make([]api.CrashEvent, len(events))
+	for i, event := range events {
+		result[i] = api.CrashEvent{
+			ID:              event.ID,
+			HostID:          event.HostID,
+			Hostname:        event.Hostname,
+			OfflineTime:     event.OfflineTime,
+			OnlineTime:      event.OnlineTime,
+			Duration:        event.Duration,
+			LastCPU:         event.LastCPU,
+			LastMemory:      event.LastMemory,
+			LastDisk:        event.LastDisk,
+			LastNetwork:     event.LastNetwork,
+			Reason:          event.Reason,
+			IsResolved:      event.IsResolved,
+			MetricsSnapshot: event.MetricsSnapshot,
+		}
+	}
+
+	return result, nil
+}
+
+// GetCrashEventDetail 获取单个宕机事件详情
+func (s *StorageAdapter) GetCrashEventDetail(id uint) (*api.CrashEvent, error) {
+	event, err := s.storage.GetCrashEventDetail(id)
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换为API格式
+	result := &api.CrashEvent{
+		ID:              event.ID,
+		HostID:          event.HostID,
+		Hostname:        event.Hostname,
+		OfflineTime:     event.OfflineTime,
+		OnlineTime:      event.OnlineTime,
+		Duration:        event.Duration,
+		LastCPU:         event.LastCPU,
+		LastMemory:      event.LastMemory,
+		LastDisk:        event.LastDisk,
+		LastNetwork:     event.LastNetwork,
+		Reason:          event.Reason,
+		IsResolved:      event.IsResolved,
+		MetricsSnapshot: event.MetricsSnapshot,
+	}
+
+	return result, nil
+}
+
+// GetCrashAnalysis 获取宕机分析
+func (s *StorageAdapter) GetCrashAnalysis(hostID string) (*api.CrashAnalysis, error) {
+	// 获取最近的宕机事件
+	events, err := s.GetCrashEvents(hostID, 10)
+	if err != nil {
+		return nil, err
+	}
+
+	// 计算统计信息
+	analysis := &api.CrashAnalysis{
+		TotalCrashes:   len(events),
+		RecentCrashes:  events,
+		CrashFrequency: s.calculateCrashFrequency(events),
+		MainReasons:    s.analyzeMainReasons(events),
+		AvgDowntime:    s.calculateAvgDowntime(events),
+	}
+
+	return analysis, nil
+}
+
+// calculateCrashFrequency 计算宕机频率
+func (s *StorageAdapter) calculateCrashFrequency(events []api.CrashEvent) string {
+	if len(events) == 0 {
+		return "无宕机记录"
+	}
+
+	if len(events) == 1 {
+		return "仅有1次宕机"
+	}
+
+	// 计算最早和最晚宕机的时间跨度
+	first := events[len(events)-1].OfflineTime
+	last := events[0].OfflineTime
+	days := last.Sub(first).Hours() / 24
+
+	if days < 1 {
+		return fmt.Sprintf("1天内宕机%d次", len(events))
+	}
+
+	freq := float64(len(events)) / days
+	return fmt.Sprintf("平均每天宕机%.1f次", freq)
+}
+
+// analyzeMainReasons 分析主要原因
+func (s *StorageAdapter) analyzeMainReasons(events []api.CrashEvent) map[string]int {
+	reasons := make(map[string]int)
+
+	for _, event := range events {
+		if event.LastCPU > 90 {
+			reasons["CPU过高"]++
+		}
+		if event.LastMemory > 95 {
+			reasons["内存不足"]++
+		}
+		if event.LastDisk > 95 {
+			reasons["磁盘满"]++
+		}
+		if event.LastCPU < 90 && event.LastMemory < 95 && event.LastDisk < 95 {
+			reasons["网络/其他"]++
+		}
+	}
+
+	return reasons
+}
+
+// calculateAvgDowntime 计算平均宕机时长
+func (s *StorageAdapter) calculateAvgDowntime(events []api.CrashEvent) string {
+	if len(events) == 0 {
+		return "0分钟"
+	}
+
+	var totalDuration int64
+	resolvedCount := 0
+
+	for _, event := range events {
+		if event.IsResolved {
+			totalDuration += event.Duration
+			resolvedCount++
+		}
+	}
+
+	if resolvedCount == 0 {
+		return "暂无恢复记录"
+	}
+
+	avgSeconds := totalDuration / int64(resolvedCount)
+	minutes := avgSeconds / 60
+
+	if minutes < 60 {
+		return fmt.Sprintf("%d分钟", minutes)
+	}
+
+	hours := minutes / 60
+	return fmt.Sprintf("%d小时%d分钟", hours, minutes%60)
 }

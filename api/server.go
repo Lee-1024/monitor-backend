@@ -79,6 +79,14 @@ func (s *APIServer) setupRoutes() {
 			stats.GET("/overview", s.getOverview) // 获取概览
 			stats.GET("/top", s.getTopMetrics)    // 获取Top指标
 		}
+
+		// 宕机分析路由
+		crash := v1.Group("/crash")
+		{
+			crash.GET("/events", s.getCrashEvents)              // 获取宕机事件列表
+			crash.GET("/events/:id", s.getCrashEventDetail)     // 获取宕机事件详情
+			crash.GET("/analysis/:host_id", s.getCrashAnalysis) // 获取宕机分析
+		}
 	}
 }
 
