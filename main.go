@@ -46,6 +46,9 @@ func main() {
 
 	// 启动HTTP API服务器
 	go func() {
+		// 初始化JWT密钥
+		api.SetJWTSecret(config.JWTSecret)
+
 		apiConfig := &api.APIConfig{
 			Port: config.HTTPAddr,
 			AllowOrigins: []string{
@@ -53,6 +56,7 @@ func main() {
 				"http://localhost:8080",
 				"http://localhost:5173", // Vite默认端口
 			},
+			AuthRequired: config.AuthRequired,
 		}
 
 		apiServer := api.NewAPIServer(NewStorageAdapter(storage), apiConfig)

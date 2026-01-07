@@ -102,3 +102,18 @@ type InterfaceMetrics struct {
 	Errin       uint64
 	Errout      uint64
 }
+
+// User 用户模型
+type User struct {
+	ID        uint           `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+
+	Username string `gorm:"uniqueIndex;size:64;not null" json:"username"`
+	Email    string `gorm:"uniqueIndex;size:255;not null" json:"email"`
+	Password string `gorm:"size:255;not null" json:"-"` // 不返回密码
+	Role     string `gorm:"size:32;default:user" json:"role"` // admin, user
+	Status   string `gorm:"size:32;default:active" json:"status"` // active, inactive
+	LastLogin *time.Time `json:"last_login,omitempty"`
+}

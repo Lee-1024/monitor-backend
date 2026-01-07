@@ -11,11 +11,13 @@ import (
 )
 
 type Config struct {
-	GRPCAddr   string           `yaml:"grpc_addr"`
-	HTTPAddr   string           `yaml:"http_addr"`
-	InfluxDB   InfluxDBConfig   `yaml:"influxdb"`
-	PostgreSQL PostgreSQLConfig `yaml:"postgresql"`
-	Redis      RedisConfig      `yaml:"redis"`
+	GRPCAddr      string           `yaml:"grpc_addr"`
+	HTTPAddr      string           `yaml:"http_addr"`
+	JWTSecret     string           `yaml:"jwt_secret"`
+	AuthRequired  bool             `yaml:"auth_required"` // 是否要求认证，默认true
+	InfluxDB      InfluxDBConfig   `yaml:"influxdb"`
+	PostgreSQL    PostgreSQLConfig `yaml:"postgresql"`
+	Redis         RedisConfig      `yaml:"redis"`
 }
 
 type InfluxDBConfig struct {
@@ -41,8 +43,10 @@ type RedisConfig struct {
 
 func LoadConfig() *Config {
 	config := &Config{
-		GRPCAddr: ":50051",
-		HTTPAddr: ":8080",
+		GRPCAddr:     ":50051",
+		HTTPAddr:     ":8080",
+		JWTSecret:    "your-secret-key-change-in-production",
+		AuthRequired: true, // 默认需要认证
 		InfluxDB: InfluxDBConfig{
 			URL:    "http://localhost:8086",
 			Token:  "your-token",

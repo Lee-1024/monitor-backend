@@ -319,9 +319,18 @@ func (s *APIServer) getCrashAnalysis(c *gin.Context) {
 		return
 	}
 
+	// 统计已恢复数量
+	resolvedCount := 0
+	for _, event := range events {
+		if event.IsResolved {
+			resolvedCount++
+		}
+	}
+
 	// 统计分析
 	analysis := map[string]interface{}{
 		"total_crashes":   len(events),
+		"resolved_count":  resolvedCount,
 		"recent_crashes":  events,
 		"crash_frequency": calculateCrashFrequency(events),
 		"main_reasons":    analyzeMainReasons(events),

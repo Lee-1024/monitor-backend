@@ -159,7 +159,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 
 	for _, measurement := range measurements {
 		var query string
-		
+
 		// 对于磁盘和网络，需要特殊处理多个分区/接口的情况
 		if measurement == "disk" {
 			// 磁盘：先尝试查询根分区，如果没有则查询所有分区
@@ -172,7 +172,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 				|> filter(fn: (r) => r["mountpoint"] == "/")
 				|> limit(n: 1)
 			`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
-			
+
 			checkAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 			checkResult, err := checkAPI.Query(ctx, checkQuery)
 			hasRootPartition := false
@@ -180,7 +180,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 				hasRootPartition = checkResult.Next()
 				checkResult.Close()
 			}
-			
+
 			if hasRootPartition {
 				// 有根分区，查询根分区的最新数据
 				query = fmt.Sprintf(`
@@ -241,7 +241,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			if query != "" {
 				hasRootFilter = strings.Contains(query, `r["mountpoint"] == "/"`)
 			}
-			
+
 			if hasRootFilter {
 				// 直接处理根分区的数据
 				for result.Next() {
@@ -263,12 +263,12 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 				var maxTotal uint64
 				var mainMountpoint string
 				var allPartitions []map[string]interface{}
-				
+
 				recordCount := 0
 				for result.Next() {
 					record := result.Record()
 					recordCount++
-					
+
 					// 从 tag 中获取 mountpoint
 					mountpoint := ""
 					mountpointVal := record.ValueByKey("mountpoint")
@@ -277,7 +277,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 							mountpoint = mpStr
 						}
 					}
-					
+
 					// 如果还是没有，尝试从其他方式获取
 					if mountpoint == "" {
 						// 尝试从所有 tag 中查找
@@ -290,31 +290,31 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 							}
 						}
 					}
-					
+
 					if mountpoint == "" {
 						log.Printf("Warning: disk record %d has no mountpoint tag", recordCount)
 						continue
 					}
-					
+
 					if partitions[mountpoint] == nil {
 						partitions[mountpoint] = make(map[string]interface{})
 						partitionTimestamps[mountpoint] = record.Time()
 					}
-					
+
 					fieldName := record.Field()
 					if fieldName != "" {
 						partitions[mountpoint][fieldName] = record.Value()
 					}
-					
+
 					// 如果是根分区，优先选择
 					if mountpoint == "/" {
 						mainMountpoint = mountpoint
 					}
 				}
 				result.Close()
-				
+
 				log.Printf("Found %d disk records, %d partitions", recordCount, len(partitions))
-				
+
 				// 如果没有找到根分区，选择最大的分区
 				if mainMountpoint == "" {
 					for mp, partData := range partitions {
@@ -335,7 +335,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 						}
 					}
 				}
-				
+
 				// 如果还是没有，选择第一个分区
 				if mainMountpoint == "" && len(partitions) > 0 {
 					for mp := range partitions {
@@ -343,13 +343,13 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 						break
 					}
 				}
-				
+
 				// 设置主分区数据
 				if mainMountpoint != "" && partitions[mainMountpoint] != nil {
 					values = partitions[mainMountpoint]
 					values["_mountpoint"] = mainMountpoint
 					timestamp = partitionTimestamps[mainMountpoint]
-					
+
 					// 收集所有分区信息（用于前端展示）
 					for mp, partData := range partitions {
 						if mp != mainMountpoint {
@@ -361,12 +361,12 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 							allPartitions = append(allPartitions, partInfo)
 						}
 					}
-					
+
 					// 如果有其他分区，添加到values中
 					if len(allPartitions) > 0 {
 						values["_partitions"] = allPartitions
 					}
-					
+
 					log.Printf("Selected disk partition: %s with %d fields, %d other partitions", mainMountpoint, len(values), len(allPartitions))
 				} else {
 					log.Printf("Warning: No disk partition selected, found %d partitions", len(partitions))
@@ -450,7 +450,7 @@ func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, inter
 			start,
 			metricType,
 			hostID)
-		
+
 		queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 		checkResult, err := queryAPI.Query(ctx, checkQuery)
 		hasRootPartition := false
@@ -458,7 +458,7 @@ func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, inter
 			hasRootPartition = checkResult.Next()
 			checkResult.Close()
 		}
-		
+
 		if hasRootPartition {
 			// 有根分区，查询根分区数据
 			query = fmt.Sprintf(`from(bucket: "%s")
@@ -820,6 +820,30 @@ func (s *StorageAdapter) GetCrashEvents(hostID string, limit int) ([]api.CrashEv
 		return nil, err
 	}
 
+	// 检查并自动修复：如果Agent当前是online状态，但事件未标记为已恢复，则自动标记
+	for i := range events {
+		if !events[i].IsResolved {
+			// 检查Agent当前状态
+			var agent Agent
+			if err := s.storage.postgres.Where("host_id = ?", events[i].HostID).First(&agent).Error; err == nil {
+				if agent.Status == "online" {
+					// Agent已恢复，但事件未标记，自动修复
+					now := time.Now()
+					duration := now.Sub(events[i].OfflineTime).Seconds()
+					s.storage.postgres.Model(&events[i]).Updates(map[string]interface{}{
+						"online_time": &now,
+						"duration":    int64(duration),
+						"is_resolved": true,
+					})
+					events[i].IsResolved = true
+					events[i].OnlineTime = &now
+					events[i].Duration = int64(duration)
+					log.Printf("Auto-resolved crash event %d for host %s (agent is online)", events[i].ID, events[i].HostID)
+				}
+			}
+		}
+	}
+
 	// 转换为API格式
 	result := make([]api.CrashEvent, len(events))
 	for i, event := range events {
@@ -878,9 +902,20 @@ func (s *StorageAdapter) GetCrashAnalysis(hostID string) (*api.CrashAnalysis, er
 		return nil, err
 	}
 
+	// 统计已恢复数量
+	resolvedCount := 0
+	for _, event := range events {
+		if event.IsResolved {
+			resolvedCount++
+		}
+	}
+
+	log.Printf("Crash analysis for %s: total=%d, resolved=%d", hostID, len(events), resolvedCount)
+
 	// 计算统计信息
 	analysis := &api.CrashAnalysis{
 		TotalCrashes:   len(events),
+		ResolvedCount:  resolvedCount,
 		RecentCrashes:  events,
 		CrashFrequency: s.calculateCrashFrequency(events),
 		MainReasons:    s.analyzeMainReasons(events),
@@ -964,4 +999,159 @@ func (s *StorageAdapter) calculateAvgDowntime(events []api.CrashEvent) string {
 
 	hours := minutes / 60
 	return fmt.Sprintf("%d小时%d分钟", hours, minutes%60)
+}
+
+// ============================================
+// 用户管理相关方法
+// ============================================
+
+// CreateUser 创建用户
+func (s *StorageAdapter) CreateUser(username, email, password, role string) (*api.UserInfo, error) {
+	// 检查用户名是否已存在
+	var existingUser User
+	if err := s.storage.postgres.Where("username = ?", username).First(&existingUser).Error; err == nil {
+		return nil, fmt.Errorf("username already exists")
+	}
+
+	// 检查邮箱是否已存在
+	if err := s.storage.postgres.Where("email = ?", email).First(&existingUser).Error; err == nil {
+		return nil, fmt.Errorf("email already exists")
+	}
+
+	// 创建用户
+	user := User{
+		Username: username,
+		Email:    email,
+		Password: password, // 密码应该在调用前已经加密
+		Role:     role,
+		Status:   "active",
+	}
+
+	if err := s.storage.postgres.Create(&user).Error; err != nil {
+		return nil, err
+	}
+
+	return &api.UserInfo{
+		ID:       user.ID,
+		Username: user.Username,
+		Email:    user.Email,
+		Role:     user.Role,
+		Status:   user.Status,
+	}, nil
+}
+
+// GetUserByID 根据ID获取用户
+func (s *StorageAdapter) GetUserByID(id uint) (*api.UserInfo, error) {
+	var user User
+	if err := s.storage.postgres.First(&user, id).Error; err != nil {
+		return nil, err
+	}
+
+	return &api.UserInfo{
+		ID:       user.ID,
+		Username: user.Username,
+		Email:    user.Email,
+		Role:     user.Role,
+		Status:   user.Status,
+	}, nil
+}
+
+// GetUserByUsername 根据用户名获取用户（返回密码哈希）
+func (s *StorageAdapter) GetUserByUsername(username string) (*api.UserInfo, string, error) {
+	var user User
+	if err := s.storage.postgres.Where("username = ?", username).First(&user).Error; err != nil {
+		return nil, "", err
+	}
+
+	return &api.UserInfo{
+		ID:       user.ID,
+		Username: user.Username,
+		Email:    user.Email,
+		Role:     user.Role,
+		Status:   user.Status,
+	}, user.Password, nil
+}
+
+// GetUserByEmail 根据邮箱获取用户
+func (s *StorageAdapter) GetUserByEmail(email string) (*api.UserInfo, error) {
+	var user User
+	if err := s.storage.postgres.Where("email = ?", email).First(&user).Error; err != nil {
+		return nil, err
+	}
+
+	return &api.UserInfo{
+		ID:       user.ID,
+		Username: user.Username,
+		Email:    user.Email,
+		Role:     user.Role,
+		Status:   user.Status,
+	}, nil
+}
+
+// ListUsers 获取用户列表
+func (s *StorageAdapter) ListUsers(page, pageSize int) ([]api.UserInfo, int64, error) {
+	var users []User
+	var total int64
+
+	query := s.storage.postgres.Model(&User{})
+
+	// 获取总数
+	query.Count(&total)
+
+	// 分页查询
+	offset := (page - 1) * pageSize
+	err := query.Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&users).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 转换为API格式
+	result := make([]api.UserInfo, len(users))
+	for i, user := range users {
+		result[i] = api.UserInfo{
+			ID:       user.ID,
+			Username: user.Username,
+			Email:    user.Email,
+			Role:     user.Role,
+			Status:   user.Status,
+		}
+	}
+
+	return result, total, nil
+}
+
+// UpdateUser 更新用户信息
+func (s *StorageAdapter) UpdateUser(id uint, email, role, status string) error {
+	updates := make(map[string]interface{})
+	if email != "" {
+		updates["email"] = email
+	}
+	if role != "" {
+		updates["role"] = role
+	}
+	if status != "" {
+		updates["status"] = status
+	}
+
+	if len(updates) == 0 {
+		return fmt.Errorf("no fields to update")
+	}
+
+	return s.storage.postgres.Model(&User{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateUserPassword 更新用户密码
+func (s *StorageAdapter) UpdateUserPassword(id uint, newPassword string) error {
+	return s.storage.postgres.Model(&User{}).Where("id = ?", id).Update("password", newPassword).Error
+}
+
+// UpdateUserLastLogin 更新用户最后登录时间
+func (s *StorageAdapter) UpdateUserLastLogin(id uint) error {
+	now := time.Now()
+	return s.storage.postgres.Model(&User{}).Where("id = ?", id).Update("last_login", now).Error
+}
+
+// DeleteUser 删除用户（软删除）
+func (s *StorageAdapter) DeleteUser(id uint) error {
+	return s.storage.postgres.Delete(&User{}, id).Error
 }

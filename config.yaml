@@ -17,3 +17,7 @@ redis:
   addr: "localhost:6379"
   password: ""
   db: 0
+
+jwt_secret: "bbcceewwx1234567890"
+# 是否要求认证，设置为false可以在开发环境中禁用认证
+auth_required: true

@@ -13,6 +13,7 @@ import (
 	"github.com/influxdata/influxdb-client-go/v2/api"
 	"github.com/influxdata/influxdb-client-go/v2/api/write"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -56,7 +57,10 @@ func NewStorage(config *Config) *Storage {
 	}
 
 	// 自动迁移数据库表
-	storage.postgres.AutoMigrate(&Agent{}, &CrashEvent{})
+	storage.postgres.AutoMigrate(&Agent{}, &CrashEvent{}, &User{})
+
+	// 初始化默认管理员用户
+	storage.InitDefaultAdmin()
 
 	// 初始化Redis
 	storage.redis = redis.NewClient(&redis.Options{
@@ -93,12 +97,42 @@ func (s *Storage) SaveAgent(agent *Agent) error {
 
 // UpdateAgentLastSeen 更新Agent最后上报时间
 func (s *Storage) UpdateAgentLastSeen(hostID string) error {
-	return s.postgres.Model(&Agent{}).
+	// 先检查Agent当前状态
+	var agent Agent
+	err := s.postgres.Where("host_id = ?", hostID).First(&agent).Error
+	if err != nil {
+		// Agent不存在，直接返回
+		return err
+	}
+
+	// 检查是否从offline变为online（恢复）
+	wasOffline := agent.Status == "offline"
+
+	// 更新Agent状态
+	err = s.postgres.Model(&Agent{}).
 		Where("host_id = ?", hostID).
 		Updates(map[string]interface{}{
 			"last_seen": time.Now(),
 			"status":    "online",
 		}).Error
+
+	if err != nil {
+		return err
+	}
+
+	// 如果Agent从offline恢复为online，标记宕机事件为已恢复
+	if wasOffline {
+		go func() {
+			if err := s.ResolveCrashEvent(hostID); err != nil {
+				// 如果找不到未解决的宕机事件，这是正常的（可能已经被标记过了）
+				log.Printf("Agent %s recovered, but no unresolved crash event found (this is normal if already resolved)", hostID)
+			} else {
+				log.Printf("Agent %s recovered, crash event marked as resolved", hostID)
+			}
+		}()
+	}
+
+	return nil
 }
 
 // MarkAgentOffline 标记超时的Agent为离线（增强版）
@@ -306,6 +340,7 @@ func (s *Storage) ResolveCrashEvent(hostID string) error {
 		First(&event).Error
 
 	if err != nil {
+		// 如果没有找到未解决的事件，返回错误（但这是正常的，可能已经被标记过了）
 		return err
 	}
 
@@ -313,11 +348,19 @@ func (s *Storage) ResolveCrashEvent(hostID string) error {
 	duration := now.Sub(event.OfflineTime).Seconds()
 
 	// 更新事件
-	return s.postgres.Model(&event).Updates(map[string]interface{}{
+	updateErr := s.postgres.Model(&event).Updates(map[string]interface{}{
 		"online_time": &now,
 		"duration":    int64(duration),
 		"is_resolved": true,
 	}).Error
+
+	if updateErr != nil {
+		log.Printf("Failed to resolve crash event for %s: %v", hostID, updateErr)
+		return updateErr
+	}
+
+	log.Printf("Crash event resolved for %s: duration=%.0f seconds", hostID, duration)
+	return nil
 }
 
 // GetCrashEvents 获取宕机事件列表
@@ -588,6 +631,49 @@ func (s *Storage) Ping() error {
 	}
 
 	return nil
+}
+
+// InitDefaultAdmin 初始化默认管理员用户
+func (s *Storage) InitDefaultAdmin() {
+	defaultUsername := "admin"
+	defaultEmail := "admin@monitor.local"
+	defaultPassword := "admin123" // 默认密码，建议首次登录后修改
+
+	// 检查是否已存在admin用户
+	var existingUser User
+	err := s.postgres.Where("username = ?", defaultUsername).First(&existingUser).Error
+	if err == nil {
+		// admin用户已存在，跳过创建
+		log.Printf("Default admin user '%s' already exists", defaultUsername)
+		return
+	}
+
+	// 使用bcrypt加密密码
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("Failed to hash default admin password: %v", err)
+		return
+	}
+
+	// 创建默认管理员
+	adminUser := User{
+		Username: defaultUsername,
+		Email:    defaultEmail,
+		Password: string(hashedPassword),
+		Role:     "admin",
+		Status:   "active",
+	}
+
+	if err := s.postgres.Create(&adminUser).Error; err != nil {
+		log.Printf("Failed to create default admin user: %v", err)
+		return
+	}
+
+	log.Printf("Default admin user created successfully!")
+	log.Printf("  Username: %s", defaultUsername)
+	log.Printf("  Password: %s", defaultPassword)
+	log.Printf("  Email: %s", defaultEmail)
+	log.Printf("  ⚠️  Please change the default password after first login!")
 }
 
 // GetStats 获取存储统计信息

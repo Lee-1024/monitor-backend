@@ -20,6 +20,7 @@ type APIServer struct {
 type APIConfig struct {
 	Port         string
 	AllowOrigins []string
+	AuthRequired bool // 是否要求认证
 }
 
 func NewAPIServer(storage StorageInterface, config *APIConfig) *APIServer {
@@ -50,12 +51,31 @@ func NewAPIServer(storage StorageInterface, config *APIConfig) *APIServer {
 }
 
 func (s *APIServer) setupRoutes() {
-	// 健康检查
+	// 健康检查（无需认证）
 	s.router.GET("/health", s.healthCheck)
+
+	// 认证相关路由（无需认证）
+	auth := s.router.Group("/api/v1/auth")
+	{
+		auth.POST("/register", s.register)      // 用户注册
+		auth.POST("/login", s.login)           // 用户登录
+		auth.POST("/refresh", s.refreshToken)  // 刷新Token
+	}
 
 	// API v1
 	v1 := s.router.Group("/api/v1")
+	// 根据配置决定是否需要认证
+	if s.config.AuthRequired {
+		v1.Use(AuthMiddleware()) // 所有v1路由都需要认证
+	}
 	{
+		// 当前用户相关
+		user := v1.Group("/user")
+		{
+			user.GET("/me", s.getCurrentUser)           // 获取当前用户信息
+			user.PUT("/password", s.changePassword)     // 修改密码
+		}
+
 		// Agent相关
 		agents := v1.Group("/agents")
 		{
@@ -86,6 +106,18 @@ func (s *APIServer) setupRoutes() {
 			crash.GET("/events", s.getCrashEvents)              // 获取宕机事件列表
 			crash.GET("/events/:id", s.getCrashEventDetail)     // 获取宕机事件详情
 			crash.GET("/analysis/:host_id", s.getCrashAnalysis) // 获取宕机分析
+		}
+
+		// 用户管理路由（需要管理员权限）
+		users := v1.Group("/users")
+		users.Use(AdminMiddleware()) // 管理员权限
+		{
+			users.GET("", s.listUsers)              // 获取用户列表
+			users.GET("/:id", s.getUser)             // 获取单个用户
+			users.POST("", s.createUser)             // 创建用户
+			users.PUT("/:id", s.updateUser)          // 更新用户
+			users.DELETE("/:id", s.deleteUser)       // 删除用户
+			users.POST("/:id/reset-password", s.resetUserPassword) // 重置用户密码
 		}
 	}
 }

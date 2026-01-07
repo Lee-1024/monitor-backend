@@ -26,6 +26,17 @@ type StorageInterface interface {
 	GetCrashEvents(hostID string, limit int) ([]CrashEvent, error)
 	GetCrashEventDetail(id uint) (*CrashEvent, error)
 	GetCrashAnalysis(hostID string) (*CrashAnalysis, error)
+
+	// 用户管理相关
+	CreateUser(username, email, password, role string) (*UserInfo, error)
+	GetUserByID(id uint) (*UserInfo, error)
+	GetUserByUsername(username string) (*UserInfo, string, error) // 返回用户信息和密码哈希
+	GetUserByEmail(email string) (*UserInfo, error)
+	ListUsers(page, pageSize int) ([]UserInfo, int64, error)
+	UpdateUser(id uint, email, role, status string) error
+	UpdateUserPassword(id uint, newPassword string) error
+	UpdateUserLastLogin(id uint) error
+	DeleteUser(id uint) error
 }
 
 // AgentInfo Agent信息
@@ -100,6 +111,7 @@ type CrashEvent struct {
 // CrashAnalysis 宕机分析
 type CrashAnalysis struct {
 	TotalCrashes   int            `json:"total_crashes"`
+	ResolvedCount  int            `json:"resolved_count"`  // 已恢复数量
 	RecentCrashes  []CrashEvent   `json:"recent_crashes"`
 	CrashFrequency string         `json:"crash_frequency"`
 	MainReasons    map[string]int `json:"main_reasons"`
