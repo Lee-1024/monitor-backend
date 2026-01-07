@@ -119,6 +119,31 @@ func (s *APIServer) setupRoutes() {
 			users.DELETE("/:id", s.deleteUser)       // 删除用户
 			users.POST("/:id/reset-password", s.resetUserPassword) // 重置用户密码
 		}
+
+		// 进程监控路由
+		processes := v1.Group("/processes")
+		{
+			processes.GET("", s.getProcesses)           // 获取进程列表
+			processes.GET("/history", s.getProcessHistory) // 获取进程历史数据
+		}
+
+		// 日志路由
+		logs := v1.Group("/logs")
+		{
+			logs.GET("", s.getLogs) // 获取日志列表
+		}
+
+		// 脚本执行路由
+		scripts := v1.Group("/scripts")
+		{
+			scripts.GET("/executions", s.getScriptExecutions) // 获取脚本执行记录
+		}
+
+		// 服务状态路由
+		services := v1.Group("/services")
+		{
+			services.GET("", s.getServiceStatus) // 获取服务状态
+		}
 	}
 }
 

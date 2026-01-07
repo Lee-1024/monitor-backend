@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -57,7 +58,15 @@ func NewStorage(config *Config) *Storage {
 	}
 
 	// 自动迁移数据库表
-	storage.postgres.AutoMigrate(&Agent{}, &CrashEvent{}, &User{})
+	storage.postgres.AutoMigrate(
+		&Agent{},
+		&CrashEvent{},
+		&User{},
+		&ProcessSnapshot{},
+		&LogEntry{},
+		&ScriptExecution{},
+		&ServiceStatus{},
+	)
 
 	// 初始化默认管理员用户
 	storage.InitDefaultAdmin()
@@ -574,15 +583,71 @@ func (s *Storage) CacheLatestMetrics(hostID string, metrics *Metrics) error {
 	ctx := context.Background()
 	key := fmt.Sprintf("metrics:latest:%s", hostID)
 
-	// 序列化为JSON
-	data := map[string]interface{}{
+	// 构建缓存数据结构
+	cacheData := map[string]interface{}{
+		"host_id":   metrics.HostID,
 		"timestamp": metrics.Timestamp.Unix(),
-		"cpu":       metrics.CPU,
-		"memory":    metrics.Memory,
+		"cpu": map[string]interface{}{
+			"usage_percent": metrics.CPU.UsagePercent,
+			"load_avg_1":    metrics.CPU.LoadAvg1,
+			"load_avg_5":    metrics.CPU.LoadAvg5,
+			"load_avg_15":   metrics.CPU.LoadAvg15,
+			"core_count":    metrics.CPU.CoreCount,
+		},
+		"memory": map[string]interface{}{
+			"total":        metrics.Memory.Total,
+			"used":         metrics.Memory.Used,
+			"free":         metrics.Memory.Free,
+			"used_percent": metrics.Memory.UsedPercent,
+			"available":    metrics.Memory.Available,
+		},
 	}
 
-	// 缓存5分钟
-	return s.redis.Set(ctx, key, data, 5*time.Minute).Err()
+	// 添加磁盘数据（只缓存根分区或第一个分区）
+	if len(metrics.Disk.Partitions) > 0 {
+		partition := metrics.Disk.Partitions[0]
+		// 优先选择根分区
+		for _, p := range metrics.Disk.Partitions {
+			if p.Mountpoint == "/" {
+				partition = p
+				break
+			}
+		}
+		cacheData["disk"] = map[string]interface{}{
+			"device":       partition.Device,
+			"mountpoint":   partition.Mountpoint,
+			"fstype":       partition.Fstype,
+			"total":        partition.Total,
+			"used":         partition.Used,
+			"free":         partition.Free,
+			"used_percent": partition.UsedPercent,
+		}
+	}
+
+	// 添加网络数据（聚合所有接口）
+	if len(metrics.Network.Interfaces) > 0 {
+		var totalBytesSent, totalBytesRecv, totalPacketsSent, totalPacketsRecv uint64
+		for _, iface := range metrics.Network.Interfaces {
+			totalBytesSent += iface.BytesSent
+			totalBytesRecv += iface.BytesRecv
+			totalPacketsSent += iface.PacketsSent
+			totalPacketsRecv += iface.PacketsRecv
+		}
+		cacheData["network"] = map[string]interface{}{
+			"bytes_sent":   totalBytesSent,
+			"bytes_recv":   totalBytesRecv,
+			"packets_sent": totalPacketsSent,
+			"packets_recv": totalPacketsRecv,
+		}
+	}
+
+	// 序列化为JSON并缓存5分钟
+	jsonData, err := json.Marshal(cacheData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cache data: %v", err)
+	}
+
+	return s.redis.Set(ctx, key, jsonData, 5*time.Minute).Err()
 }
 
 // GetCachedLatestMetrics 从缓存获取最新指标
@@ -590,14 +655,150 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 	ctx := context.Background()
 	key := fmt.Sprintf("metrics:latest:%s", hostID)
 
-	// 这里简化了，实际需要反序列化JSON
-	exists, err := s.redis.Exists(ctx, key).Result()
-	if err != nil || exists == 0 {
-		return nil, fmt.Errorf("cache miss")
+	// 从Redis获取JSON数据
+	jsonData, err := s.redis.Get(ctx, key).Result()
+	if err != nil {
+		return nil, fmt.Errorf("cache miss: %v", err)
 	}
 
-	// TODO: 实现完整的反序列化逻辑
-	return nil, nil
+	// 反序列化JSON
+	var cacheData map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &cacheData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal cache data: %v", err)
+	}
+
+	// 构建Metrics对象
+	metrics := &Metrics{
+		HostID: hostID,
+	}
+
+	// 解析时间戳
+	if ts, ok := cacheData["timestamp"].(float64); ok {
+		metrics.Timestamp = time.Unix(int64(ts), 0)
+	} else {
+		metrics.Timestamp = time.Now()
+	}
+
+	// 解析CPU数据
+	if cpuData, ok := cacheData["cpu"].(map[string]interface{}); ok {
+		metrics.CPU = CPUMetrics{
+			UsagePercent: getFloat64(cpuData["usage_percent"]),
+			LoadAvg1:     getFloat64(cpuData["load_avg_1"]),
+			LoadAvg5:     getFloat64(cpuData["load_avg_5"]),
+			LoadAvg15:    getFloat64(cpuData["load_avg_15"]),
+			CoreCount:    getInt(cpuData["core_count"]),
+		}
+	}
+
+	// 解析内存数据
+	if memData, ok := cacheData["memory"].(map[string]interface{}); ok {
+		metrics.Memory = MemoryMetrics{
+			Total:       getUint64(memData["total"]),
+			Used:        getUint64(memData["used"]),
+			Free:        getUint64(memData["free"]),
+			UsedPercent: getFloat64(memData["used_percent"]),
+			Available:   getUint64(memData["available"]),
+		}
+	}
+
+	// 解析磁盘数据
+	if diskData, ok := cacheData["disk"].(map[string]interface{}); ok {
+		metrics.Disk = DiskMetrics{
+			Partitions: []PartitionMetrics{
+				{
+					Device:      getString(diskData["device"]),
+					Mountpoint:  getString(diskData["mountpoint"]),
+					Fstype:      getString(diskData["fstype"]),
+					Total:       getUint64(diskData["total"]),
+					Used:        getUint64(diskData["used"]),
+					Free:        getUint64(diskData["free"]),
+					UsedPercent: getFloat64(diskData["used_percent"]),
+				},
+			},
+		}
+	}
+
+	// 解析网络数据
+	if netData, ok := cacheData["network"].(map[string]interface{}); ok {
+		metrics.Network = NetworkMetrics{
+			Interfaces: []InterfaceMetrics{
+				{
+					Name:        "aggregated",
+					BytesSent:   getUint64(netData["bytes_sent"]),
+					BytesRecv:   getUint64(netData["bytes_recv"]),
+					PacketsSent: getUint64(netData["packets_sent"]),
+					PacketsRecv: getUint64(netData["packets_recv"]),
+				},
+			},
+		}
+	}
+
+	return metrics, nil
+}
+
+// 辅助函数：类型转换
+func getFloat64(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case uint64:
+		return float64(val)
+	default:
+		return 0
+	}
+}
+
+func getUint64(v interface{}) uint64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case uint64:
+		return val
+	case int64:
+		return uint64(val)
+	case int:
+		return uint64(val)
+	case float64:
+		return uint64(val)
+	default:
+		return 0
+	}
+}
+
+func getInt(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case int:
+		return val
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	default:
+		return 0
+	}
+}
+
+func getString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if str, ok := v.(string); ok {
+		return str
+	}
+	return ""
 }
 
 // ============================================

@@ -117,3 +117,67 @@ type User struct {
 	Status   string `gorm:"size:32;default:active" json:"status"` // active, inactive
 	LastLogin *time.Time `json:"last_login,omitempty"`
 }
+
+// ProcessSnapshot 进程快照
+type ProcessSnapshot struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	HostID    string    `gorm:"index;size:64" json:"host_id"`
+	Timestamp time.Time `gorm:"index" json:"timestamp"`
+	
+	PID          int32   `json:"pid"`
+	Name         string  `gorm:"size:255" json:"name"`
+	User         string  `gorm:"size:64" json:"user"`
+	CPUPercent   float64 `json:"cpu_percent"`
+	MemoryPercent float64 `json:"memory_percent"`
+	MemoryBytes  uint64  `json:"memory_bytes"`
+	Status       string  `gorm:"size:32" json:"status"`
+	Command      string  `gorm:"type:text" json:"command"`
+}
+
+// LogEntry 日志条目
+type LogEntry struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	HostID    string    `gorm:"index;size:64" json:"host_id"`
+	Timestamp time.Time `gorm:"index" json:"timestamp"`
+	
+	Source    string            `gorm:"size:255" json:"source"`
+	Level     string            `gorm:"size:32;index" json:"level"` // INFO, WARN, ERROR
+	Message   string            `gorm:"type:text" json:"message"`
+	Tags      map[string]string `gorm:"serializer:json" json:"tags"`
+}
+
+// ScriptExecution 脚本执行记录
+type ScriptExecution struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	HostID     string    `gorm:"index;size:64" json:"host_id"`
+	ScriptID   string    `gorm:"index;size:64" json:"script_id"`
+	ScriptName string    `gorm:"size:255" json:"script_name"`
+	Timestamp  time.Time `gorm:"index" json:"timestamp"`
+	
+	Success   bool   `json:"success"`
+	Output    string `gorm:"type:text" json:"output"`
+	Error     string `gorm:"type:text" json:"error"`
+	ExitCode  int    `json:"exit_code"`
+	Duration  int64  `json:"duration_ms"` // 毫秒
+}
+
+// ServiceStatus 服务状态记录
+type ServiceStatus struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	HostID    string    `gorm:"index;size:64" json:"host_id"`
+	Timestamp time.Time `gorm:"index" json:"timestamp"`
+	
+	Name        string `gorm:"index;size:255" json:"name"`
+	Status      string `gorm:"size:32;index" json:"status"` // running, stopped, failed
+	Enabled     bool   `json:"enabled"`
+	Description string `gorm:"type:text" json:"description"`
+	Uptime      int64  `json:"uptime_seconds"`
+}

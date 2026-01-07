@@ -28,6 +28,14 @@ type CollectorClient interface {
 	ReportMetrics(ctx context.Context, in *MetricsRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
 	// 心跳
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
+	// 上报进程监控数据
+	ReportProcesses(ctx context.Context, in *ProcessReportRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
+	// 上报日志数据
+	ReportLogs(ctx context.Context, in *LogReportRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
+	// 上报脚本执行结果
+	ReportScriptResult(ctx context.Context, in *ScriptResultRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
+	// 上报服务状态
+	ReportServiceStatus(ctx context.Context, in *ServiceStatusRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
 }
 
 type collectorClient struct {
@@ -65,6 +73,42 @@ func (c *collectorClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, o
 	return out, nil
 }
 
+func (c *collectorClient) ReportProcesses(ctx context.Context, in *ProcessReportRequest, opts ...grpc.CallOption) (*MetricsResponse, error) {
+	out := new(MetricsResponse)
+	err := c.cc.Invoke(ctx, "/collector.Collector/ReportProcesses", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *collectorClient) ReportLogs(ctx context.Context, in *LogReportRequest, opts ...grpc.CallOption) (*MetricsResponse, error) {
+	out := new(MetricsResponse)
+	err := c.cc.Invoke(ctx, "/collector.Collector/ReportLogs", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *collectorClient) ReportScriptResult(ctx context.Context, in *ScriptResultRequest, opts ...grpc.CallOption) (*MetricsResponse, error) {
+	out := new(MetricsResponse)
+	err := c.cc.Invoke(ctx, "/collector.Collector/ReportScriptResult", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *collectorClient) ReportServiceStatus(ctx context.Context, in *ServiceStatusRequest, opts ...grpc.CallOption) (*MetricsResponse, error) {
+	out := new(MetricsResponse)
+	err := c.cc.Invoke(ctx, "/collector.Collector/ReportServiceStatus", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CollectorServer is the server API for Collector service.
 // All implementations must embed UnimplementedCollectorServer
 // for forward compatibility
@@ -75,6 +119,14 @@ type CollectorServer interface {
 	ReportMetrics(context.Context, *MetricsRequest) (*MetricsResponse, error)
 	// 心跳
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
+	// 上报进程监控数据
+	ReportProcesses(context.Context, *ProcessReportRequest) (*MetricsResponse, error)
+	// 上报日志数据
+	ReportLogs(context.Context, *LogReportRequest) (*MetricsResponse, error)
+	// 上报脚本执行结果
+	ReportScriptResult(context.Context, *ScriptResultRequest) (*MetricsResponse, error)
+	// 上报服务状态
+	ReportServiceStatus(context.Context, *ServiceStatusRequest) (*MetricsResponse, error)
 	mustEmbedUnimplementedCollectorServer()
 }
 
@@ -90,6 +142,18 @@ func (UnimplementedCollectorServer) ReportMetrics(context.Context, *MetricsReque
 }
 func (UnimplementedCollectorServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedCollectorServer) ReportProcesses(context.Context, *ProcessReportRequest) (*MetricsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportProcesses not implemented")
+}
+func (UnimplementedCollectorServer) ReportLogs(context.Context, *LogReportRequest) (*MetricsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportLogs not implemented")
+}
+func (UnimplementedCollectorServer) ReportScriptResult(context.Context, *ScriptResultRequest) (*MetricsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportScriptResult not implemented")
+}
+func (UnimplementedCollectorServer) ReportServiceStatus(context.Context, *ServiceStatusRequest) (*MetricsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportServiceStatus not implemented")
 }
 func (UnimplementedCollectorServer) mustEmbedUnimplementedCollectorServer() {}
 
@@ -158,6 +222,78 @@ func _Collector_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Collector_ReportProcesses_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProcessReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CollectorServer).ReportProcesses(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/collector.Collector/ReportProcesses",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CollectorServer).ReportProcesses(ctx, req.(*ProcessReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Collector_ReportLogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CollectorServer).ReportLogs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/collector.Collector/ReportLogs",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CollectorServer).ReportLogs(ctx, req.(*LogReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Collector_ReportScriptResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScriptResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CollectorServer).ReportScriptResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/collector.Collector/ReportScriptResult",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CollectorServer).ReportScriptResult(ctx, req.(*ScriptResultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Collector_ReportServiceStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ServiceStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CollectorServer).ReportServiceStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/collector.Collector/ReportServiceStatus",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CollectorServer).ReportServiceStatus(ctx, req.(*ServiceStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Collector_ServiceDesc is the grpc.ServiceDesc for Collector service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -176,6 +312,22 @@ var Collector_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Heartbeat",
 			Handler:    _Collector_Heartbeat_Handler,
+		},
+		{
+			MethodName: "ReportProcesses",
+			Handler:    _Collector_ReportProcesses_Handler,
+		},
+		{
+			MethodName: "ReportLogs",
+			Handler:    _Collector_ReportLogs_Handler,
+		},
+		{
+			MethodName: "ReportScriptResult",
+			Handler:    _Collector_ReportScriptResult_Handler,
+		},
+		{
+			MethodName: "ReportServiceStatus",
+			Handler:    _Collector_ReportServiceStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

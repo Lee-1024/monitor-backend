@@ -37,6 +37,80 @@ type StorageInterface interface {
 	UpdateUserPassword(id uint, newPassword string) error
 	UpdateUserLastLogin(id uint) error
 	DeleteUser(id uint) error
+
+	// 进程监控相关
+	GetProcesses(hostID string, limit int) ([]ProcessInfo, error)
+	GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]ProcessHistoryPoint, error)
+	
+	// 日志相关
+	GetLogs(hostID, level string, start, end time.Time, limit int) ([]LogInfo, error)
+	
+	// 脚本执行相关
+	GetScriptExecutions(hostID, scriptID string, limit int) ([]ScriptExecutionInfo, error)
+	
+	// 服务状态相关
+	GetServiceStatus(hostID string) ([]ServiceInfo, error)
+}
+
+// ProcessHistoryPoint 进程历史数据点
+type ProcessHistoryPoint struct {
+	Timestamp     time.Time `json:"timestamp"`
+	ProcessName   string    `json:"process_name"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemoryPercent float64   `json:"memory_percent"`
+	MemoryBytes   uint64    `json:"memory_bytes"`
+}
+
+// ProcessInfo 进程信息
+type ProcessInfo struct {
+	ID            uint      `json:"id"`
+	HostID        string    `json:"host_id"`
+	Timestamp     time.Time `json:"timestamp"`
+	PID           int32     `json:"pid"`
+	Name          string    `json:"name"`
+	User          string    `json:"user"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemoryPercent float64   `json:"memory_percent"`
+	MemoryBytes   uint64    `json:"memory_bytes"`
+	Status        string    `json:"status"`
+	Command       string    `json:"command"`
+}
+
+// LogInfo 日志信息
+type LogInfo struct {
+	ID        uint      `json:"id"`
+	HostID    string    `json:"host_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Source    string    `json:"source"`
+	Level     string    `json:"level"`
+	Message   string    `json:"message"`
+	Tags      map[string]string `json:"tags"`
+}
+
+// ScriptExecutionInfo 脚本执行信息
+type ScriptExecutionInfo struct {
+	ID         uint      `json:"id"`
+	HostID     string    `json:"host_id"`
+	ScriptID   string    `json:"script_id"`
+	ScriptName string    `json:"script_name"`
+	Timestamp  time.Time `json:"timestamp"`
+	Success    bool      `json:"success"`
+	Output     string    `json:"output"`
+	Error      string    `json:"error"`
+	ExitCode   int       `json:"exit_code"`
+	Duration   int64     `json:"duration_ms"`
+}
+
+// ServiceInfo 服务信息
+type ServiceInfo struct {
+	ID          uint      `json:"id"`
+	HostID      string    `json:"host_id"`
+	Timestamp   time.Time `json:"timestamp"`
+	Name        string    `json:"name"`
+	Status      string    `json:"status"`
+	Enabled     bool      `json:"enabled"`
+	Description string    `json:"description"`
+	Uptime      int64     `json:"uptime_seconds"`
 }
 
 // AgentInfo Agent信息

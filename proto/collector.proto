@@ -14,6 +14,18 @@ service Collector {
   
   // 心跳
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  
+  // 上报进程监控数据
+  rpc ReportProcesses(ProcessReportRequest) returns (MetricsResponse);
+  
+  // 上报日志数据
+  rpc ReportLogs(LogReportRequest) returns (MetricsResponse);
+  
+  // 上报脚本执行结果
+  rpc ReportScriptResult(ScriptResultRequest) returns (MetricsResponse);
+  
+  // 上报服务状态
+  rpc ReportServiceStatus(ServiceStatusRequest) returns (MetricsResponse);
 }
 
 // 注册请求
@@ -110,4 +122,69 @@ message HeartbeatRequest {
 message HeartbeatResponse {
   bool success = 1;
   int64 server_time = 2;
+}
+
+// 进程监控上报请求
+message ProcessReportRequest {
+  string host_id = 1;
+  int64 timestamp = 2;
+  repeated ProcessInfo processes = 3;
+}
+
+// 进程信息
+message ProcessInfo {
+  int32 pid = 1;
+  string name = 2;
+  string user = 3;
+  double cpu_percent = 4;
+  double memory_percent = 5;
+  uint64 memory_bytes = 6;
+  int64 create_time = 7;
+  string status = 8;
+  string command = 9;
+}
+
+// 日志上报请求
+message LogReportRequest {
+  string host_id = 1;
+  int64 timestamp = 2;
+  repeated LogEntry logs = 3;
+}
+
+// 日志条目
+message LogEntry {
+  string source = 1;        // 日志来源（文件路径或服务名）
+  string level = 2;         // 日志级别（INFO, WARN, ERROR等）
+  string message = 3;      // 日志内容
+  int64 timestamp = 4;      // 日志时间戳
+  map<string, string> tags = 5;  // 额外标签
+}
+
+// 脚本执行结果上报请求
+message ScriptResultRequest {
+  string host_id = 1;
+  string script_id = 2;     // 脚本ID
+  string script_name = 3;   // 脚本名称
+  int64 timestamp = 4;
+  bool success = 5;         // 执行是否成功
+  string output = 6;        // 标准输出
+  string error = 7;         // 错误输出
+  int32 exit_code = 8;     // 退出码
+  int64 duration_ms = 9;   // 执行耗时（毫秒）
+}
+
+// 服务状态上报请求
+message ServiceStatusRequest {
+  string host_id = 1;
+  int64 timestamp = 2;
+  repeated ServiceInfo services = 3;
+}
+
+// 服务信息
+message ServiceInfo {
+  string name = 1;         // 服务名称
+  string status = 2;        // 状态（running, stopped, failed等）
+  bool enabled = 3;        // 是否开机自启
+  string description = 4;   // 服务描述
+  int64 uptime_seconds = 5; // 运行时长（秒）
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -415,4 +416,171 @@ func calculateAvgDowntime(events []CrashEvent) string {
 
 	hours := minutes / 60
 	return fmt.Sprintf("%d小时%d分钟", hours, minutes%60)
+}
+
+// ============================================
+// 进程监控相关处理函数
+// ============================================
+
+// getProcesses 获取进程列表
+func (s *APIServer) getProcesses(c *gin.Context) {
+	hostID := c.Query("host_id")
+	limit := 50
+	if limitStr := c.Query("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+
+	processes, err := s.storage.GetProcesses(hostID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get processes: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    processes,
+	})
+}
+
+// getProcessHistory 获取进程历史数据
+func (s *APIServer) getProcessHistory(c *gin.Context) {
+	hostID := c.Query("host_id")
+	processNamesStr := c.Query("process_names") // 逗号分隔的进程名列表
+	limit := 1000
+	if limitStr := c.Query("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+
+	var start, end time.Time
+	if startStr := c.Query("start"); startStr != "" {
+		start, _ = time.Parse(time.RFC3339, startStr)
+	} else {
+		// 默认查询最近1小时
+		start = time.Now().Add(-1 * time.Hour)
+	}
+	if endStr := c.Query("end"); endStr != "" {
+		end, _ = time.Parse(time.RFC3339, endStr)
+	} else {
+		end = time.Now()
+	}
+
+	var processNames []string
+	if processNamesStr != "" {
+		names := strings.Split(processNamesStr, ",")
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				processNames = append(processNames, name)
+			}
+		}
+	}
+
+	history, err := s.storage.GetProcessHistory(hostID, processNames, start, end, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get process history: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    history,
+	})
+}
+
+// ============================================
+// 日志相关处理函数
+// ============================================
+
+// getLogs 获取日志列表
+func (s *APIServer) getLogs(c *gin.Context) {
+	hostID := c.Query("host_id")
+	level := c.Query("level")
+	limit := 100
+	if limitStr := c.Query("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+
+	var start, end time.Time
+	if startStr := c.Query("start"); startStr != "" {
+		start, _ = time.Parse(time.RFC3339, startStr)
+	}
+	if endStr := c.Query("end"); endStr != "" {
+		end, _ = time.Parse(time.RFC3339, endStr)
+	}
+
+	logs, err := s.storage.GetLogs(hostID, level, start, end, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get logs: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    logs,
+	})
+}
+
+// ============================================
+// 脚本执行相关处理函数
+// ============================================
+
+// getScriptExecutions 获取脚本执行记录
+func (s *APIServer) getScriptExecutions(c *gin.Context) {
+	hostID := c.Query("host_id")
+	scriptID := c.Query("script_id")
+	limit := 50
+	if limitStr := c.Query("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+
+	executions, err := s.storage.GetScriptExecutions(hostID, scriptID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get script executions: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    executions,
+	})
+}
+
+// ============================================
+// 服务状态相关处理函数
+// ============================================
+
+// getServiceStatus 获取服务状态
+func (s *APIServer) getServiceStatus(c *gin.Context) {
+	hostID := c.Query("host_id")
+
+	services, err := s.storage.GetServiceStatus(hostID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get service status: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    services,
+	})
 }

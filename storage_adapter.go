@@ -144,8 +144,63 @@ func (s *StorageAdapter) GetMetrics(hostID, metricType, start, end string) ([]ap
 	return points, nil
 }
 
-// GetLatestMetrics 获取最新指标
+// GetLatestMetrics 获取最新指标（优先从Redis缓存获取）
 func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, error) {
+	// 先尝试从Redis缓存获取
+	if cachedMetrics, err := s.storage.GetCachedLatestMetrics(hostID); err == nil {
+		log.Printf("Cache hit for latest metrics: %s", hostID)
+		// 转换为API格式
+		latest := &api.LatestMetrics{
+			HostID:    hostID,
+			Timestamp: cachedMetrics.Timestamp,
+			CPU: map[string]interface{}{
+				"usage_percent": cachedMetrics.CPU.UsagePercent,
+				"load_avg_1":    cachedMetrics.CPU.LoadAvg1,
+				"load_avg_5":    cachedMetrics.CPU.LoadAvg5,
+				"load_avg_15":   cachedMetrics.CPU.LoadAvg15,
+				"core_count":    cachedMetrics.CPU.CoreCount,
+			},
+			Memory: map[string]interface{}{
+				"total":        cachedMetrics.Memory.Total,
+				"used":         cachedMetrics.Memory.Used,
+				"free":         cachedMetrics.Memory.Free,
+				"used_percent": cachedMetrics.Memory.UsedPercent,
+				"available":    cachedMetrics.Memory.Available,
+			},
+			Disk:    make(map[string]interface{}),
+			Network: make(map[string]interface{}),
+		}
+
+		// 添加磁盘数据
+		if len(cachedMetrics.Disk.Partitions) > 0 {
+			p := cachedMetrics.Disk.Partitions[0]
+			latest.Disk = map[string]interface{}{
+				"device":       p.Device,
+				"mountpoint":   p.Mountpoint,
+				"fstype":       p.Fstype,
+				"total":        p.Total,
+				"used":         p.Used,
+				"free":         p.Free,
+				"used_percent": p.UsedPercent,
+			}
+		}
+
+		// 添加网络数据
+		if len(cachedMetrics.Network.Interfaces) > 0 {
+			iface := cachedMetrics.Network.Interfaces[0]
+			latest.Network = map[string]interface{}{
+				"bytes_sent":   iface.BytesSent,
+				"bytes_recv":   iface.BytesRecv,
+				"packets_sent": iface.PacketsSent,
+				"packets_recv": iface.PacketsRecv,
+			}
+		}
+
+		return latest, nil
+	}
+
+	// 缓存未命中，从InfluxDB查询
+	log.Printf("Cache miss for latest metrics: %s, querying InfluxDB", hostID)
 	ctx := context.Background()
 	latest := &api.LatestMetrics{
 		HostID:  hostID,
@@ -686,25 +741,43 @@ func (s *StorageAdapter) GetOverview() (*api.Overview, error) {
 
 	// 获取平均CPU和内存（最近5分钟）
 	ctx := context.Background()
+	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 
-	// 平均CPU
+	// 平均CPU - 先获取每个主机的最新值，然后计算平均值
 	cpuQuery := fmt.Sprintf(`
 		from(bucket: "%s")
 		|> range(start: -5m)
 		|> filter(fn: (r) => r["_measurement"] == "cpu")
 		|> filter(fn: (r) => r["_field"] == "usage_percent")
-		|> mean()
+		|> group(columns: ["host_id"])
+		|> last()
+		|> group()
+		|> mean(column: "_value")
 	`, s.storage.config.InfluxDB.Bucket)
 
-	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 	result, err := queryAPI.Query(ctx, cpuQuery)
 	if err == nil {
+		found := false
 		for result.Next() {
-			if val, ok := result.Record().Value().(float64); ok {
-				overview.AvgCPU = val
+			record := result.Record()
+			if val := record.Value(); val != nil {
+				if floatVal, ok := val.(float64); ok {
+					overview.AvgCPU = floatVal
+					found = true
+					log.Printf("Found average CPU: %.2f%%", floatVal)
+					break
+				}
 			}
 		}
+		if !found {
+			log.Printf("No CPU data found in query result")
+		}
+		if result.Err() != nil {
+			log.Printf("Error reading CPU query result: %v", result.Err())
+		}
 		result.Close()
+	} else {
+		log.Printf("Failed to query CPU metrics: %v", err)
 	}
 
 	// 平均内存
@@ -713,17 +786,35 @@ func (s *StorageAdapter) GetOverview() (*api.Overview, error) {
 		|> range(start: -5m)
 		|> filter(fn: (r) => r["_measurement"] == "memory")
 		|> filter(fn: (r) => r["_field"] == "used_percent")
-		|> mean()
+		|> group(columns: ["host_id"])
+		|> last()
+		|> group()
+		|> mean(column: "_value")
 	`, s.storage.config.InfluxDB.Bucket)
 
 	result, err = queryAPI.Query(ctx, memQuery)
 	if err == nil {
+		found := false
 		for result.Next() {
-			if val, ok := result.Record().Value().(float64); ok {
-				overview.AvgMemory = val
+			record := result.Record()
+			if val := record.Value(); val != nil {
+				if floatVal, ok := val.(float64); ok {
+					overview.AvgMemory = floatVal
+					found = true
+					log.Printf("Found average memory: %.2f%%", floatVal)
+					break
+				}
 			}
 		}
+		if !found {
+			log.Printf("No memory data found in query result")
+		}
+		if result.Err() != nil {
+			log.Printf("Error reading memory query result: %v", result.Err())
+		}
 		result.Close()
+	} else {
+		log.Printf("Failed to query memory metrics: %v", err)
 	}
 
 	// 指标数量估算
@@ -923,6 +1014,273 @@ func (s *StorageAdapter) GetCrashAnalysis(hostID string) (*api.CrashAnalysis, er
 	}
 
 	return analysis, nil
+}
+
+// ============================================
+// 进程监控相关方法
+// ============================================
+
+// GetProcesses 获取进程列表
+func (s *StorageAdapter) GetProcesses(hostID string, limit int) ([]api.ProcessInfo, error) {
+	var processes []ProcessSnapshot
+	query := s.storage.postgres.Order("timestamp DESC")
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Find(&processes).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]api.ProcessInfo, len(processes))
+	for i, p := range processes {
+		result[i] = api.ProcessInfo{
+			ID:            p.ID,
+			HostID:        p.HostID,
+			Timestamp:     p.Timestamp,
+			PID:           p.PID,
+			Name:          p.Name,
+			User:          p.User,
+			CPUPercent:    p.CPUPercent,
+			MemoryPercent: p.MemoryPercent,
+			MemoryBytes:   p.MemoryBytes,
+			Status:        p.Status,
+			Command:       p.Command,
+		}
+	}
+
+	return result, nil
+}
+
+// GetProcessHistory 获取进程历史数据（按进程名分组）
+func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]api.ProcessHistoryPoint, error) {
+	var processes []ProcessSnapshot
+	query := s.storage.postgres.Order("timestamp ASC")
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	if !start.IsZero() {
+		query = query.Where("timestamp >= ?", start)
+	}
+
+	if !end.IsZero() {
+		query = query.Where("timestamp <= ?", end)
+	}
+
+	if len(processNames) > 0 {
+		query = query.Where("name IN ?", processNames)
+	}
+
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Find(&processes).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]api.ProcessHistoryPoint, len(processes))
+	for i, p := range processes {
+		result[i] = api.ProcessHistoryPoint{
+			Timestamp:     p.Timestamp,
+			ProcessName:   p.Name,
+			CPUPercent:    p.CPUPercent,
+			MemoryPercent: p.MemoryPercent,
+			MemoryBytes:   p.MemoryBytes,
+		}
+	}
+
+	return result, nil
+}
+
+// ============================================
+// 日志相关方法
+// ============================================
+
+// GetLogs 获取日志列表
+func (s *StorageAdapter) GetLogs(hostID, level string, start, end time.Time, limit int) ([]api.LogInfo, error) {
+	var logs []LogEntry
+	query := s.storage.postgres.Order("timestamp DESC")
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+	if level != "" {
+		query = query.Where("level = ?", level)
+	}
+	if !start.IsZero() {
+		query = query.Where("timestamp >= ?", start)
+	}
+	if !end.IsZero() {
+		query = query.Where("timestamp <= ?", end)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Find(&logs).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]api.LogInfo, len(logs))
+	for i, l := range logs {
+		result[i] = api.LogInfo{
+			ID:        l.ID,
+			HostID:    l.HostID,
+			Timestamp: l.Timestamp,
+			Source:    l.Source,
+			Level:     l.Level,
+			Message:   l.Message,
+			Tags:      l.Tags,
+		}
+	}
+
+	return result, nil
+}
+
+// ============================================
+// 脚本执行相关方法
+// ============================================
+
+// GetScriptExecutions 获取脚本执行记录
+func (s *StorageAdapter) GetScriptExecutions(hostID, scriptID string, limit int) ([]api.ScriptExecutionInfo, error) {
+	var executions []ScriptExecution
+	query := s.storage.postgres.Order("timestamp DESC")
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+	if scriptID != "" {
+		query = query.Where("script_id = ?", scriptID)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Find(&executions).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]api.ScriptExecutionInfo, len(executions))
+	for i, e := range executions {
+		result[i] = api.ScriptExecutionInfo{
+			ID:         e.ID,
+			HostID:     e.HostID,
+			ScriptID:   e.ScriptID,
+			ScriptName: e.ScriptName,
+			Timestamp:  e.Timestamp,
+			Success:    e.Success,
+			Output:     e.Output,
+			Error:      e.Error,
+			ExitCode:   e.ExitCode,
+			Duration:   e.Duration,
+		}
+	}
+
+	return result, nil
+}
+
+// ============================================
+// 服务状态相关方法
+// ============================================
+
+// GetServiceStatus 获取服务状态
+func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, error) {
+	var services []ServiceStatus
+
+	if hostID != "" {
+		// 获取指定主机每个服务的最新状态
+		// 使用窗口函数或子查询获取每个服务的最新记录
+		subQuery := s.storage.postgres.Table("service_statuses").
+			Select("MAX(id) as id").
+			Where("host_id = ?", hostID).
+			Group("name")
+
+		var maxIDs []uint
+		rows, err := subQuery.Rows()
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var id uint
+			if err := rows.Scan(&id); err == nil {
+				maxIDs = append(maxIDs, id)
+			}
+		}
+
+		if len(maxIDs) > 0 {
+			err = s.storage.postgres.Where("id IN ?", maxIDs).Find(&services).Error
+		} else {
+			// 如果没有找到记录，返回空列表
+			return []api.ServiceInfo{}, nil
+		}
+
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// 获取所有主机的最新服务状态
+		// 对于每个(host_id, name)组合，只取最新的记录
+		// 使用子查询获取每个主机每个服务的最新ID
+		type ServiceID struct {
+			HostID string
+			Name   string
+			MaxID  uint
+		}
+
+		var serviceIDs []ServiceID
+		err := s.storage.postgres.Table("service_statuses").
+			Select("host_id, name, MAX(id) as max_id").
+			Group("host_id, name").
+			Scan(&serviceIDs).Error
+
+		if err != nil {
+			return nil, err
+		}
+
+		if len(serviceIDs) == 0 {
+			return []api.ServiceInfo{}, nil
+		}
+
+		var maxIDs []uint
+		for _, sid := range serviceIDs {
+			maxIDs = append(maxIDs, sid.MaxID)
+		}
+
+		err = s.storage.postgres.Where("id IN ?", maxIDs).Order("host_id, name").Find(&services).Error
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	result := make([]api.ServiceInfo, len(services))
+	for i, svc := range services {
+		result[i] = api.ServiceInfo{
+			ID:          svc.ID,
+			HostID:      svc.HostID,
+			Timestamp:   svc.Timestamp,
+			Name:        svc.Name,
+			Status:      svc.Status,
+			Enabled:     svc.Enabled,
+			Description: svc.Description,
+			Uptime:      svc.Uptime,
+		}
+	}
+
+	return result, nil
 }
 
 // calculateCrashFrequency 计算宕机频率
