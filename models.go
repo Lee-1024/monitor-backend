@@ -1,10 +1,34 @@
 package main
 
 import (
+	"encoding/json"
 	"time"
 
 	"gorm.io/gorm"
 )
+
+// StringSliceJSON is a tolerant JSON slice that accepts false/null as empty array.
+type StringSliceJSON []string
+
+func (s *StringSliceJSON) UnmarshalJSON(b []byte) error {
+	trim := string(b)
+	if trim == "false" || trim == "null" || trim == `""` {
+		*s = []string{}
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(b, &arr); err != nil {
+		// 如果数据格式异常，返回空切片而不是报错，避免查询失败
+		*s = []string{}
+		return nil
+	}
+	*s = arr
+	return nil
+}
+
+func (s StringSliceJSON) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]string(s))
+}
 
 // Agent 主机Agent模型
 type Agent struct {
@@ -180,4 +204,87 @@ type ServiceStatus struct {
 	Enabled     bool   `json:"enabled"`
 	Description string `gorm:"type:text" json:"description"`
 	Uptime      int64  `json:"uptime_seconds"`
+}
+
+// AlertRule 告警规则
+type AlertRule struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	Name        string `gorm:"size:255;not null" json:"name"`         // 规则名称
+	Description string `gorm:"type:text" json:"description"`          // 规则描述
+	Enabled     bool   `gorm:"default:true" json:"enabled"`           // 是否启用
+	Severity    string `gorm:"size:32;default:warning" json:"severity"` // critical, warning, info
+
+	// 规则条件
+	MetricType  string `gorm:"size:32;not null" json:"metric_type"`  // cpu, memory, disk, network
+	HostID      string `gorm:"size:64;index" json:"host_id"`         // 空表示所有主机
+	Condition   string `gorm:"size:32;not null" json:"condition"`    // gt, gte, lt, lte, eq, neq
+	Threshold   float64 `gorm:"not null" json:"threshold"`           // 阈值
+	Duration    int     `gorm:"default:60" json:"duration"`          // 持续时间（秒）
+
+	// 通知配置
+	NotifyChannels StringSliceJSON `gorm:"serializer:json" json:"notify_channels"` // email, dingtalk, wechat, feishu
+	Receivers      StringSliceJSON `gorm:"serializer:json" json:"receivers"`       // 接收人列表
+
+	// 静默和抑制
+	SilenceStart *time.Time `json:"silence_start,omitempty"` // 静默开始时间
+	SilenceEnd   *time.Time `json:"silence_end,omitempty"`   // 静默结束时间
+	InhibitDuration int     `gorm:"default:300" json:"inhibit_duration"` // 抑制持续时间（秒），默认5分钟，相同告警在此时间内只发送一次通知
+}
+
+// AlertHistory 告警历史记录
+type AlertHistory struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
+
+	RuleID      uint      `gorm:"index;not null" json:"rule_id"`     // 规则ID
+	RuleName    string    `gorm:"size:255" json:"rule_name"`         // 规则名称
+	HostID      string    `gorm:"index;size:64" json:"host_id"`      // 主机ID
+	Hostname    string    `gorm:"size:255" json:"hostname"`          // 主机名
+	Severity    string    `gorm:"size:32;index" json:"severity"`     // 严重程度
+	Status      string    `gorm:"size:32;index" json:"status"`       // firing, resolved
+	FiredAt     time.Time `gorm:"index" json:"fired_at"`             // 触发时间
+	ResolvedAt  *time.Time `gorm:"index" json:"resolved_at,omitempty"` // 恢复时间
+
+	// 告警详情
+	MetricType  string  `gorm:"size:32" json:"metric_type"`          // 指标类型
+	MetricValue float64 `json:"metric_value"`                        // 指标值
+	Threshold   float64 `json:"threshold"`                           // 阈值
+	Message     string  `gorm:"type:text" json:"message"`            // 告警消息
+	Labels      map[string]string `gorm:"serializer:json" json:"labels"` // 标签
+
+	// 通知状态
+	NotifyStatus string `gorm:"size:32;default:pending" json:"notify_status"` // pending, success, failed
+	NotifyError  string `gorm:"type:text" json:"notify_error,omitempty"`      // 通知错误信息
+}
+
+// AlertSilence 告警静默配置
+type AlertSilence struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	Name      string    `gorm:"size:255;not null" json:"name"`       // 静默名称
+	RuleIDs   []uint    `gorm:"serializer:json" json:"rule_ids"`     // 规则ID列表（空表示所有规则）
+	HostIDs   []string  `gorm:"serializer:json" json:"host_ids"`     // 主机ID列表（空表示所有主机）
+	StartTime time.Time `gorm:"index" json:"start_time"`             // 开始时间
+	EndTime   time.Time `gorm:"index" json:"end_time"`               // 结束时间
+	Enabled   bool      `gorm:"default:true" json:"enabled"`         // 是否启用
+	Comment   string    `gorm:"type:text" json:"comment"`            // 备注
+	Creator   string    `gorm:"size:64" json:"creator"`              // 创建人
+}
+
+// NotificationChannel 通知渠道配置
+type NotificationChannel struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	Type        string            `gorm:"size:32;not null;uniqueIndex" json:"type"` // email, dingtalk, wechat, feishu
+	Name        string            `gorm:"size:255;not null" json:"name"`            // 渠道名称
+	Enabled     bool              `gorm:"default:true" json:"enabled"`              // 是否启用
+	Config      map[string]string `gorm:"serializer:json" json:"config"`           // 配置信息（JSON格式）
+	Description string            `gorm:"type:text" json:"description"`              // 描述
 }

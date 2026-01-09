@@ -10,6 +10,7 @@ type StorageInterface interface {
 	// Agent相关
 	ListAgents(status string, page, pageSize int) ([]AgentInfo, int64, error)
 	GetAgent(hostID string) (*AgentInfo, error)
+	GetAgentStatus(hostID string) (string, error)
 	DeleteAgent(hostID string) error
 
 	// 指标相关
@@ -50,6 +51,40 @@ type StorageInterface interface {
 	
 	// 服务状态相关
 	GetServiceStatus(hostID string) ([]ServiceInfo, error)
+
+	// 告警规则相关
+	CreateAlertRule(rule *AlertRuleInfo) (*AlertRuleInfo, error)
+	UpdateAlertRule(id uint, rule *AlertRuleInfo) error
+	DeleteAlertRule(id uint) error
+	GetAlertRule(id uint) (*AlertRuleInfo, error)
+	ListAlertRules(enabled *bool) ([]AlertRuleInfo, error)
+
+	// 告警历史相关
+	CreateAlertHistory(history *AlertHistoryInfo) (*AlertHistoryInfo, error)
+	UpdateAlertHistory(id uint, status string, resolvedAt *time.Time) error
+	UpdateAlertHistoryFiredAt(id uint, firedAt time.Time) error
+	UpdateAlertHistoryNotifyStatus(id uint, notifyStatus string, notifyError string) error
+	UpdateAlertHistoryMetricValue(id uint, metricValue float64, message string) error
+	ListAlertHistory(ruleID *uint, hostID string, status string, limit int) ([]AlertHistoryInfo, error)
+	GetAlertHistory(id uint) (*AlertHistoryInfo, error)
+	DeleteAlertHistory(id uint) error
+	DeleteAlertHistories(ids []uint) error
+
+	// 告警静默相关
+	CreateAlertSilence(silence *AlertSilenceInfo) (*AlertSilenceInfo, error)
+	UpdateAlertSilence(id uint, silence *AlertSilenceInfo) error
+	DeleteAlertSilence(id uint) error
+	GetAlertSilence(id uint) (*AlertSilenceInfo, error)
+	ListAlertSilences(enabled *bool) ([]AlertSilenceInfo, error)
+	IsRuleSilenced(ruleID uint, hostID string) bool
+
+	// 通知渠道相关
+	CreateNotificationChannel(channel *NotificationChannelInfo) (*NotificationChannelInfo, error)
+	UpdateNotificationChannel(id uint, channel *NotificationChannelInfo) error
+	DeleteNotificationChannel(id uint) error
+	GetNotificationChannel(id uint) (*NotificationChannelInfo, error)
+	GetNotificationChannelByType(channelType string) (*NotificationChannelInfo, error)
+	ListNotificationChannels(enabled *bool) ([]NotificationChannelInfo, error)
 }
 
 // ProcessHistoryPoint 进程历史数据点
@@ -190,4 +225,73 @@ type CrashAnalysis struct {
 	CrashFrequency string         `json:"crash_frequency"`
 	MainReasons    map[string]int `json:"main_reasons"`
 	AvgDowntime    string         `json:"avg_downtime"`
+}
+
+// AlertRuleInfo 告警规则信息
+type AlertRuleInfo struct {
+	ID             uint       `json:"id"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	Name           string     `json:"name"`
+	Description    string     `json:"description"`
+	Enabled        bool       `json:"enabled"`
+	Severity       string     `json:"severity"`
+	MetricType     string     `json:"metric_type"`
+	HostID         string     `json:"host_id"`
+	Condition      string     `json:"condition"`
+	Threshold      float64    `json:"threshold"`
+	Duration       int        `json:"duration"`
+	NotifyChannels []string   `json:"notify_channels"`
+	Receivers      []string   `json:"receivers"`
+	SilenceStart   *time.Time `json:"silence_start,omitempty"`
+	SilenceEnd     *time.Time `json:"silence_end,omitempty"`
+	InhibitDuration int       `json:"inhibit_duration"` // 抑制持续时间（秒）
+}
+
+// AlertHistoryInfo 告警历史信息
+type AlertHistoryInfo struct {
+	ID           uint              `json:"id"`
+	CreatedAt    time.Time         `json:"created_at"`
+	RuleID       uint              `json:"rule_id"`
+	RuleName     string            `json:"rule_name"`
+	HostID       string            `json:"host_id"`
+	Hostname     string            `json:"hostname"`
+	Severity     string            `json:"severity"`
+	Status       string            `json:"status"`
+	FiredAt      time.Time         `json:"fired_at"`
+	ResolvedAt   *time.Time        `json:"resolved_at,omitempty"`
+	MetricType   string            `json:"metric_type"`
+	MetricValue  float64           `json:"metric_value"`
+	Threshold    float64           `json:"threshold"`
+	Message      string            `json:"message"`
+	Labels       map[string]string `json:"labels"`
+	NotifyStatus string            `json:"notify_status"`
+	NotifyError  string            `json:"notify_error,omitempty"`
+}
+
+// AlertSilenceInfo 告警静默信息
+type AlertSilenceInfo struct {
+	ID        uint      `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Name      string    `json:"name"`
+	RuleIDs   []uint    `json:"rule_ids"`
+	HostIDs   []string  `json:"host_ids"`
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+	Enabled   bool      `json:"enabled"`
+	Comment   string    `json:"comment"`
+	Creator   string    `json:"creator"`
+}
+
+// NotificationChannelInfo 通知渠道信息
+type NotificationChannelInfo struct {
+	ID          uint              `json:"id"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	Type        string            `json:"type"`
+	Name        string            `json:"name"`
+	Enabled     bool              `json:"enabled"`
+	Config      map[string]string `json:"config"`
+	Description string            `json:"description"`
 }

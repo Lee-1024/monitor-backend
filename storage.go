@@ -66,6 +66,10 @@ func NewStorage(config *Config) *Storage {
 		&LogEntry{},
 		&ScriptExecution{},
 		&ServiceStatus{},
+		&AlertRule{},
+		&AlertHistory{},
+		&AlertSilence{},
+		&NotificationChannel{},
 	)
 
 	// 初始化默认管理员用户

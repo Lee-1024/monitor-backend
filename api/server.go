@@ -12,9 +12,10 @@ import (
 )
 
 type APIServer struct {
-	router  *gin.Engine
-	storage StorageInterface
-	config  *APIConfig
+	router            *gin.Engine
+	storage           StorageInterface
+	config            *APIConfig
+	notificationManager interface{} // NotificationManager 接口，避免循环依赖
 }
 
 type APIConfig struct {
@@ -23,7 +24,7 @@ type APIConfig struct {
 	AuthRequired bool // 是否要求认证
 }
 
-func NewAPIServer(storage StorageInterface, config *APIConfig) *APIServer {
+func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManager interface{}) *APIServer {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
@@ -40,9 +41,10 @@ func NewAPIServer(storage StorageInterface, config *APIConfig) *APIServer {
 	}))
 
 	server := &APIServer{
-		router:  router,
-		storage: storage,
-		config:  config,
+		router:             router,
+		storage:            storage,
+		config:             config,
+		notificationManager: notificationManager,
 	}
 
 	server.setupRoutes()
@@ -143,6 +145,34 @@ func (s *APIServer) setupRoutes() {
 		services := v1.Group("/services")
 		{
 			services.GET("", s.getServiceStatus) // 获取服务状态
+		}
+
+		// 告警规则路由
+		alerts := v1.Group("/alerts")
+		{
+			alerts.GET("/rules", s.listAlertRules)           // 获取告警规则列表
+			alerts.POST("/rules", s.createAlertRule)         // 创建告警规则
+			alerts.GET("/rules/:id", s.getAlertRule)         // 获取告警规则
+			alerts.PUT("/rules/:id", s.updateAlertRule)      // 更新告警规则
+			alerts.DELETE("/rules/:id", s.deleteAlertRule)   // 删除告警规则
+
+			alerts.GET("/history", s.listAlertHistory)       // 获取告警历史
+			alerts.GET("/history/unread-count", s.getUnreadAlertCount) // 获取未读告警数量
+			alerts.GET("/history/:id", s.getAlertHistory)    // 获取告警历史详情
+			alerts.DELETE("/history/batch", s.deleteAlertHistories) // 批量删除告警历史（必须在 /history/:id 之前）
+			alerts.DELETE("/history/:id", s.deleteAlertHistory) // 删除告警历史
+
+			alerts.GET("/silences", s.listAlertSilences)     // 获取告警静默列表
+			alerts.POST("/silences", s.createAlertSilence)   // 创建告警静默
+			alerts.PUT("/silences/:id", s.updateAlertSilence) // 更新告警静默
+			alerts.DELETE("/silences/:id", s.deleteAlertSilence) // 删除告警静默
+
+			alerts.GET("/channels", s.listNotificationChannels)     // 获取通知渠道列表
+			alerts.POST("/channels", s.createNotificationChannel)  // 创建通知渠道
+			alerts.POST("/channels/test", s.testNotificationChannel) // 测试通知渠道（必须在 /channels/:id 之前）
+			alerts.GET("/channels/:id", s.getNotificationChannel)  // 获取通知渠道
+			alerts.PUT("/channels/:id", s.updateNotificationChannel) // 更新通知渠道
+			alerts.DELETE("/channels/:id", s.deleteNotificationChannel) // 删除通知渠道
 		}
 	}
 }

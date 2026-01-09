@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -85,6 +87,11 @@ func (s *StorageAdapter) GetAgent(hostID string) (*api.AgentInfo, error) {
 		LastSeen:  agent.LastSeen,
 		CreatedAt: agent.CreatedAt,
 	}, nil
+}
+
+// GetAgentStatus 获取Agent状态
+func (s *StorageAdapter) GetAgentStatus(hostID string) (string, error) {
+	return s.storage.GetAgentStatus(hostID)
 }
 
 // DeleteAgent 删除Agent
@@ -1512,4 +1519,931 @@ func (s *StorageAdapter) UpdateUserLastLogin(id uint) error {
 // DeleteUser 删除用户（软删除）
 func (s *StorageAdapter) DeleteUser(id uint) error {
 	return s.storage.postgres.Delete(&User{}, id).Error
+}
+
+// ============================================
+// 告警规则相关方法
+// ============================================
+
+// CreateAlertRule 创建告警规则
+func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRuleInfo, error) {
+	log.Printf("[CreateAlertRule] Creating rule: Name=%s, NotifyChannels=%v, Receivers=%v",
+		rule.Name, rule.NotifyChannels, rule.Receivers)
+
+	// 确保 NotifyChannels 和 Receivers 不是 nil，至少是空数组
+	notifyChannels := rule.NotifyChannels
+	if notifyChannels == nil {
+		notifyChannels = []string{}
+		log.Printf("[CreateAlertRule] NotifyChannels was nil, using empty array")
+	}
+	receivers := rule.Receivers
+	if receivers == nil {
+		receivers = []string{}
+		log.Printf("[CreateAlertRule] Receivers was nil, using empty array")
+	}
+
+	// 确保转换为 StringSliceJSON 类型
+	var notifyChannelsJSON StringSliceJSON
+	if notifyChannels != nil {
+		notifyChannelsJSON = StringSliceJSON(notifyChannels)
+	} else {
+		notifyChannelsJSON = StringSliceJSON([]string{})
+	}
+
+	var receiversJSON StringSliceJSON
+	if receivers != nil {
+		receiversJSON = StringSliceJSON(receivers)
+	} else {
+		receiversJSON = StringSliceJSON([]string{})
+	}
+
+	alertRule := &AlertRule{
+		Name:            rule.Name,
+		Description:     rule.Description,
+		Enabled:         rule.Enabled,
+		Severity:        rule.Severity,
+		MetricType:      rule.MetricType,
+		HostID:          rule.HostID,
+		Condition:       rule.Condition,
+		Threshold:       rule.Threshold,
+		Duration:        rule.Duration,
+		NotifyChannels:  notifyChannelsJSON,
+		Receivers:       receiversJSON,
+		SilenceStart:    rule.SilenceStart,
+		SilenceEnd:      rule.SilenceEnd,
+		InhibitDuration: rule.InhibitDuration,
+	}
+
+	log.Printf("[CreateAlertRule] AlertRule before save: NotifyChannels=%v, Receivers=%v",
+		alertRule.NotifyChannels, alertRule.Receivers)
+
+	if err := s.storage.postgres.Create(alertRule).Error; err != nil {
+		log.Printf("[CreateAlertRule] Failed to save to database: %v", err)
+		return nil, err
+	}
+
+	log.Printf("[CreateAlertRule] Rule saved successfully: ID=%d", alertRule.ID)
+
+	// 验证保存后的数据
+	var savedRule AlertRule
+	if err := s.storage.postgres.First(&savedRule, alertRule.ID).Error; err == nil {
+		log.Printf("[CreateAlertRule] Verified saved rule: ID=%d, NotifyChannels=%v, Receivers=%v",
+			savedRule.ID, savedRule.NotifyChannels, savedRule.Receivers)
+	}
+
+	return s.alertRuleToAPI(alertRule), nil
+}
+
+// UpdateAlertRule 更新告警规则
+func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error {
+	// 先获取现有记录
+	var existing AlertRule
+	if err := s.storage.postgres.First(&existing, id).Error; err != nil {
+		return fmt.Errorf("failed to get alert rule: %w", err)
+	}
+
+	// 验证 JSON 字段是否有效（如果存在）
+	// 这可以帮助捕获数据库中的无效 JSON 数据
+	if existing.NotifyChannels != nil {
+		// 尝试序列化和反序列化以验证 JSON 格式
+		if data, err := json.Marshal(existing.NotifyChannels); err != nil {
+			log.Printf("Warning: Invalid NotifyChannels JSON for rule %d: %v", id, err)
+			// 重置为 nil 以避免后续错误
+			existing.NotifyChannels = nil
+		} else {
+			_ = data // 验证通过
+		}
+	}
+	if existing.Receivers != nil {
+		if data, err := json.Marshal(existing.Receivers); err != nil {
+			log.Printf("Warning: Invalid Receivers JSON for rule %d: %v", id, err)
+			existing.Receivers = nil
+		} else {
+			_ = data // 验证通过
+		}
+	}
+
+	// 使用 map 来构建更新字段，只更新实际提供的字段
+	updates := make(map[string]interface{})
+
+	log.Printf("[UpdateAlertRule] Updating rule ID=%d: NotifyChannels=%v, Receivers=%v", id, rule.NotifyChannels, rule.Receivers)
+
+	// 检查是否有其他字段被设置（除了 enabled）
+	// 由于 handler 中已经处理了部分更新，如果字段在 JSON 中存在就会被设置
+	// 所以我们可以通过检查字段是否为零值来判断是否提供了该字段
+	hasOtherFields := rule.Name != "" || rule.Description != "" || rule.Severity != "" ||
+		rule.MetricType != "" || rule.Condition != "" || rule.Threshold != 0 ||
+		rule.Duration != 0 || rule.InhibitDuration != 0 || rule.NotifyChannels != nil ||
+		rule.Receivers != nil || rule.SilenceStart != nil || rule.SilenceEnd != nil
+
+	log.Printf("[UpdateAlertRule] Rule ID=%d: hasOtherFields=%v", id, hasOtherFields)
+
+	// 只更新实际提供的字段
+	// 由于 handler 中已经处理了部分更新，如果字段在 JSON 中存在就会被设置到 rule 中
+	// 所以我们可以通过检查字段是否为零值来判断是否提供了该字段
+	// 但对于 bool 类型和数值类型，需要特殊处理
+
+	// enabled 字段：由于 handler 中已经检查了 JSON 中是否包含该字段
+	// 如果 rule.Enabled 被设置（无论是 true 还是 false），就更新它
+	updates["enabled"] = rule.Enabled
+
+	// 更新其他字段（只更新非零值字段）
+	if rule.Name != "" {
+		updates["name"] = rule.Name
+	}
+	if rule.Description != "" {
+		updates["description"] = rule.Description
+	}
+	if rule.Severity != "" {
+		updates["severity"] = rule.Severity
+	}
+	if rule.MetricType != "" {
+		updates["metric_type"] = rule.MetricType
+	}
+	// HostID 可以为空字符串（表示所有主机），所以需要检查是否在 JSON 中提供
+	// 由于 handler 中只有当 updateData["host_id"] 存在时才会设置 rule.HostID
+	// 所以如果 rule.HostID 被设置了（即使为空字符串），说明 JSON 中提供了该字段
+	// 但是，如果只更新 enabled，rule.HostID 会是空字符串（零值），我们无法区分"未提供"和"提供了空字符串"
+	// 解决方案：检查 rule.HostID 是否与现有值不同，如果不同，说明 JSON 中提供了该字段
+	// 但这也有问题：如果现有值是 "host1"，JSON 中提供了 "host1"，它们相同，但我们也应该更新（虽然值相同）
+	// 更简单的方法：只有当 hasOtherFields 为 true 时才更新 host_id
+	// 或者：检查 rule.HostID 是否在 hasOtherFields 检查中被包含
+	// 实际上，如果只更新 enabled，hasOtherFields 为 false，rule.HostID 是空字符串（零值）
+	// 所以我们可以：只有当 hasOtherFields 为 true 或者 rule.HostID 与现有值不同时才更新
+	// 但更安全的方法是：只有当 hasOtherFields 为 true 时才更新 host_id
+	// 如果只更新 host_id 而不更新其他字段，hasOtherFields 会是 false，但 rule.HostID 会被设置
+	// 所以我们需要检查 rule.HostID 是否与现有值不同
+	// 如果不同，说明 JSON 中提供了该字段（即使 hasOtherFields 为 false）
+	// HostID 更新逻辑：
+	// 1. 如果只更新 enabled，handler 中不会设置 rule.HostID，所以 rule.HostID 是空字符串（零值）
+	// 2. 如果现有值不是空字符串，rule.HostID != existing.HostID 为 true，会错误地更新 host_id
+	// 3. 所以我们需要检查：只有当 rule.HostID 与现有值不同，且 rule.HostID 不是空字符串（零值）时才更新
+	// 4. 或者：只有当 hasOtherFields 为 true 时才更新 host_id
+	// 5. 更简单的方法：只有当 rule.HostID 与现有值不同，且 rule.HostID 不是空字符串时才更新
+	// 6. 但如果现有值是空字符串，JSON 中提供了空字符串，rule.HostID == existing.HostID，不会更新（正确）
+	// 7. 如果现有值不是空字符串，只更新 enabled，rule.HostID 是空字符串，rule.HostID != existing.HostID 为 true，会错误地更新
+	// 8. 所以我们需要检查：如果 rule.HostID 是空字符串，且 hasOtherFields 为 false，不更新
+	// 9. 如果 rule.HostID 不是空字符串，或者 hasOtherFields 为 true，且 rule.HostID 与现有值不同，更新
+	if rule.HostID != existing.HostID {
+		// 如果 rule.HostID 与现有值不同，说明 JSON 中提供了该字段
+		// 但如果只更新 enabled，rule.HostID 是空字符串（零值），如果现有值不是空字符串，会错误地更新
+		// 所以我们需要检查：如果 rule.HostID 是空字符串，且 hasOtherFields 为 false，不更新
+		if rule.HostID != "" || hasOtherFields {
+			updates["host_id"] = rule.HostID
+		}
+	}
+	if rule.Condition != "" {
+		updates["condition"] = rule.Condition
+	}
+
+	// 对于数值字段，检查是否在 JSON 中提供
+	// 由于 handler 中已经检查了，如果字段存在就会被设置
+	// 但我们需要区分"提供了0"和"未提供"
+	// 如果只有 enabled 被设置，说明是只更新状态，不更新数值字段
+	// 如果有其他字段，说明是完整更新，就更新所有提供的字段
+	if hasOtherFields {
+		// 有其他字段，更新所有提供的字段（包括数值字段）
+		// 由于 handler 中已经检查了 JSON，如果字段存在就会被设置
+		// 所以我们可以直接更新（包括0值）
+		updates["threshold"] = rule.Threshold
+		updates["duration"] = rule.Duration
+		updates["inhibit_duration"] = rule.InhibitDuration
+
+		// NotifyChannels 和 Receivers 可能为 nil（如果前端没有发送）
+		// 或者可能为空数组 []（如果前端发送了空数组）
+		// 我们需要区分"未提供"和"提供但为空"的情况
+		// 由于 handler 中只有当 updateData["notify_channels"] 存在时才会设置 rule.NotifyChannels
+		// 所以如果 rule.NotifyChannels 不是 nil，说明前端提供了该字段（即使是空数组）
+		if rule.NotifyChannels != nil {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Updating notify_channels to %v (provided in request)", id, rule.NotifyChannels)
+			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
+			jsonData, err := json.Marshal(rule.NotifyChannels)
+			if err != nil {
+				log.Printf("[UpdateAlertRule] Rule ID=%d: Failed to marshal NotifyChannels: %v", id, err)
+				return fmt.Errorf("failed to marshal notify_channels: %w", err)
+			}
+			// 使用原始 SQL 更新，确保 JSON 字符串正确存储
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled notify_channels JSON: %s", id, string(jsonData))
+			updates["notify_channels"] = string(jsonData)
+		} else {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: notify_channels not provided in request, keeping existing value", id)
+		}
+		if rule.Receivers != nil {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Updating receivers to %v (provided in request)", id, rule.Receivers)
+			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
+			jsonData, err := json.Marshal(rule.Receivers)
+			if err != nil {
+				log.Printf("[UpdateAlertRule] Rule ID=%d: Failed to marshal Receivers: %v", id, err)
+				return fmt.Errorf("failed to marshal receivers: %w", err)
+			}
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled receivers JSON: %s", id, string(jsonData))
+			updates["receivers"] = string(jsonData)
+		} else {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: receivers not provided in request, keeping existing value", id)
+		}
+		if rule.SilenceStart != nil {
+			updates["silence_start"] = rule.SilenceStart
+		}
+		if rule.SilenceEnd != nil {
+			updates["silence_end"] = rule.SilenceEnd
+		}
+	} else {
+		// 即使没有其他字段，如果 NotifyChannels 或 Receivers 被明确设置，也应该更新
+		// 因为用户可能只想更新通知渠道
+		// 由于 handler 中只有当 updateData["notify_channels"] 存在时才会设置 rule.NotifyChannels
+		// 所以如果 rule.NotifyChannels 不是 nil，说明前端提供了该字段（即使是空数组）
+		if rule.NotifyChannels != nil {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Only NotifyChannels provided, updating to %v", id, rule.NotifyChannels)
+			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
+			jsonData, err := json.Marshal(rule.NotifyChannels)
+			if err != nil {
+				log.Printf("[UpdateAlertRule] Rule ID=%d: Failed to marshal NotifyChannels: %v", id, err)
+				return fmt.Errorf("failed to marshal notify_channels: %w", err)
+			}
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled notify_channels JSON: %s", id, string(jsonData))
+			updates["notify_channels"] = string(jsonData)
+		} else {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: NotifyChannels not provided, keeping existing value", id)
+		}
+		if rule.Receivers != nil {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Only Receivers provided, updating to %v", id, rule.Receivers)
+			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
+			jsonData, err := json.Marshal(rule.Receivers)
+			if err != nil {
+				log.Printf("[UpdateAlertRule] Rule ID=%d: Failed to marshal Receivers: %v", id, err)
+				return fmt.Errorf("failed to marshal receivers: %w", err)
+			}
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled receivers JSON: %s", id, string(jsonData))
+			updates["receivers"] = string(jsonData)
+		} else {
+			log.Printf("[UpdateAlertRule] Rule ID=%d: Receivers not provided, keeping existing value", id)
+		}
+	}
+	// 如果只有 enabled 被设置，就只更新 enabled（已经在上面设置了）
+
+	// 如果没有要更新的字段，返回错误
+	if len(updates) == 0 {
+		return fmt.Errorf("no fields to update")
+	}
+
+	// 添加 updated_at
+	updates["updated_at"] = time.Now()
+
+	log.Printf("[UpdateAlertRule] Rule ID=%d: Executing update with fields: %v", id, updates)
+	err := s.storage.postgres.Model(&AlertRule{}).Where("id = ?", id).Updates(updates).Error
+	if err != nil {
+		log.Printf("[UpdateAlertRule] Rule ID=%d: Update failed: %v", id, err)
+		return err
+	}
+	log.Printf("[UpdateAlertRule] Rule ID=%d: Update successful", id)
+	return nil
+}
+
+// DeleteAlertRule 删除告警规则
+func (s *StorageAdapter) DeleteAlertRule(id uint) error {
+	return s.storage.postgres.Delete(&AlertRule{}, id).Error
+}
+
+// GetAlertRule 获取告警规则
+func (s *StorageAdapter) GetAlertRule(id uint) (*api.AlertRuleInfo, error) {
+	// 使用原始 SQL 查询，将 JSON 字段作为文本读取，避免自动反序列化
+	sqlQuery := `
+		SELECT id, created_at, updated_at, name, description, enabled, severity,
+		       metric_type, host_id, condition, threshold, duration,
+		       notify_channels, receivers, silence_start, silence_end, inhibit_duration
+		FROM alert_rules
+		WHERE id = ?
+	`
+
+	row := s.storage.postgres.Raw(sqlQuery, id).Row()
+
+	var rule AlertRule
+	var notifyChannelsStr, receiversStr sql.NullString
+	var silenceStart, silenceEnd sql.NullTime
+
+	err := row.Scan(
+		&rule.ID, &rule.CreatedAt, &rule.UpdatedAt,
+		&rule.Name, &rule.Description, &rule.Enabled, &rule.Severity,
+		&rule.MetricType, &rule.HostID, &rule.Condition,
+		&rule.Threshold, &rule.Duration,
+		&notifyChannelsStr, &receiversStr,
+		&silenceStart, &silenceEnd,
+		&rule.InhibitDuration,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get alert rule: %w", err)
+	}
+
+	// 手动解析 JSON 字段，容忍无效数据
+	if notifyChannelsStr.Valid && notifyChannelsStr.String != "" {
+		trimmed := strings.TrimSpace(notifyChannelsStr.String)
+		if trimmed == "false" || trimmed == "null" || trimmed == `""` {
+			rule.NotifyChannels = []string{}
+			s.storage.postgres.Exec("UPDATE alert_rules SET notify_channels = '[]' WHERE id = ?", rule.ID)
+		} else {
+			if err := json.Unmarshal([]byte(notifyChannelsStr.String), &rule.NotifyChannels); err != nil {
+				log.Printf("Warning: Invalid NotifyChannels JSON for rule %d: %v, resetting to empty array", rule.ID, err)
+				rule.NotifyChannels = []string{}
+				s.storage.postgres.Exec("UPDATE alert_rules SET notify_channels = '[]' WHERE id = ?", rule.ID)
+			}
+		}
+	} else {
+		rule.NotifyChannels = []string{}
+	}
+
+	if receiversStr.Valid && receiversStr.String != "" {
+		trimmed := strings.TrimSpace(receiversStr.String)
+		if trimmed == "false" || trimmed == "null" || trimmed == `""` {
+			rule.Receivers = []string{}
+			s.storage.postgres.Exec("UPDATE alert_rules SET receivers = '[]' WHERE id = ?", rule.ID)
+		} else {
+			if err := json.Unmarshal([]byte(receiversStr.String), &rule.Receivers); err != nil {
+				log.Printf("Warning: Invalid Receivers JSON for rule %d: %v, resetting to empty array", rule.ID, err)
+				rule.Receivers = []string{}
+				s.storage.postgres.Exec("UPDATE alert_rules SET receivers = '[]' WHERE id = ?", rule.ID)
+			}
+		}
+	} else {
+		rule.Receivers = []string{}
+	}
+
+	if silenceStart.Valid {
+		rule.SilenceStart = &silenceStart.Time
+	}
+	if silenceEnd.Valid {
+		rule.SilenceEnd = &silenceEnd.Time
+	}
+
+	return s.alertRuleToAPI(&rule), nil
+}
+
+// ListAlertRules 列出告警规则
+func (s *StorageAdapter) ListAlertRules(enabled *bool) ([]api.AlertRuleInfo, error) {
+	// 使用原始 SQL 查询，将 JSON 字段作为文本读取，避免自动反序列化
+	sqlQuery := `
+		SELECT id, created_at, updated_at, name, description, enabled, severity,
+		       metric_type, host_id, condition, threshold, duration,
+		       notify_channels, receivers, silence_start, silence_end, inhibit_duration
+		FROM alert_rules
+	`
+	args := []interface{}{}
+
+	if enabled != nil {
+		sqlQuery += " WHERE enabled = ?"
+		args = append(args, *enabled)
+	}
+
+	sqlQuery += " ORDER BY created_at DESC"
+
+	rows, err := s.storage.postgres.Raw(sqlQuery, args...).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query alert rules: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]api.AlertRuleInfo, 0)
+	for rows.Next() {
+		var rule AlertRule
+		var notifyChannelsStr, receiversStr sql.NullString
+		var silenceStart, silenceEnd sql.NullTime
+
+		err := rows.Scan(
+			&rule.ID, &rule.CreatedAt, &rule.UpdatedAt,
+			&rule.Name, &rule.Description, &rule.Enabled, &rule.Severity,
+			&rule.MetricType, &rule.HostID, &rule.Condition,
+			&rule.Threshold, &rule.Duration,
+			&notifyChannelsStr, &receiversStr,
+			&silenceStart, &silenceEnd,
+			&rule.InhibitDuration,
+		)
+		if err != nil {
+			log.Printf("Warning: Failed to scan alert rule: %v", err)
+			continue
+		}
+
+		// 手动解析 JSON 字段，容忍无效数据
+		log.Printf("[ListAlertRules] Rule ID=%d: notifyChannelsStr.Valid=%v, notifyChannelsStr.String=%q",
+			rule.ID, notifyChannelsStr.Valid, notifyChannelsStr.String)
+
+		if notifyChannelsStr.Valid && notifyChannelsStr.String != "" {
+			// 处理特殊情况：如果值是 "false" 或 "null"，设置为空数组
+			trimmed := strings.TrimSpace(notifyChannelsStr.String)
+			log.Printf("[ListAlertRules] Rule ID=%d: trimmed notify_channels=%q", rule.ID, trimmed)
+
+			if trimmed == "false" || trimmed == "null" || trimmed == `""` {
+				log.Printf("[ListAlertRules] Rule ID=%d: notify_channels is invalid value (%q), resetting to empty array", rule.ID, trimmed)
+				rule.NotifyChannels = []string{}
+				// 修复数据库
+				s.storage.postgres.Exec("UPDATE alert_rules SET notify_channels = '[]' WHERE id = ?", rule.ID)
+			} else {
+				if err := json.Unmarshal([]byte(notifyChannelsStr.String), &rule.NotifyChannels); err != nil {
+					log.Printf("[ListAlertRules] Warning: Invalid NotifyChannels JSON for rule %d: %v, raw value=%q, resetting to empty array",
+						rule.ID, err, notifyChannelsStr.String)
+					rule.NotifyChannels = []string{}
+					// 修复数据库
+					s.storage.postgres.Exec("UPDATE alert_rules SET notify_channels = '[]' WHERE id = ?", rule.ID)
+				} else {
+					log.Printf("[ListAlertRules] Rule ID=%d: Successfully parsed NotifyChannels=%v", rule.ID, rule.NotifyChannels)
+				}
+			}
+		} else {
+			log.Printf("[ListAlertRules] Rule ID=%d: notifyChannelsStr is invalid or empty, setting to empty array", rule.ID)
+			rule.NotifyChannels = []string{}
+		}
+
+		if receiversStr.Valid && receiversStr.String != "" {
+			trimmed := strings.TrimSpace(receiversStr.String)
+			if trimmed == "false" || trimmed == "null" || trimmed == `""` {
+				rule.Receivers = []string{}
+				// 修复数据库
+				s.storage.postgres.Exec("UPDATE alert_rules SET receivers = '[]' WHERE id = ?", rule.ID)
+			} else {
+				if err := json.Unmarshal([]byte(receiversStr.String), &rule.Receivers); err != nil {
+					log.Printf("Warning: Invalid Receivers JSON for rule %d: %v, resetting to empty array", rule.ID, err)
+					rule.Receivers = []string{}
+					// 修复数据库
+					s.storage.postgres.Exec("UPDATE alert_rules SET receivers = '[]' WHERE id = ?", rule.ID)
+				}
+			}
+		} else {
+			rule.Receivers = []string{}
+		}
+
+		if silenceStart.Valid {
+			rule.SilenceStart = &silenceStart.Time
+		}
+		if silenceEnd.Valid {
+			rule.SilenceEnd = &silenceEnd.Time
+		}
+
+		result = append(result, *s.alertRuleToAPI(&rule))
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating alert rules: %w", err)
+	}
+
+	return result, nil
+}
+
+// validateAndFixAlertRuleJSON 验证并修复告警规则的 JSON 字段
+func (s *StorageAdapter) validateAndFixAlertRuleJSON(rule *AlertRule) error {
+	// 验证 NotifyChannels
+	if rule.NotifyChannels != nil {
+		if data, err := json.Marshal(rule.NotifyChannels); err != nil {
+			log.Printf("Warning: Invalid NotifyChannels JSON for rule %d: %v, resetting to nil", rule.ID, err)
+			rule.NotifyChannels = nil
+			// 尝试修复数据库中的无效数据
+			if updateErr := s.storage.postgres.Model(rule).Update("notify_channels", nil).Error; updateErr != nil {
+				log.Printf("Error: Failed to fix NotifyChannels for rule %d: %v", rule.ID, updateErr)
+			}
+		} else {
+			_ = data // 验证通过
+		}
+	}
+
+	// 验证 Receivers
+	if rule.Receivers != nil {
+		if data, err := json.Marshal(rule.Receivers); err != nil {
+			log.Printf("Warning: Invalid Receivers JSON for rule %d: %v, resetting to nil", rule.ID, err)
+			rule.Receivers = nil
+			// 尝试修复数据库中的无效数据
+			if updateErr := s.storage.postgres.Model(rule).Update("receivers", nil).Error; updateErr != nil {
+				log.Printf("Error: Failed to fix Receivers for rule %d: %v", rule.ID, updateErr)
+			}
+		} else {
+			_ = data // 验证通过
+		}
+	}
+
+	return nil
+}
+
+// alertRuleToAPI 转换为API格式
+func (s *StorageAdapter) alertRuleToAPI(rule *AlertRule) *api.AlertRuleInfo {
+	return &api.AlertRuleInfo{
+		ID:              rule.ID,
+		CreatedAt:       rule.CreatedAt,
+		UpdatedAt:       rule.UpdatedAt,
+		Name:            rule.Name,
+		Description:     rule.Description,
+		Enabled:         rule.Enabled,
+		Severity:        rule.Severity,
+		MetricType:      rule.MetricType,
+		HostID:          rule.HostID,
+		Condition:       rule.Condition,
+		Threshold:       rule.Threshold,
+		Duration:        rule.Duration,
+		NotifyChannels:  rule.NotifyChannels,
+		Receivers:       rule.Receivers,
+		SilenceStart:    rule.SilenceStart,
+		SilenceEnd:      rule.SilenceEnd,
+		InhibitDuration: rule.InhibitDuration,
+	}
+}
+
+// ============================================
+// 告警历史相关方法
+// ============================================
+
+// CreateAlertHistory 创建告警历史
+func (s *StorageAdapter) CreateAlertHistory(history *api.AlertHistoryInfo) (*api.AlertHistoryInfo, error) {
+	alertHistory := &AlertHistory{
+		RuleID:       history.RuleID,
+		RuleName:     history.RuleName,
+		HostID:       history.HostID,
+		Hostname:     history.Hostname,
+		Severity:     history.Severity,
+		Status:       history.Status,
+		FiredAt:      history.FiredAt,
+		ResolvedAt:   history.ResolvedAt,
+		MetricType:   history.MetricType,
+		MetricValue:  history.MetricValue,
+		Threshold:    history.Threshold,
+		Message:      history.Message,
+		Labels:       history.Labels,
+		NotifyStatus: history.NotifyStatus,
+		NotifyError:  history.NotifyError,
+	}
+
+	if err := s.storage.postgres.Create(alertHistory).Error; err != nil {
+		return nil, err
+	}
+
+	return s.alertHistoryToAPI(alertHistory), nil
+}
+
+// UpdateAlertHistory 更新告警历史
+func (s *StorageAdapter) UpdateAlertHistory(id uint, status string, resolvedAt *time.Time) error {
+	updates := map[string]interface{}{
+		"status": status,
+	}
+	if resolvedAt != nil {
+		updates["resolved_at"] = *resolvedAt
+	} else if status == "firing" {
+		// 当状态更新为 firing 时，清除 resolved_at
+		updates["resolved_at"] = nil
+	}
+	return s.storage.postgres.Model(&AlertHistory{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateAlertHistoryFiredAt 更新告警历史的触发时间
+func (s *StorageAdapter) UpdateAlertHistoryFiredAt(id uint, firedAt time.Time) error {
+	updates := map[string]interface{}{
+		"fired_at": firedAt,
+	}
+	return s.storage.postgres.Model(&AlertHistory{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateAlertHistoryMetricValue 更新告警历史的指标值和消息
+func (s *StorageAdapter) UpdateAlertHistoryMetricValue(id uint, metricValue float64, message string) error {
+	updates := map[string]interface{}{
+		"metric_value": metricValue,
+		"message":      message,
+	}
+	return s.storage.postgres.Model(&AlertHistory{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateAlertHistoryNotifyStatus 更新告警历史的通知状态
+func (s *StorageAdapter) UpdateAlertHistoryNotifyStatus(id uint, notifyStatus string, notifyError string) error {
+	updates := map[string]interface{}{
+		"notify_status": notifyStatus,
+	}
+	if notifyError != "" {
+		updates["notify_error"] = notifyError
+	}
+	return s.storage.postgres.Model(&AlertHistory{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// ListAlertHistory 列出告警历史
+func (s *StorageAdapter) ListAlertHistory(ruleID *uint, hostID string, status string, limit int) ([]api.AlertHistoryInfo, error) {
+	var alertHistories []AlertHistory
+	query := s.storage.postgres.Model(&AlertHistory{})
+
+	if ruleID != nil {
+		query = query.Where("rule_id = ?", *ruleID)
+	}
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	if err := query.Order("fired_at DESC").Find(&alertHistories).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]api.AlertHistoryInfo, len(alertHistories))
+	for i, history := range alertHistories {
+		result[i] = *s.alertHistoryToAPI(&history)
+	}
+
+	return result, nil
+}
+
+// GetAlertHistory 获取告警历史
+func (s *StorageAdapter) GetAlertHistory(id uint) (*api.AlertHistoryInfo, error) {
+	var alertHistory AlertHistory
+	if err := s.storage.postgres.First(&alertHistory, id).Error; err != nil {
+		return nil, err
+	}
+	return s.alertHistoryToAPI(&alertHistory), nil
+}
+
+// DeleteAlertHistory 删除告警历史
+func (s *StorageAdapter) DeleteAlertHistory(id uint) error {
+	return s.storage.postgres.Delete(&AlertHistory{}, id).Error
+}
+
+// DeleteAlertHistories 批量删除告警历史
+func (s *StorageAdapter) DeleteAlertHistories(ids []uint) error {
+	if len(ids) == 0 {
+		return fmt.Errorf("no ids provided")
+	}
+	return s.storage.postgres.Where("id IN ?", ids).Delete(&AlertHistory{}).Error
+}
+
+// alertHistoryToAPI 转换为API格式
+func (s *StorageAdapter) alertHistoryToAPI(history *AlertHistory) *api.AlertHistoryInfo {
+	return &api.AlertHistoryInfo{
+		ID:           history.ID,
+		CreatedAt:    history.CreatedAt,
+		RuleID:       history.RuleID,
+		RuleName:     history.RuleName,
+		HostID:       history.HostID,
+		Hostname:     history.Hostname,
+		Severity:     history.Severity,
+		Status:       history.Status,
+		FiredAt:      history.FiredAt,
+		ResolvedAt:   history.ResolvedAt,
+		MetricType:   history.MetricType,
+		MetricValue:  history.MetricValue,
+		Threshold:    history.Threshold,
+		Message:      history.Message,
+		Labels:       history.Labels,
+		NotifyStatus: history.NotifyStatus,
+		NotifyError:  history.NotifyError,
+	}
+}
+
+// ============================================
+// 告警静默相关方法
+// ============================================
+
+// CreateAlertSilence 创建告警静默
+func (s *StorageAdapter) CreateAlertSilence(silence *api.AlertSilenceInfo) (*api.AlertSilenceInfo, error) {
+	alertSilence := &AlertSilence{
+		Name:      silence.Name,
+		RuleIDs:   silence.RuleIDs,
+		HostIDs:   silence.HostIDs,
+		StartTime: silence.StartTime,
+		EndTime:   silence.EndTime,
+		Enabled:   silence.Enabled,
+		Comment:   silence.Comment,
+		Creator:   silence.Creator,
+	}
+
+	if err := s.storage.postgres.Create(alertSilence).Error; err != nil {
+		return nil, err
+	}
+
+	return s.alertSilenceToAPI(alertSilence), nil
+}
+
+// UpdateAlertSilence 更新告警静默
+func (s *StorageAdapter) UpdateAlertSilence(id uint, silence *api.AlertSilenceInfo) error {
+	// 先获取现有记录
+	var existing AlertSilence
+	if err := s.storage.postgres.First(&existing, id).Error; err != nil {
+		return err
+	}
+
+	// 更新字段
+	if silence.Name != "" {
+		existing.Name = silence.Name
+	}
+	if silence.RuleIDs != nil {
+		existing.RuleIDs = silence.RuleIDs
+	}
+	if silence.HostIDs != nil {
+		existing.HostIDs = silence.HostIDs
+	}
+	if !silence.StartTime.IsZero() {
+		existing.StartTime = silence.StartTime
+	}
+	if !silence.EndTime.IsZero() {
+		existing.EndTime = silence.EndTime
+	}
+	// 直接设置 enabled，确保 false 值也能更新
+	existing.Enabled = silence.Enabled
+	if silence.Comment != "" {
+		existing.Comment = silence.Comment
+	}
+	if silence.Creator != "" {
+		existing.Creator = silence.Creator
+	}
+
+	// 使用 Select 明确指定要更新的字段，确保所有字段（包括 false 和 JSON 序列化字段）都能正确更新
+	return s.storage.postgres.Model(&AlertSilence{}).
+		Where("id = ?", id).
+		Select("name", "rule_ids", "host_ids", "start_time", "end_time", "enabled", "comment", "creator", "updated_at").
+		Updates(&existing).Error
+}
+
+// DeleteAlertSilence 删除告警静默
+func (s *StorageAdapter) DeleteAlertSilence(id uint) error {
+	return s.storage.postgres.Delete(&AlertSilence{}, id).Error
+}
+
+// GetAlertSilence 获取告警静默
+func (s *StorageAdapter) GetAlertSilence(id uint) (*api.AlertSilenceInfo, error) {
+	var alertSilence AlertSilence
+	if err := s.storage.postgres.First(&alertSilence, id).Error; err != nil {
+		return nil, err
+	}
+	return s.alertSilenceToAPI(&alertSilence), nil
+}
+
+// ListAlertSilences 列出告警静默
+func (s *StorageAdapter) ListAlertSilences(enabled *bool) ([]api.AlertSilenceInfo, error) {
+	var alertSilences []AlertSilence
+	query := s.storage.postgres.Model(&AlertSilence{})
+
+	if enabled != nil {
+		query = query.Where("enabled = ?", *enabled)
+	}
+
+	// 移除过期过滤，返回所有静默（包括已过期的），让前端决定是否显示
+	// 这样用户可以查看所有历史静默记录，包括已过期的
+	// 如果需要只显示未过期的，可以在前端过滤
+
+	if err := query.Order("created_at DESC").Find(&alertSilences).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]api.AlertSilenceInfo, len(alertSilences))
+	for i, silence := range alertSilences {
+		result[i] = *s.alertSilenceToAPI(&silence)
+	}
+
+	return result, nil
+}
+
+// IsRuleSilenced 检查规则是否被静默
+func (s *StorageAdapter) IsRuleSilenced(ruleID uint, hostID string) bool {
+	var count int64
+	now := time.Now()
+
+	query := s.storage.postgres.Model(&AlertSilence{}).
+		Where("enabled = ?", true).
+		Where("start_time <= ?", now).
+		Where("end_time > ?", now)
+
+	// 检查是否有匹配的静默
+	// 1. 规则ID匹配（空数组表示所有规则）
+	// 2. 主机ID匹配（空数组表示所有主机）
+	query = query.Where(
+		"(rule_ids IS NULL OR rule_ids = '[]' OR rule_ids LIKE ? OR rule_ids LIKE ? OR rule_ids LIKE ?)",
+		fmt.Sprintf("%%\"%d\"%%", ruleID),
+		fmt.Sprintf("%%[%d]%%", ruleID),
+		fmt.Sprintf("%%,%d]%%", ruleID),
+	).Where(
+		"(host_ids IS NULL OR host_ids = '[]' OR host_ids LIKE ?)",
+		fmt.Sprintf("%%\"%s\"%%", hostID),
+	)
+
+	query.Count(&count)
+	isSilenced := count > 0
+	log.Printf("[IsRuleSilenced] RuleID=%d, HostID=%s, Count=%d, IsSilenced=%v", ruleID, hostID, count, isSilenced)
+	return isSilenced
+}
+
+// alertSilenceToAPI 转换为API格式
+func (s *StorageAdapter) alertSilenceToAPI(silence *AlertSilence) *api.AlertSilenceInfo {
+	return &api.AlertSilenceInfo{
+		ID:        silence.ID,
+		CreatedAt: silence.CreatedAt,
+		UpdatedAt: silence.UpdatedAt,
+		Name:      silence.Name,
+		RuleIDs:   silence.RuleIDs,
+		HostIDs:   silence.HostIDs,
+		StartTime: silence.StartTime,
+		EndTime:   silence.EndTime,
+		Enabled:   silence.Enabled,
+		Comment:   silence.Comment,
+		Creator:   silence.Creator,
+	}
+}
+
+// ============================================
+// 通知渠道相关方法
+// ============================================
+
+// CreateNotificationChannel 创建通知渠道
+func (s *StorageAdapter) CreateNotificationChannel(channel *api.NotificationChannelInfo) (*api.NotificationChannelInfo, error) {
+	notifChannel := &NotificationChannel{
+		Type:        channel.Type,
+		Name:        channel.Name,
+		Enabled:     channel.Enabled,
+		Config:      channel.Config,
+		Description: channel.Description,
+	}
+
+	if err := s.storage.postgres.Create(notifChannel).Error; err != nil {
+		return nil, err
+	}
+
+	return s.notificationChannelToAPI(notifChannel), nil
+}
+
+// UpdateNotificationChannel 更新通知渠道
+func (s *StorageAdapter) UpdateNotificationChannel(id uint, channel *api.NotificationChannelInfo) error {
+	// 先获取现有记录
+	var existing NotificationChannel
+	if err := s.storage.postgres.First(&existing, id).Error; err != nil {
+		return err
+	}
+
+	// 更新字段
+	if channel.Name != "" {
+		existing.Name = channel.Name
+	}
+	// 直接设置 enabled，确保 false 值也能更新
+	existing.Enabled = channel.Enabled
+
+	if channel.Config != nil {
+		existing.Config = channel.Config
+	}
+	if channel.Description != "" {
+		existing.Description = channel.Description
+	}
+
+	// 使用 Select 明确指定要更新的字段，确保所有字段（包括 false 和 map）都能正确更新
+	return s.storage.postgres.Model(&NotificationChannel{}).
+		Where("id = ?", id).
+		Select("name", "enabled", "config", "description", "updated_at").
+		Updates(&existing).Error
+}
+
+// DeleteNotificationChannel 删除通知渠道
+func (s *StorageAdapter) DeleteNotificationChannel(id uint) error {
+	return s.storage.postgres.Delete(&NotificationChannel{}, id).Error
+}
+
+// GetNotificationChannel 获取通知渠道
+func (s *StorageAdapter) GetNotificationChannel(id uint) (*api.NotificationChannelInfo, error) {
+	var notifChannel NotificationChannel
+	if err := s.storage.postgres.First(&notifChannel, id).Error; err != nil {
+		return nil, err
+	}
+	return s.notificationChannelToAPI(&notifChannel), nil
+}
+
+// GetNotificationChannelByType 根据类型获取通知渠道
+func (s *StorageAdapter) GetNotificationChannelByType(channelType string) (*api.NotificationChannelInfo, error) {
+	var notifChannel NotificationChannel
+	if err := s.storage.postgres.Where("type = ?", channelType).First(&notifChannel).Error; err != nil {
+		return nil, err
+	}
+	return s.notificationChannelToAPI(&notifChannel), nil
+}
+
+// ListNotificationChannels 列出通知渠道
+func (s *StorageAdapter) ListNotificationChannels(enabled *bool) ([]api.NotificationChannelInfo, error) {
+	var notifChannels []NotificationChannel
+	query := s.storage.postgres.Model(&NotificationChannel{})
+
+	if enabled != nil {
+		query = query.Where("enabled = ?", *enabled)
+	}
+
+	if err := query.Order("created_at DESC").Find(&notifChannels).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]api.NotificationChannelInfo, len(notifChannels))
+	for i, channel := range notifChannels {
+		result[i] = *s.notificationChannelToAPI(&channel)
+	}
+
+	return result, nil
+}
+
+// notificationChannelToAPI 转换为API格式
+func (s *StorageAdapter) notificationChannelToAPI(channel *NotificationChannel) *api.NotificationChannelInfo {
+	return &api.NotificationChannelInfo{
+		ID:          channel.ID,
+		CreatedAt:   channel.CreatedAt,
+		UpdatedAt:   channel.UpdatedAt,
+		Type:        channel.Type,
+		Name:        channel.Name,
+		Enabled:     channel.Enabled,
+		Config:      channel.Config,
+		Description: channel.Description,
+	}
 }

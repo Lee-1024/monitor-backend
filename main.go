@@ -5,11 +5,14 @@ package main
 
 import (
 	"log"
+	"monitor-backend/alerter"
 	"monitor-backend/api"
+	"monitor-backend/notifier"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	pb "monitor-backend/proto"
 
@@ -44,6 +47,27 @@ func main() {
 		}
 	}()
 
+	// 初始化通知管理器
+	notificationManager := notifier.NewNotificationManager()
+
+	// 从数据库加载通知渠道配置
+	storageAdapter := NewStorageAdapter(storage)
+	
+	// 设置存储接口，用于在发送通知时检查渠道是否启用
+	notificationManager.SetStorage(storageAdapter)
+	
+	if err := notifier.LoadNotifiersFromStorage(storageAdapter, notificationManager); err != nil {
+		log.Printf("Warning: Failed to load notification channels: %v", err)
+		// 如果加载失败，注册一个默认的邮件通知器（可选）
+		// emailNotifier := notifier.NewEmailNotifier("localhost", 587, "alerts@example.com", "password", "alerts@example.com", "监控系统")
+		// notificationManager.Register(emailNotifier)
+	}
+
+	// 启动告警引擎
+	alertEngine := alerter.NewAlertEngine(storageAdapter, notificationManager, 30*time.Second)
+	alertEngine.Start()
+	defer alertEngine.Stop()
+
 	// 启动HTTP API服务器
 	go func() {
 		// 初始化JWT密钥
@@ -59,7 +83,7 @@ func main() {
 			AuthRequired: config.AuthRequired,
 		}
 
-		apiServer := api.NewAPIServer(NewStorageAdapter(storage), apiConfig)
+		apiServer := api.NewAPIServer(storageAdapter, apiConfig, notificationManager)
 
 		log.Printf("HTTP API server started on %s", config.HTTPAddr)
 

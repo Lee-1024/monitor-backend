@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -582,5 +583,758 @@ func (s *APIServer) getServiceStatus(c *gin.Context) {
 		Code:    200,
 		Message: "Success",
 		Data:    services,
+	})
+}
+
+// ============================================
+// 告警规则相关处理函数
+// ============================================
+
+// listAlertRules 获取告警规则列表
+func (s *APIServer) listAlertRules(c *gin.Context) {
+	enabledStr := c.Query("enabled")
+	var enabled *bool
+	if enabledStr != "" {
+		e := enabledStr == "true"
+		enabled = &e
+	}
+
+	rules, err := s.storage.ListAlertRules(enabled)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to list alert rules: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    rules,
+	})
+}
+
+// createAlertRule 创建告警规则
+func (s *APIServer) createAlertRule(c *gin.Context) {
+	var rule AlertRuleInfo
+	if err := c.ShouldBindJSON(&rule); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	log.Printf("[createAlertRule] Received rule: Name=%s, NotifyChannels=%v, Receivers=%v", 
+		rule.Name, rule.NotifyChannels, rule.Receivers)
+	
+	// 确保 NotifyChannels 和 Receivers 不是 nil
+	if rule.NotifyChannels == nil {
+		rule.NotifyChannels = []string{}
+		log.Printf("[createAlertRule] NotifyChannels was nil, setting to empty array")
+	}
+	if rule.Receivers == nil {
+		rule.Receivers = []string{}
+		log.Printf("[createAlertRule] Receivers was nil, setting to empty array")
+	}
+
+	created, err := s.storage.CreateAlertRule(&rule)
+	if err != nil {
+		log.Printf("[createAlertRule] Failed to create rule: %v", err)
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to create alert rule: " + err.Error(),
+		})
+		return
+	}
+
+	log.Printf("[createAlertRule] Rule created successfully: ID=%d, NotifyChannels=%v", 
+		created.ID, created.NotifyChannels)
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    created,
+	})
+}
+
+// getAlertRule 获取告警规则
+func (s *APIServer) getAlertRule(c *gin.Context) {
+	id := c.Param("id")
+	var ruleID uint
+	if _, err := fmt.Sscanf(id, "%d", &ruleID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid rule ID",
+		})
+		return
+	}
+
+	rule, err := s.storage.GetAlertRule(ruleID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, Response{
+			Code:    404,
+			Message: "Alert rule not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    rule,
+	})
+}
+
+// updateAlertRule 更新告警规则
+func (s *APIServer) updateAlertRule(c *gin.Context) {
+	id := c.Param("id")
+	var ruleID uint
+	if _, err := fmt.Sscanf(id, "%d", &ruleID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid rule ID",
+		})
+		return
+	}
+
+	// 使用 map 来接收部分更新的字段
+	var updateData map[string]interface{}
+	if err := c.ShouldBindJSON(&updateData); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	// 转换为 AlertRuleInfo 结构，但只包含实际提供的字段
+	var rule AlertRuleInfo
+	
+	if name, ok := updateData["name"].(string); ok && name != "" {
+		rule.Name = name
+	}
+	if description, ok := updateData["description"].(string); ok {
+		rule.Description = description
+	}
+	if enabled, ok := updateData["enabled"].(bool); ok {
+		rule.Enabled = enabled
+	}
+	if severity, ok := updateData["severity"].(string); ok && severity != "" {
+		rule.Severity = severity
+	}
+	if metricType, ok := updateData["metric_type"].(string); ok && metricType != "" {
+		rule.MetricType = metricType
+	}
+	if hostID, ok := updateData["host_id"].(string); ok {
+		rule.HostID = hostID
+	}
+	if condition, ok := updateData["condition"].(string); ok && condition != "" {
+		rule.Condition = condition
+	}
+	if threshold, ok := updateData["threshold"].(float64); ok {
+		rule.Threshold = threshold
+	}
+	if duration, ok := updateData["duration"].(float64); ok {
+		rule.Duration = int(duration)
+	}
+	if inhibitDuration, ok := updateData["inhibit_duration"].(float64); ok {
+		rule.InhibitDuration = int(inhibitDuration)
+	}
+	// 检查 notify_channels 是否在 updateData 中
+	// 即使它是空数组，我们也需要设置它，因为用户可能想要清空通知渠道
+	if notifyChannelsRaw, exists := updateData["notify_channels"]; exists {
+		if notifyChannels, ok := notifyChannelsRaw.([]interface{}); ok {
+			log.Printf("[updateAlertRule] Handler: Received notify_channels=%v (exists=%v, isArray=%v)", notifyChannels, exists, ok)
+			rule.NotifyChannels = make([]string, len(notifyChannels))
+			for i, v := range notifyChannels {
+				if str, ok := v.(string); ok {
+					rule.NotifyChannels[i] = str
+				}
+			}
+			log.Printf("[updateAlertRule] Handler: Parsed NotifyChannels=%v", rule.NotifyChannels)
+		} else if notifyChannelsArray, ok := notifyChannelsRaw.([]string); ok {
+			// 如果直接是 []string 类型（某些情况下可能发生）
+			log.Printf("[updateAlertRule] Handler: Received notify_channels as []string=%v", notifyChannelsArray)
+			rule.NotifyChannels = notifyChannelsArray
+			log.Printf("[updateAlertRule] Handler: Parsed NotifyChannels=%v", rule.NotifyChannels)
+		} else {
+			log.Printf("[updateAlertRule] Handler: notify_channels exists but is not an array (type: %T, value: %v)", notifyChannelsRaw, notifyChannelsRaw)
+			// 如果存在但不是数组，不设置（保留现有值）
+		}
+	} else {
+		log.Printf("[updateAlertRule] Handler: notify_channels not found in updateData, will keep existing value")
+	}
+	if receivers, ok := updateData["receivers"].([]interface{}); ok {
+		rule.Receivers = make([]string, len(receivers))
+		for i, v := range receivers {
+			if str, ok := v.(string); ok {
+				rule.Receivers[i] = str
+			}
+		}
+	}
+
+	if err := s.storage.UpdateAlertRule(ruleID, &rule); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to update alert rule: " + err.Error(),
+		})
+		return
+	}
+
+	// 返回更新后的数据
+	updatedRule, err := s.storage.GetAlertRule(ruleID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get updated alert rule: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    updatedRule,
+	})
+}
+
+// deleteAlertRule 删除告警规则
+func (s *APIServer) deleteAlertRule(c *gin.Context) {
+	id := c.Param("id")
+	var ruleID uint
+	if _, err := fmt.Sscanf(id, "%d", &ruleID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid rule ID",
+		})
+		return
+	}
+
+	if err := s.storage.DeleteAlertRule(ruleID); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to delete alert rule: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+	})
+}
+
+// ============================================
+// 告警历史相关处理函数
+// ============================================
+
+// listAlertHistory 获取告警历史列表
+func (s *APIServer) listAlertHistory(c *gin.Context) {
+	ruleIDStr := c.Query("rule_id")
+	hostID := c.Query("host_id")
+	status := c.Query("status")
+	limit := 100
+	if limitStr := c.Query("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+
+	var ruleID *uint
+	if ruleIDStr != "" {
+		var id uint
+		if _, err := fmt.Sscanf(ruleIDStr, "%d", &id); err == nil {
+			ruleID = &id
+		}
+	}
+
+	history, err := s.storage.ListAlertHistory(ruleID, hostID, status, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to list alert history: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    history,
+	})
+}
+
+// getUnreadAlertCount 获取未读告警数量（firing状态的告警）
+func (s *APIServer) getUnreadAlertCount(c *gin.Context) {
+	history, err := s.storage.ListAlertHistory(nil, "", "firing", 10000) // 获取所有firing状态的告警，增加limit
+	if err != nil {
+		log.Printf("[getUnreadAlertCount] Failed to list alert history: %v", err)
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get unread alert count: " + err.Error(),
+		})
+		return
+	}
+
+	log.Printf("[getUnreadAlertCount] Found %d firing alerts", len(history))
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    len(history),
+	})
+}
+
+// getAlertHistory 获取告警历史详情
+func (s *APIServer) getAlertHistory(c *gin.Context) {
+	id := c.Param("id")
+	var historyID uint
+	if _, err := fmt.Sscanf(id, "%d", &historyID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid history ID",
+		})
+		return
+	}
+
+	history, err := s.storage.GetAlertHistory(historyID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, Response{
+			Code:    404,
+			Message: "Alert history not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    history,
+	})
+}
+
+// deleteAlertHistory 删除告警历史
+func (s *APIServer) deleteAlertHistory(c *gin.Context) {
+	id := c.Param("id")
+	var historyID uint
+	if _, err := fmt.Sscanf(id, "%d", &historyID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid history ID",
+		})
+		return
+	}
+
+	if err := s.storage.DeleteAlertHistory(historyID); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to delete alert history: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+	})
+}
+
+// deleteAlertHistories 批量删除告警历史
+func (s *APIServer) deleteAlertHistories(c *gin.Context) {
+	var request struct {
+		IDs []uint `json:"ids" binding:"required"`
+	}
+	
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	if len(request.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "No IDs provided",
+		})
+		return
+	}
+
+	if err := s.storage.DeleteAlertHistories(request.IDs); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to delete alert histories: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: fmt.Sprintf("Successfully deleted %d alert histories", len(request.IDs)),
+	})
+}
+
+// ============================================
+// 告警静默相关处理函数
+// ============================================
+
+// listAlertSilences 获取告警静默列表
+func (s *APIServer) listAlertSilences(c *gin.Context) {
+	enabledStr := c.Query("enabled")
+	var enabled *bool
+	if enabledStr != "" {
+		e := enabledStr == "true"
+		enabled = &e
+	}
+
+	silences, err := s.storage.ListAlertSilences(enabled)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to list alert silences: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    silences,
+	})
+}
+
+// createAlertSilence 创建告警静默
+func (s *APIServer) createAlertSilence(c *gin.Context) {
+	var silence AlertSilenceInfo
+	if err := c.ShouldBindJSON(&silence); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	// ShouldBindJSON 会自动解析 JSON 中的时间字符串
+	// 如果时间字符串是 ISO 8601 格式（带 Z 或时区偏移），会正确解析为 UTC 时间
+	// 如果时间字符串没有时区信息，Go 会将其当作 UTC 时间解析（这是正确的，因为前端已经转换为 UTC）
+	// 所以这里不需要额外的解析逻辑
+
+	created, err := s.storage.CreateAlertSilence(&silence)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to create alert silence: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    created,
+	})
+}
+
+// updateAlertSilence 更新告警静默
+func (s *APIServer) updateAlertSilence(c *gin.Context) {
+	id := c.Param("id")
+	var silenceID uint
+	if _, err := fmt.Sscanf(id, "%d", &silenceID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid silence ID",
+		})
+		return
+	}
+
+	var silence AlertSilenceInfo
+	if err := c.ShouldBindJSON(&silence); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	if err := s.storage.UpdateAlertSilence(silenceID, &silence); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to update alert silence: " + err.Error(),
+		})
+		return
+	}
+
+	// 返回更新后的数据
+	updatedSilence, err := s.storage.GetAlertSilence(silenceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get updated alert silence: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    updatedSilence,
+	})
+}
+
+// deleteAlertSilence 删除告警静默
+func (s *APIServer) deleteAlertSilence(c *gin.Context) {
+	id := c.Param("id")
+	var silenceID uint
+	if _, err := fmt.Sscanf(id, "%d", &silenceID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid silence ID",
+		})
+		return
+	}
+
+	if err := s.storage.DeleteAlertSilence(silenceID); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to delete alert silence: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+	})
+}
+
+// ============================================
+// 通知渠道相关处理函数
+// ============================================
+
+// listNotificationChannels 获取通知渠道列表
+func (s *APIServer) listNotificationChannels(c *gin.Context) {
+	enabledStr := c.Query("enabled")
+	var enabled *bool
+	if enabledStr != "" {
+		e := enabledStr == "true"
+		enabled = &e
+	}
+
+	channels, err := s.storage.ListNotificationChannels(enabled)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to list notification channels: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    channels,
+	})
+}
+
+// createNotificationChannel 创建通知渠道
+func (s *APIServer) createNotificationChannel(c *gin.Context) {
+	var channel NotificationChannelInfo
+	if err := c.ShouldBindJSON(&channel); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	created, err := s.storage.CreateNotificationChannel(&channel)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to create notification channel: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    created,
+	})
+}
+
+// testNotificationChannel 测试通知渠道
+func (s *APIServer) testNotificationChannel(c *gin.Context) {
+	var channel NotificationChannelInfo
+	if err := c.ShouldBindJSON(&channel); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	// 验证必填字段
+	if channel.Type == "" {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Channel type is required",
+		})
+		return
+	}
+
+	// 根据类型验证必填配置
+	if channel.Type == "email" {
+		if channel.Config["smtp_host"] == "" {
+			c.JSON(http.StatusBadRequest, Response{
+				Code:    400,
+				Message: "SMTP host is required for email channel",
+			})
+			return
+		}
+	} else if channel.Type == "dingtalk" || channel.Type == "wechat" || channel.Type == "feishu" {
+		if channel.Config["webhook_url"] == "" {
+			c.JSON(http.StatusBadRequest, Response{
+				Code:    400,
+				Message: "Webhook URL is required for " + channel.Type + " channel",
+			})
+			return
+		}
+	}
+
+	// 使用反射或类型断言调用 NotificationManager 的 TestChannel 方法
+	// 由于避免循环依赖，使用接口类型，需要通过反射调用
+	nmValue := reflect.ValueOf(s.notificationManager)
+	if !nmValue.IsValid() {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Notification manager not available",
+		})
+		return
+	}
+
+	testMethod := nmValue.MethodByName("TestChannel")
+	if !testMethod.IsValid() {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "TestChannel method not found",
+		})
+		return
+	}
+
+	// 调用测试方法
+	results := testMethod.Call([]reflect.Value{reflect.ValueOf(&channel)})
+	if len(results) > 0 && !results[0].IsNil() {
+		err := results[0].Interface().(error)
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Test failed: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Test notification sent successfully",
+	})
+}
+
+// getNotificationChannel 获取通知渠道
+func (s *APIServer) getNotificationChannel(c *gin.Context) {
+	id := c.Param("id")
+	var channelID uint
+	if _, err := fmt.Sscanf(id, "%d", &channelID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid channel ID",
+		})
+		return
+	}
+
+	channel, err := s.storage.GetNotificationChannel(channelID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, Response{
+			Code:    404,
+			Message: "Notification channel not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    channel,
+	})
+}
+
+// updateNotificationChannel 更新通知渠道
+func (s *APIServer) updateNotificationChannel(c *gin.Context) {
+	id := c.Param("id")
+	var channelID uint
+	if _, err := fmt.Sscanf(id, "%d", &channelID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid channel ID",
+		})
+		return
+	}
+
+	var channel NotificationChannelInfo
+	if err := c.ShouldBindJSON(&channel); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	if err := s.storage.UpdateNotificationChannel(channelID, &channel); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to update notification channel: " + err.Error(),
+		})
+		return
+	}
+
+	// 返回更新后的数据
+	updatedChannel, err := s.storage.GetNotificationChannel(channelID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to get updated notification channel: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data:    updatedChannel,
+	})
+}
+
+// deleteNotificationChannel 删除通知渠道
+func (s *APIServer) deleteNotificationChannel(c *gin.Context) {
+	id := c.Param("id")
+	var channelID uint
+	if _, err := fmt.Sscanf(id, "%d", &channelID); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid channel ID",
+		})
+		return
+	}
+
+	if err := s.storage.DeleteNotificationChannel(channelID); err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to delete notification channel: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
 	})
 }
