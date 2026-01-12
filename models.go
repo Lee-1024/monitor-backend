@@ -150,7 +150,7 @@ type ProcessSnapshot struct {
 	HostID    string    `gorm:"index;size:64" json:"host_id"`
 	Timestamp time.Time `gorm:"index" json:"timestamp"`
 	
-	PID          int32   `json:"pid"`
+	PID          int32   `gorm:"column:pid" json:"pid"`
 	Name         string  `gorm:"size:255" json:"name"`
 	User         string  `gorm:"size:64" json:"user"`
 	CPUPercent   float64 `json:"cpu_percent"`

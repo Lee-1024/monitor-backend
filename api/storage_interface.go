@@ -42,6 +42,7 @@ type StorageInterface interface {
 	// 进程监控相关
 	GetProcesses(hostID string, limit int) ([]ProcessInfo, error)
 	GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]ProcessHistoryPoint, error)
+	GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error)
 	
 	// 日志相关
 	GetLogs(hostID, level string, start, end time.Time, limit int) ([]LogInfo, error)

@@ -450,8 +450,14 @@ func (s *APIServer) getProcesses(c *gin.Context) {
 // getProcessHistory 获取进程历史数据
 func (s *APIServer) getProcessHistory(c *gin.Context) {
 	hostID := c.Query("host_id")
-	processNamesStr := c.Query("process_names") // 逗号分隔的进程名列表
-	limit := 1000
+	processNamesStr := c.Query("process_names") // 逗号分隔的进程名列表，如果为空则自动查找历史中占用最高的进程
+	metricType := c.DefaultQuery("metric_type", "cpu") // cpu 或 memory，用于确定如何查找top进程
+	topN := 10
+	if topNStr := c.Query("top_n"); topNStr != "" {
+		fmt.Sscanf(topNStr, "%d", &topN)
+	}
+	
+	limit := 5000
 	if limitStr := c.Query("limit"); limitStr != "" {
 		fmt.Sscanf(limitStr, "%d", &limit)
 	}
@@ -471,6 +477,7 @@ func (s *APIServer) getProcessHistory(c *gin.Context) {
 
 	var processNames []string
 	if processNamesStr != "" {
+		// 如果指定了进程名，使用指定的进程名
 		names := strings.Split(processNamesStr, ",")
 		for _, name := range names {
 			name = strings.TrimSpace(name)
@@ -478,6 +485,27 @@ func (s *APIServer) getProcessHistory(c *gin.Context) {
 				processNames = append(processNames, name)
 			}
 		}
+	} else {
+		// 如果没有指定进程名，从历史数据中查找CPU/内存占用最高的前N个进程
+		topNames, err := s.storage.GetTopProcessNamesByHistory(hostID, start, end, metricType, topN)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, Response{
+				Code:    500,
+				Message: "Failed to get top process names: " + err.Error(),
+			})
+			return
+		}
+		processNames = topNames
+		log.Printf("Auto-selected top %d processes by %s: %v", len(processNames), metricType, processNames)
+	}
+
+	if len(processNames) == 0 {
+		c.JSON(http.StatusOK, Response{
+			Code:    200,
+			Message: "Success",
+			Data:    []ProcessHistoryPoint{},
+		})
+		return
 	}
 
 	history, err := s.storage.GetProcessHistory(hostID, processNames, start, end, limit)

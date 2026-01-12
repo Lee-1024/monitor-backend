@@ -1027,27 +1027,75 @@ func (s *StorageAdapter) GetCrashAnalysis(hostID string) (*api.CrashAnalysis, er
 // 进程监控相关方法
 // ============================================
 
-// GetProcesses 获取进程列表
+// GetProcesses 获取进程列表（去重，只返回每个PID的最新记录）
 func (s *StorageAdapter) GetProcesses(hostID string, limit int) ([]api.ProcessInfo, error) {
-	var processes []ProcessSnapshot
-	query := s.storage.postgres.Order("timestamp DESC")
+	// 直接使用窗口函数方式，避免DISTINCT ON和子查询的字段映射问题
+	return s.getProcessesAlternative(hostID, limit)
+}
 
+// getProcessesAlternative 备用方法：使用窗口函数去重
+func (s *StorageAdapter) getProcessesAlternative(hostID string, limit int) ([]api.ProcessInfo, error) {
+	var processes []ProcessSnapshot
+
+	// 只返回最近10秒内上报的进程（确保只显示活跃进程，与top命令一致）
+	// Agent默认采集间隔是10秒，这里设置为10秒基本只显示最近一次采集周期的数据
+	// 如果一个进程在最近10秒内没有上报数据，说明它很可能已经停止
+	// 这样可以更及时地过滤掉已停止的进程，避免显示过时的进程信息
+	// 注意：如果Agent采集间隔设置为更长时间（如30秒），可能需要相应调整此窗口为采集间隔+2秒
+	recentTime := time.Now().Add(-10 * time.Second)
+
+	// 使用窗口函数ROW_NUMBER()来去重
+	// 明确指定所有字段，避免字段映射问题
+	// 只查询最近10秒内的进程快照，确保只显示活跃进程
+	sql := `
+		SELECT id, created_at, host_id, timestamp, pid, name, "user", cpu_percent, memory_percent, memory_bytes, status, command
+		FROM (
+			SELECT id, created_at, host_id, timestamp, pid, name, "user", cpu_percent, memory_percent, memory_bytes, status, command,
+				ROW_NUMBER() OVER (PARTITION BY host_id, pid ORDER BY timestamp DESC) as rn
+			FROM process_snapshots
+			WHERE timestamp >= ?`
+
+	args := []interface{}{recentTime}
 	if hostID != "" {
-		query = query.Where("host_id = ?", hostID)
+		sql += " AND host_id = ?"
+		args = append(args, hostID)
 	}
+
+	sql += `
+		) as ranked
+		WHERE rn = 1
+		ORDER BY cpu_percent DESC, timestamp DESC, pid ASC`
 
 	if limit > 0 {
-		query = query.Limit(limit)
+		sql += fmt.Sprintf(" LIMIT %d", limit)
 	}
 
-	err := query.Find(&processes).Error
+	log.Printf("Executing process query SQL: %s", sql)
+	err := s.storage.postgres.Raw(sql, args...).Scan(&processes).Error
 	if err != nil {
-		return nil, err
+		log.Printf("Error executing process query: %v, SQL: %s", err, sql)
+		return nil, fmt.Errorf("failed to query processes: %v", err)
 	}
 
-	result := make([]api.ProcessInfo, len(processes))
-	for i, p := range processes {
-		result[i] = api.ProcessInfo{
+	// 在内存中再次去重（以防万一，确保每个PID只出现一次）
+	pidMap := make(map[string]*ProcessSnapshot)
+	for i := range processes {
+		p := &processes[i]
+		key := fmt.Sprintf("%s_%d", p.HostID, p.PID)
+		if existing, exists := pidMap[key]; exists {
+			// 如果已存在，保留时间戳更新的
+			if p.Timestamp.After(existing.Timestamp) {
+				pidMap[key] = p
+			}
+		} else {
+			pidMap[key] = p
+		}
+	}
+
+	// 转换为结果
+	result := make([]api.ProcessInfo, 0, len(pidMap))
+	for _, p := range pidMap {
+		result = append(result, api.ProcessInfo{
 			ID:            p.ID,
 			HostID:        p.HostID,
 			Timestamp:     p.Timestamp,
@@ -1059,10 +1107,84 @@ func (s *StorageAdapter) GetProcesses(hostID string, limit int) ([]api.ProcessIn
 			MemoryBytes:   p.MemoryBytes,
 			Status:        p.Status,
 			Command:       p.Command,
+		})
+	}
+
+	// 按CPU使用率降序排序（与top命令一致），然后按内存使用率降序排序，最后按PID排序
+	sort.Slice(result, func(i, j int) bool {
+		// 首先按CPU使用率降序排序
+		if result[i].CPUPercent != result[j].CPUPercent {
+			return result[i].CPUPercent > result[j].CPUPercent
 		}
+		// 如果CPU使用率相同，按内存使用率降序排序
+		if result[i].MemoryPercent != result[j].MemoryPercent {
+			return result[i].MemoryPercent > result[j].MemoryPercent
+		}
+		// 如果CPU和内存都相同，按PID升序排序
+		return result[i].PID < result[j].PID
+	})
+
+	// 如果有限制，只返回前limit个
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
 	}
 
 	return result, nil
+}
+
+// GetTopProcessNamesByHistory 从历史数据中获取CPU/内存占用最高的前N个进程名
+func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error) {
+	if topN <= 0 {
+		topN = 10
+	}
+
+	// 根据指标类型选择排序字段
+	orderBy := "cpu_percent"
+	if metricType == "memory" {
+		orderBy = "memory_percent"
+	}
+
+	// 查询指定时间范围内的进程，按CPU或内存使用率降序排序，取前N个进程名
+	// 先找到每个进程名在该时间范围内的最大CPU/内存使用率，然后排序取前N个
+	sql := fmt.Sprintf(`
+		SELECT name
+		FROM (
+			SELECT name, MAX(%s) as max_usage
+			FROM process_snapshots
+			WHERE timestamp >= ? AND timestamp <= ?`, orderBy)
+
+	args := []interface{}{start, end}
+	if hostID != "" {
+		sql += " AND host_id = ?"
+		args = append(args, hostID)
+	}
+
+	sql += fmt.Sprintf(`
+			GROUP BY name
+			ORDER BY max_usage DESC
+			LIMIT %d
+		) as top_processes`, topN)
+
+	// 使用 Raw 查询获取进程名列表
+	type ProcessNameResult struct {
+		Name string `gorm:"column:name"`
+	}
+	var results []ProcessNameResult
+	err := s.storage.postgres.Raw(sql, args...).Scan(&results).Error
+	if err != nil {
+		log.Printf("Error querying top process names: %v, SQL: %s", err, sql)
+		return nil, fmt.Errorf("failed to get top process names: %v", err)
+	}
+
+	processNames := make([]string, 0, len(results))
+	for _, r := range results {
+		if r.Name != "" {
+			processNames = append(processNames, r.Name)
+		}
+	}
+
+	log.Printf("Found top %d process names by %s: %v", len(processNames), metricType, processNames)
+	return processNames, nil
 }
 
 // GetProcessHistory 获取进程历史数据（按进程名分组）
