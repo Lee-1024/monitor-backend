@@ -17,6 +17,7 @@ type StorageInterface interface {
 	GetMetrics(hostID, metricType, start, end string) ([]MetricPoint, error)
 	GetLatestMetrics(hostID string) (*LatestMetrics, error)
 	GetHistoryMetrics(hostID, metricType, start, end, interval string) ([]MetricPoint, error)
+	GetDiskHistoryByMountpoint(hostID, mountpoint, start, end, interval string) ([]MetricPoint, error)
 	GetAggregateMetrics(metricType, aggregation, start, end string) ([]AggregateMetric, error)
 
 	// 统计相关

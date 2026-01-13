@@ -162,11 +162,30 @@ func (s *APIServer) getHistoryMetrics(c *gin.Context) {
 	start := c.DefaultQuery("start", "-1h")
 	end := c.DefaultQuery("end", "now")
 	interval := c.DefaultQuery("interval", "1m")
+	mountpoint := c.Query("mountpoint") // 磁盘专用参数
 
 	if hostID == "" {
 		c.JSON(http.StatusBadRequest, Response{
 			Code:    400,
 			Message: "host_id is required",
+		})
+		return
+	}
+
+	// 如果是磁盘类型且指定了挂载点，使用专门的查询方法
+	if metricType == "disk" && mountpoint != "" {
+		metrics, err := s.storage.GetDiskHistoryByMountpoint(hostID, mountpoint, start, end, interval)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, Response{
+				Code:    500,
+				Message: "Failed to get disk history: " + err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, Response{
+			Code:    200,
+			Message: "Success",
+			Data:    metrics,
 		})
 		return
 	}

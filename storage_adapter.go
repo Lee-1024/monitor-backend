@@ -178,17 +178,45 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			Network: make(map[string]interface{}),
 		}
 
-		// 添加磁盘数据
+		// 添加磁盘数据 - 返回所有分区数组
 		if len(cachedMetrics.Disk.Partitions) > 0 {
-			p := cachedMetrics.Disk.Partitions[0]
+			var partitions []map[string]interface{}
+			var rootPartition map[string]interface{}
+			var otherPartitions []map[string]interface{}
+
+			for _, p := range cachedMetrics.Disk.Partitions {
+				partData := map[string]interface{}{
+					"device":       p.Device,
+					"mountpoint":   p.Mountpoint,
+					"fstype":       p.Fstype,
+					"total":        p.Total,
+					"used":         p.Used,
+					"free":         p.Free,
+					"used_percent": p.UsedPercent,
+				}
+
+				if p.Mountpoint == "/" {
+					rootPartition = partData
+				} else {
+					otherPartitions = append(otherPartitions, partData)
+				}
+			}
+
+			// 按挂载点排序（根分区优先）
+			sort.Slice(otherPartitions, func(i, j int) bool {
+				mpI := otherPartitions[i]["mountpoint"].(string)
+				mpJ := otherPartitions[j]["mountpoint"].(string)
+				return mpI < mpJ
+			})
+
+			// 构建最终数组（根分区在前）
+			if rootPartition != nil {
+				partitions = append(partitions, rootPartition)
+			}
+			partitions = append(partitions, otherPartitions...)
+
 			latest.Disk = map[string]interface{}{
-				"device":       p.Device,
-				"mountpoint":   p.Mountpoint,
-				"fstype":       p.Fstype,
-				"total":        p.Total,
-				"used":         p.Used,
-				"free":         p.Free,
-				"used_percent": p.UsedPercent,
+				"partitions": partitions,
 			}
 		}
 
@@ -224,46 +252,15 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 
 		// 对于磁盘和网络，需要特殊处理多个分区/接口的情况
 		if measurement == "disk" {
-			// 磁盘：先尝试查询根分区，如果没有则查询所有分区
-			// 先检查是否有根分区数据
-			checkQuery := fmt.Sprintf(`
+			// 磁盘：统一查询所有分区的最新数据
+			query = fmt.Sprintf(`
 				from(bucket: "%s")
 				|> range(start: -5m)
 				|> filter(fn: (r) => r["_measurement"] == "%s")
 				|> filter(fn: (r) => r["host_id"] == "%s")
-				|> filter(fn: (r) => r["mountpoint"] == "/")
-				|> limit(n: 1)
+				|> group(columns: ["mountpoint", "device"])
+				|> last()
 			`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
-
-			checkAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
-			checkResult, err := checkAPI.Query(ctx, checkQuery)
-			hasRootPartition := false
-			if err == nil {
-				hasRootPartition = checkResult.Next()
-				checkResult.Close()
-			}
-
-			if hasRootPartition {
-				// 有根分区，查询根分区的最新数据
-				query = fmt.Sprintf(`
-					from(bucket: "%s")
-					|> range(start: -5m)
-					|> filter(fn: (r) => r["_measurement"] == "%s")
-					|> filter(fn: (r) => r["host_id"] == "%s")
-					|> filter(fn: (r) => r["mountpoint"] == "/")
-					|> last()
-				`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
-			} else {
-				// 没有根分区，查询所有分区的最新数据
-				query = fmt.Sprintf(`
-					from(bucket: "%s")
-					|> range(start: -5m)
-					|> filter(fn: (r) => r["_measurement"] == "%s")
-					|> filter(fn: (r) => r["host_id"] == "%s")
-					|> group(columns: ["mountpoint", "device"])
-					|> last()
-				`, s.storage.config.InfluxDB.Bucket, measurement, hostID)
-			}
 		} else if measurement == "network" {
 			// 网络：聚合所有接口的数据，按字段名分组求和
 			query = fmt.Sprintf(`
@@ -296,144 +293,171 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 		values := make(map[string]interface{})
 		var timestamp time.Time
 
-		// 对于磁盘，返回所有分区数据，前端可以选择显示
+		// 对于磁盘，统一返回所有分区数据数组
 		if measurement == "disk" {
-			// 如果查询已经过滤了根分区，直接处理结果
-			hasRootFilter := false
-			if query != "" {
-				hasRootFilter = strings.Contains(query, `r["mountpoint"] == "/"`)
-			}
+			// 处理所有分区数据
+			partitions := make(map[string]map[string]interface{})
+			partitionTimestamps := make(map[string]time.Time)
 
-			if hasRootFilter {
-				// 直接处理根分区的数据
-				for result.Next() {
-					record := result.Record()
-					timestamp = record.Time()
-					fieldName := record.Field()
-					if fieldName != "" {
-						values[fieldName] = record.Value()
+			recordCount := 0
+			for result.Next() {
+				record := result.Record()
+				recordCount++
+
+				// 从 tag 中获取 mountpoint
+				mountpoint := ""
+				mountpointVal := record.ValueByKey("mountpoint")
+				if mountpointVal != nil {
+					if mpStr, ok := mountpointVal.(string); ok {
+						mountpoint = mpStr
 					}
 				}
-				result.Close()
-				// 添加分区标识
-				values["_mountpoint"] = "/"
-				log.Printf("Found root partition disk data with %d fields", len(values))
-			} else {
-				// 处理多个分区，返回所有分区数据（以根分区为主，其他分区作为额外信息）
-				partitions := make(map[string]map[string]interface{})
-				partitionTimestamps := make(map[string]time.Time)
-				var maxTotal uint64
-				var mainMountpoint string
-				var allPartitions []map[string]interface{}
 
-				recordCount := 0
-				for result.Next() {
-					record := result.Record()
-					recordCount++
-
-					// 从 tag 中获取 mountpoint
-					mountpoint := ""
-					mountpointVal := record.ValueByKey("mountpoint")
-					if mountpointVal != nil {
-						if mpStr, ok := mountpointVal.(string); ok {
-							mountpoint = mpStr
-						}
-					}
-
-					// 如果还是没有，尝试从其他方式获取
-					if mountpoint == "" {
-						// 尝试从所有 tag 中查找
-						for key, val := range record.Values() {
-							if key == "mountpoint" {
-								if mpStr, ok := val.(string); ok {
-									mountpoint = mpStr
-									break
-								}
+				// 如果还是没有，尝试从其他方式获取
+				if mountpoint == "" {
+					// 尝试从所有 tag 中查找
+					for key, val := range record.Values() {
+						if key == "mountpoint" {
+							if mpStr, ok := val.(string); ok {
+								mountpoint = mpStr
+								break
 							}
 						}
 					}
-
-					if mountpoint == "" {
-						log.Printf("Warning: disk record %d has no mountpoint tag", recordCount)
-						continue
-					}
-
-					if partitions[mountpoint] == nil {
-						partitions[mountpoint] = make(map[string]interface{})
-						partitionTimestamps[mountpoint] = record.Time()
-					}
-
-					fieldName := record.Field()
-					if fieldName != "" {
-						partitions[mountpoint][fieldName] = record.Value()
-					}
-
-					// 如果是根分区，优先选择
-					if mountpoint == "/" {
-						mainMountpoint = mountpoint
-					}
 				}
-				result.Close()
 
-				log.Printf("Found %d disk records, %d partitions", recordCount, len(partitions))
+				if mountpoint == "" {
+					log.Printf("Warning: disk record %d has no mountpoint tag", recordCount)
+					continue
+				}
 
-				// 如果没有找到根分区，选择最大的分区
-				if mainMountpoint == "" {
-					for mp, partData := range partitions {
+				if partitions[mountpoint] == nil {
+					partitions[mountpoint] = make(map[string]interface{})
+					partitionTimestamps[mountpoint] = record.Time()
+					// 从tag中获取device和fstype
+					if deviceVal := record.ValueByKey("device"); deviceVal != nil {
+						if deviceStr, ok := deviceVal.(string); ok {
+							partitions[mountpoint]["device"] = deviceStr
+						}
+					}
+					if fstypeVal := record.ValueByKey("fstype"); fstypeVal != nil {
+						if fstypeStr, ok := fstypeVal.(string); ok {
+							partitions[mountpoint]["fstype"] = fstypeStr
+						}
+					}
+					partitions[mountpoint]["mountpoint"] = mountpoint
+				}
+
+				fieldName := record.Field()
+				if fieldName != "" {
+					partitions[mountpoint][fieldName] = record.Value()
+				}
+			}
+			result.Close()
+
+			log.Printf("Found %d disk records, %d partitions", recordCount, len(partitions))
+
+			// 转换为数组，按挂载点排序（根分区优先）
+			var allPartitions []map[string]interface{}
+			var rootPartition map[string]interface{}
+
+			for mp, partData := range partitions {
+				// 计算 used_percent（如果缺失）
+				if _, ok := partData["used_percent"]; !ok {
+					if totalVal, ok := partData["total"]; ok {
 						var total uint64
-						if totalVal, ok := partData["total"]; ok {
-							switch v := totalVal.(type) {
+						switch v := totalVal.(type) {
+						case uint64:
+							total = v
+						case int64:
+							total = uint64(v)
+						case float64:
+							total = uint64(v)
+						}
+						if total > 0 {
+							if usedVal, ok := partData["used"]; ok {
+								var used uint64
+								switch v := usedVal.(type) {
+								case uint64:
+									used = v
+								case int64:
+									used = uint64(v)
+								case float64:
+									used = uint64(v)
+								}
+								partData["used_percent"] = float64(used) / float64(total) * 100
+							}
+						}
+					}
+				}
+
+				// 计算 free（如果缺失）
+				if _, ok := partData["free"]; !ok {
+					if totalVal, ok := partData["total"]; ok {
+						var total uint64
+						switch v := totalVal.(type) {
+						case uint64:
+							total = v
+						case int64:
+							total = uint64(v)
+						case float64:
+							total = uint64(v)
+						}
+						if usedVal, ok := partData["used"]; ok {
+							var used uint64
+							switch v := usedVal.(type) {
 							case uint64:
-								total = v
+								used = v
 							case int64:
-								total = uint64(v)
+								used = uint64(v)
 							case float64:
-								total = uint64(v)
+								used = uint64(v)
 							}
-							if total > maxTotal {
-								maxTotal = total
-								mainMountpoint = mp
-							}
+							partData["free"] = total - used
 						}
 					}
 				}
 
-				// 如果还是没有，选择第一个分区
-				if mainMountpoint == "" && len(partitions) > 0 {
-					for mp := range partitions {
-						mainMountpoint = mp
-						break
-					}
-				}
-
-				// 设置主分区数据
-				if mainMountpoint != "" && partitions[mainMountpoint] != nil {
-					values = partitions[mainMountpoint]
-					values["_mountpoint"] = mainMountpoint
-					timestamp = partitionTimestamps[mainMountpoint]
-
-					// 收集所有分区信息（用于前端展示）
-					for mp, partData := range partitions {
-						if mp != mainMountpoint {
-							partInfo := make(map[string]interface{})
-							for k, v := range partData {
-								partInfo[k] = v
-							}
-							partInfo["_mountpoint"] = mp
-							allPartitions = append(allPartitions, partInfo)
-						}
-					}
-
-					// 如果有其他分区，添加到values中
-					if len(allPartitions) > 0 {
-						values["_partitions"] = allPartitions
-					}
-
-					log.Printf("Selected disk partition: %s with %d fields, %d other partitions", mainMountpoint, len(values), len(allPartitions))
+				if mp == "/" {
+					rootPartition = partData
 				} else {
-					log.Printf("Warning: No disk partition selected, found %d partitions", len(partitions))
+					allPartitions = append(allPartitions, partData)
 				}
 			}
+
+			// 按挂载点排序（根分区除外）
+			sort.Slice(allPartitions, func(i, j int) bool {
+				mpI := allPartitions[i]["mountpoint"].(string)
+				mpJ := allPartitions[j]["mountpoint"].(string)
+				return mpI < mpJ
+			})
+
+			// 构建最终的分区数组（根分区在前）
+			finalPartitions := []map[string]interface{}{}
+			if rootPartition != nil {
+				finalPartitions = append(finalPartitions, rootPartition)
+			}
+			finalPartitions = append(finalPartitions, allPartitions...)
+
+			// 设置时间戳（使用最新的）
+			if len(finalPartitions) > 0 {
+				latestTimestamp := partitionTimestamps[finalPartitions[0]["mountpoint"].(string)]
+				for _, part := range finalPartitions {
+					if mp, ok := part["mountpoint"].(string); ok {
+						if ts, ok := partitionTimestamps[mp]; ok && ts.After(latestTimestamp) {
+							latestTimestamp = ts
+						}
+					}
+				}
+				timestamp = latestTimestamp
+			}
+
+			// 统一返回所有分区数组
+			values = map[string]interface{}{
+				"partitions": finalPartitions,
+			}
+
+			log.Printf("Returning %d disk partitions", len(finalPartitions))
 		} else if measurement == "network" {
 			// 网络：聚合所有接口的数据
 			for result.Next() {
@@ -679,6 +703,88 @@ func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, inter
 	}
 
 	log.Printf("Returning %d data points", len(points))
+	return points, nil
+}
+
+// GetDiskHistoryByMountpoint 获取指定挂载点的磁盘历史数据
+func (s *StorageAdapter) GetDiskHistoryByMountpoint(hostID, mountpoint, start, end, interval string) ([]api.MetricPoint, error) {
+	ctx := context.Background()
+
+	// 构建Flux查询，查询指定挂载点的数据
+	query := fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "disk")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> filter(fn: (r) => r["mountpoint"] == "%s")
+  |> aggregateWindow(every: %s, fn: mean, createEmpty: false)`,
+		s.storage.config.InfluxDB.Bucket,
+		start,
+		hostID,
+		mountpoint,
+		interval)
+
+	log.Printf("Executing InfluxDB query for disk history: host_id=%s, mountpoint=%s", hostID, mountpoint)
+
+	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
+	result, err := queryAPI.Query(ctx, query)
+	if err != nil {
+		log.Printf("InfluxDB query error: %v", err)
+		return nil, fmt.Errorf("influxdb query failed: %v", err)
+	}
+	defer result.Close()
+
+	if result.Err() != nil {
+		log.Printf("InfluxDB result error: %v", result.Err())
+		return nil, fmt.Errorf("influxdb result error: %v", result.Err())
+	}
+
+	// 解析结果
+	pointsMap := make(map[int64]map[string]interface{})
+	recordCount := 0
+
+	for result.Next() {
+		record := result.Record()
+		recordCount++
+
+		timestamp := record.Time().Unix()
+
+		if _, exists := pointsMap[timestamp]; !exists {
+			pointsMap[timestamp] = make(map[string]interface{})
+		}
+
+		fieldName := record.Field()
+		fieldValue := record.Value()
+
+		if fieldValue != nil && fieldName != "" {
+			pointsMap[timestamp][fieldName] = fieldValue
+		}
+	}
+
+	log.Printf("Query returned %d records, grouped into %d time points", recordCount, len(pointsMap))
+
+	if len(pointsMap) == 0 {
+		return []api.MetricPoint{}, nil
+	}
+
+	// 转换为切片并排序
+	timestamps := make([]int64, 0, len(pointsMap))
+	for ts := range pointsMap {
+		timestamps = append(timestamps, ts)
+	}
+
+	sort.Slice(timestamps, func(i, j int) bool {
+		return timestamps[i] < timestamps[j]
+	})
+
+	// 构建结果
+	points := make([]api.MetricPoint, 0, len(timestamps))
+	for _, ts := range timestamps {
+		points = append(points, api.MetricPoint{
+			Timestamp: time.Unix(ts, 0),
+			Values:    pointsMap[ts],
+		})
+	}
+
 	return points, nil
 }
 
