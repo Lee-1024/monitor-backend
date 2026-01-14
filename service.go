@@ -312,13 +312,18 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 	timestamp := time.Unix(req.Timestamp, 0)
 	for _, svc := range req.Services {
 		status := &ServiceStatus{
-			HostID:      req.HostId,
-			Timestamp:   timestamp,
-			Name:        svc.Name,
-			Status:      svc.Status,
-			Enabled:     svc.Enabled,
-			Description: svc.Description,
-			Uptime:      svc.UptimeSeconds,
+			HostID:        req.HostId,
+			Timestamp:     timestamp,
+			Name:          svc.Name,
+			Status:        svc.Status,
+			Enabled:       svc.Enabled,
+			Description:   svc.Description,
+			Uptime:        svc.UptimeSeconds,
+		}
+		// 如果有端口信息，保存端口和端口检查结果
+		if svc.Port > 0 {
+			status.Port = int(svc.Port)
+			status.PortAccessible = svc.PortAccessible
 		}
 		if err := s.storage.postgres.Create(status).Error; err != nil {
 			log.Printf("Failed to save service status: %v", err)

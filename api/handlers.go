@@ -777,6 +777,13 @@ func (s *APIServer) updateAlertRule(c *gin.Context) {
 	if hostID, ok := updateData["host_id"].(string); ok {
 		rule.HostID = hostID
 	}
+	if mountpoint, ok := updateData["mountpoint"].(string); ok {
+		// mountpoint 可以为空字符串（表示不指定挂载点），所以不需要检查是否为空
+		rule.Mountpoint = mountpoint
+	}
+	if servicePort, ok := updateData["service_port"].(float64); ok {
+		rule.ServicePort = int(servicePort)
+	}
 	if condition, ok := updateData["condition"].(string); ok && condition != "" {
 		rule.Condition = condition
 	}

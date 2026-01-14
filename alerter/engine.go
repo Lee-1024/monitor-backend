@@ -141,6 +141,14 @@ func (e *AlertEngine) checkRules() {
 			continue
 		}
 
+		// 服务端口告警特殊处理
+		if rule.MetricType == "service_port" {
+			log.Printf("[AlertEngine] Processing service_port rule: %s, Port: %d", rule.Name, rule.ServicePort)
+			// 服务端口告警应该检查在线主机，因为这些主机可能有服务状态数据
+			e.checkServicePortRule(rule, onlineAgents)
+			continue
+		}
+
 		// 常规指标检查（只检查在线主机）
 		hostsToCheck := e.getHostsToCheck(rule, onlineAgents)
 		log.Printf("[AlertEngine] Rule %s: checking %d hosts", rule.Name, len(hostsToCheck))
@@ -552,9 +560,36 @@ func (e *AlertEngine) checkRuleForHost(rule api.AlertRuleInfo, host api.AgentInf
 		return
 	}
 
+	// 如果是磁盘告警且指定了挂载点，先记录磁盘数据结构用于调试
+	if rule.MetricType == "disk" && rule.Mountpoint != "" {
+		log.Printf("[checkRuleForHost] Looking for disk mountpoint '%s' for host %s", rule.Mountpoint, host.HostID)
+		// 检查 Disk 数据的类型
+		log.Printf("[checkRuleForHost] Disk data type: %T, value: %+v", metrics.Disk, metrics.Disk)
+		if partitionsRaw, exists := metrics.Disk["partitions"]; exists {
+			log.Printf("[checkRuleForHost] Partitions exists, type: %T", partitionsRaw)
+			if diskData, ok := partitionsRaw.([]interface{}); ok {
+				log.Printf("[checkRuleForHost] Found %d partitions in metrics", len(diskData))
+				for i, part := range diskData {
+					if partMap, ok := part.(map[string]interface{}); ok {
+						mp := partMap["mountpoint"]
+						log.Printf("[checkRuleForHost] Partition %d: mountpoint='%v' (type: %T)", i, mp, mp)
+					}
+				}
+			} else {
+				log.Printf("[checkRuleForHost] Partitions is not []interface{}, actual type: %T, value: %+v", partitionsRaw, partitionsRaw)
+			}
+		} else {
+			log.Printf("[checkRuleForHost] No 'partitions' key in Disk data. Keys: %v", getMapKeys(metrics.Disk))
+		}
+	}
+
 	// 获取指标值
-	metricValue := e.getMetricValue(metrics, rule.MetricType)
+	metricValue := e.getMetricValue(metrics, rule.MetricType, rule.Mountpoint)
 	if metricValue == nil {
+		// 如果是磁盘告警且指定了挂载点，但找不到该挂载点，记录日志
+		if rule.MetricType == "disk" && rule.Mountpoint != "" {
+			log.Printf("[checkRuleForHost] Disk mountpoint %s not found for host %s", rule.Mountpoint, host.HostID)
+		}
 		return
 	}
 
@@ -613,7 +648,7 @@ func (e *AlertEngine) checkRuleForHost(rule api.AlertRuleInfo, host api.AgentInf
 }
 
 // getMetricValue 获取指标值
-func (e *AlertEngine) getMetricValue(metrics *api.LatestMetrics, metricType string) *float64 {
+func (e *AlertEngine) getMetricValue(metrics *api.LatestMetrics, metricType string, mountpoint string) *float64 {
 	switch metricType {
 	case "cpu":
 		if val, ok := metrics.CPU["usage_percent"].(float64); ok {
@@ -624,6 +659,93 @@ func (e *AlertEngine) getMetricValue(metrics *api.LatestMetrics, metricType stri
 			return &val
 		}
 	case "disk":
+		// 如果指定了挂载点，按挂载点查找
+		if mountpoint != "" {
+			// 检查 partitions 是否存在
+			partitionsRaw, exists := metrics.Disk["partitions"]
+			if !exists {
+				log.Printf("[getMetricValue] No 'partitions' key in Disk metrics. Disk keys: %v", getMapKeys(metrics.Disk))
+				return nil
+			}
+
+			log.Printf("[getMetricValue] Partitions type: %T", partitionsRaw)
+
+			// 尝试类型断言为 []interface{}
+			var partitions []interface{}
+			var ok bool
+
+			partitions, ok = partitionsRaw.([]interface{})
+			if !ok {
+				log.Printf("[getMetricValue] Partitions is not []interface{}, actual type: %T, trying conversion", partitionsRaw)
+				// 尝试转换为 []map[string]interface{}
+				if partitionsMap, ok2 := partitionsRaw.([]map[string]interface{}); ok2 {
+					log.Printf("[getMetricValue] Converting []map[string]interface{} to []interface{}")
+					partitions = make([]interface{}, len(partitionsMap))
+					for i, m := range partitionsMap {
+						partitions[i] = m
+					}
+				} else {
+					log.Printf("[getMetricValue] Cannot convert partitions, actual type: %T", partitionsRaw)
+					return nil
+				}
+			}
+
+			log.Printf("[getMetricValue] Looking for mountpoint '%s' in %d partitions", mountpoint, len(partitions))
+			for i, part := range partitions {
+				if partMap, ok := part.(map[string]interface{}); ok {
+					mpRaw := partMap["mountpoint"]
+					log.Printf("[getMetricValue] Partition %d mountpoint type: %T, value: '%v'", i, mpRaw, mpRaw)
+
+					// 处理不同类型的 mountpoint 值
+					var mp string
+					switch v := mpRaw.(type) {
+					case string:
+						mp = v
+					case nil:
+						log.Printf("[getMetricValue] Partition %d has nil mountpoint, skipping", i)
+						continue
+					default:
+						log.Printf("[getMetricValue] Partition %d has unexpected mountpoint type: %T, value: %v", i, v, v)
+						continue
+					}
+
+					log.Printf("[getMetricValue] Comparing mountpoint '%s' with '%s'", mp, mountpoint)
+					// 精确匹配
+					if mp == mountpoint {
+						if val, ok := partMap["used_percent"].(float64); ok {
+							log.Printf("[getMetricValue] Found mountpoint '%s' with used_percent: %.2f", mountpoint, val)
+							return &val
+						} else {
+							log.Printf("[getMetricValue] Mountpoint '%s' found but used_percent is not float64, type: %T", mountpoint, partMap["used_percent"])
+						}
+					}
+				} else {
+					log.Printf("[getMetricValue] Partition %d is not map[string]interface{}, type: %T", i, part)
+				}
+			}
+			// 如果找不到指定挂载点，记录所有可用的挂载点
+			var availableMountpoints []string
+			for _, part := range partitions {
+				if partMap, ok := part.(map[string]interface{}); ok {
+					if mpRaw, ok := partMap["mountpoint"]; ok {
+						if mp, ok := mpRaw.(string); ok {
+							availableMountpoints = append(availableMountpoints, mp)
+						}
+					}
+				}
+			}
+			log.Printf("[getMetricValue] Mountpoint '%s' not found. Available mountpoints: %v", mountpoint, availableMountpoints)
+			return nil
+		}
+		// 如果没有指定挂载点，使用第一个分区（兼容旧逻辑）
+		if partitions, ok := metrics.Disk["partitions"].([]interface{}); ok && len(partitions) > 0 {
+			if firstPart, ok := partitions[0].(map[string]interface{}); ok {
+				if val, ok := firstPart["used_percent"].(float64); ok {
+					return &val
+				}
+			}
+		}
+		// 兼容旧格式：直接使用 used_percent
 		if val, ok := metrics.Disk["used_percent"].(float64); ok {
 			return &val
 		}
@@ -752,7 +874,23 @@ func (e *AlertEngine) triggerAlert(rule api.AlertRuleInfo, host api.AgentInfo, m
 			}
 
 			// 更新指标值和消息
-			message := fmt.Sprintf("%s指标值%.2f超过阈值%.2f", rule.MetricType, metricValue, rule.Threshold)
+			var message string
+			if rule.MetricType == "disk" && rule.Mountpoint != "" {
+				message = fmt.Sprintf("%s告警: %s 挂载点 %s %s %.2f%% (阈值: %.2f%%)",
+					getMetricTypeName(rule.MetricType),
+					host.Hostname,
+					rule.Mountpoint,
+					getConditionName(rule.Condition),
+					metricValue,
+					rule.Threshold)
+			} else {
+				message = fmt.Sprintf("%s告警: %s %s %.2f%% (阈值: %.2f%%)",
+					getMetricTypeName(rule.MetricType),
+					host.Hostname,
+					getConditionName(rule.Condition),
+					metricValue,
+					rule.Threshold)
+			}
 			if updateErr := e.storage.UpdateAlertHistoryMetricValue(resolvedHistory.ID, metricValue, message); updateErr != nil {
 				log.Printf("Failed to update alert history metric value: %v", updateErr)
 			}
@@ -830,7 +968,23 @@ func (e *AlertEngine) triggerAlert(rule api.AlertRuleInfo, host api.AgentInfo, m
 
 	// 创建新的告警历史
 	now := time.Now()
-	message := fmt.Sprintf("%s指标值%.2f超过阈值%.2f", rule.MetricType, metricValue, rule.Threshold)
+	var message string
+	if rule.MetricType == "disk" && rule.Mountpoint != "" {
+		message = fmt.Sprintf("%s告警: %s 挂载点 %s %s %.2f%% (阈值: %.2f%%)",
+			getMetricTypeName(rule.MetricType),
+			host.Hostname,
+			rule.Mountpoint,
+			getConditionName(rule.Condition),
+			metricValue,
+			rule.Threshold)
+	} else {
+		message = fmt.Sprintf("%s告警: %s %s %.2f%% (阈值: %.2f%%)",
+			getMetricTypeName(rule.MetricType),
+			host.Hostname,
+			getConditionName(rule.Condition),
+			metricValue,
+			rule.Threshold)
+	}
 
 	history := &api.AlertHistoryInfo{
 		RuleID:       rule.ID,
@@ -986,6 +1140,324 @@ func (e *AlertEngine) checkAndSendRepeatedNotification(rule api.AlertRuleInfo, h
 // updateAlertHistoryNotifyStatus 更新告警历史的通知状态
 func (e *AlertEngine) updateAlertHistoryNotifyStatus(id uint, notifyStatus string, notifyError string) error {
 	return e.storage.UpdateAlertHistoryNotifyStatus(id, notifyStatus, notifyError)
+}
+
+// getMapKeys 获取map的所有键（用于调试）
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// checkServicePortRule 检查服务端口告警规则
+func (e *AlertEngine) checkServicePortRule(rule api.AlertRuleInfo, agents []api.AgentInfo) {
+	if rule.ServicePort <= 0 {
+		log.Printf("[checkServicePortRule] Invalid service port: %d for rule %s", rule.ServicePort, rule.Name)
+		return
+	}
+
+	log.Printf("[checkServicePortRule] Checking rule: ID=%d, Name=%s, Port=%d, Enabled=%v", rule.ID, rule.Name, rule.ServicePort, rule.Enabled)
+
+	// 获取需要检查的主机列表
+	hostsToCheck := e.getHostsToCheck(rule, agents)
+	log.Printf("[checkServicePortRule] Found %d hosts to check", len(hostsToCheck))
+
+	for _, host := range hostsToCheck {
+		log.Printf("[checkServicePortRule] Checking host: %s (%s)", host.HostID, host.Hostname)
+
+		// 检查是否被静默
+		isSilenced := e.storage.IsRuleSilenced(rule.ID, host.HostID)
+		if isSilenced {
+			log.Printf("[checkServicePortRule] Rule %s for host %s is silenced, skipping", rule.Name, host.HostID)
+			continue
+		}
+
+		// 获取主机的服务状态
+		services, err := e.storage.GetServiceStatus(host.HostID)
+		if err != nil {
+			log.Printf("[checkServicePortRule] Failed to get service status for %s: %v", host.HostID, err)
+			continue
+		}
+
+		log.Printf("[checkServicePortRule] Found %d services for host %s", len(services), host.HostID)
+
+		// 查找指定端口的服务
+		var targetService *api.ServiceInfo
+		for i := range services {
+			log.Printf("[checkServicePortRule] Service %d: Name=%s, Port=%d, PortAccessible=%v", i, services[i].Name, services[i].Port, services[i].PortAccessible)
+			if services[i].Port == rule.ServicePort {
+				targetService = &services[i]
+				log.Printf("[checkServicePortRule] Found target service: Name=%s, Port=%d, PortAccessible=%v", targetService.Name, targetService.Port, targetService.PortAccessible)
+				break
+			}
+		}
+
+		// 检查端口是否可访问
+		portAccessible := false
+		if targetService != nil {
+			portAccessible = targetService.PortAccessible
+			log.Printf("[checkServicePortRule] Port %d accessibility for host %s: %v", rule.ServicePort, host.HostID, portAccessible)
+		} else {
+			log.Printf("[checkServicePortRule] Service with port %d not found for host %s, treating as inaccessible", rule.ServicePort, host.HostID)
+		}
+
+		// 如果端口不可访问，触发告警
+		if !portAccessible {
+			log.Printf("[checkServicePortRule] Port %d is NOT accessible for host %s, checking alert status", rule.ServicePort, host.HostID)
+
+			// 检查是否已有未恢复的告警
+			historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
+			if err != nil {
+				log.Printf("[checkServicePortRule] Failed to list alert history for Rule=%s, Host=%s: %v", rule.Name, host.HostID, err)
+			} else if len(historyList) > 0 {
+				// 已存在未恢复的告警，检查是否需要抑制通知
+				existingHistory := &historyList[0]
+				log.Printf("[checkServicePortRule] Found existing alert history: ID=%d, Status=%s", existingHistory.ID, existingHistory.Status)
+
+				if existingHistory.Status != "firing" {
+					log.Printf("[checkServicePortRule] Existing alert status is not firing, skipping notification check")
+					continue
+				}
+
+				// 检查抑制时间
+				inhibitKey := fmt.Sprintf("%d:%s:%d", rule.ID, host.HostID, rule.ServicePort)
+				e.notifyMu.RLock()
+				lastNotify, exists := e.lastNotifyTime[inhibitKey]
+				e.notifyMu.RUnlock()
+
+				if exists && time.Since(lastNotify) < time.Duration(rule.InhibitDuration)*time.Second {
+					log.Printf("[checkServicePortRule] Alert for Rule=%s, Host=%s, Port=%d is in inhibit period (last notify: %v, inhibit duration: %v), skipping notification",
+						rule.Name, host.HostID, rule.ServicePort, lastNotify, time.Duration(rule.InhibitDuration)*time.Second)
+					continue
+				}
+
+				// 抑制时间已过，发送重复通知
+				log.Printf("[checkServicePortRule] Inhibit duration expired for Rule=%s, Host=%s, Port=%d, sending repeated notification", rule.Name, host.HostID, rule.ServicePort)
+
+				// 更新最后通知时间
+				e.notifyMu.Lock()
+				e.lastNotifyTime[inhibitKey] = time.Now()
+				e.notifyMu.Unlock()
+
+				// 发送通知
+				go func() {
+					err := e.notifier.Send(rule.NotifyChannels, existingHistory, rule.Receivers)
+					notifyStatus := "success"
+					notifyError := ""
+					if err != nil {
+						notifyStatus = "failed"
+						notifyError = err.Error()
+						log.Printf("[checkServicePortRule] Failed to send repeated notification: %v", err)
+					}
+
+					// 更新通知状态
+					if updateErr := e.updateAlertHistoryNotifyStatus(existingHistory.ID, notifyStatus, notifyError); updateErr != nil {
+						log.Printf("[checkServicePortRule] Failed to update alert history notify status: %v", updateErr)
+					} else {
+						log.Printf("[checkServicePortRule] Repeated notification sent for Rule=%s, Host=%s, Port=%d (status: %s)", rule.Name, host.HostID, rule.ServicePort, notifyStatus)
+					}
+				}()
+			} else {
+				// 没有未恢复的告警，触发新告警
+				serviceName := "未知服务"
+				if targetService != nil {
+					serviceName = targetService.Name
+				} else {
+					log.Printf("[checkServicePortRule] Service with port %d not found for host %s", rule.ServicePort, host.HostID)
+				}
+				message := fmt.Sprintf("服务端口 %d (%s) 不可访问", rule.ServicePort, serviceName)
+
+				log.Printf("[checkServicePortRule] Triggering new alert for Rule=%s, Host=%s, Port=%d, Message=%s", rule.Name, host.HostID, rule.ServicePort, message)
+				e.triggerServicePortAlert(rule, host, rule.ServicePort, message)
+			}
+		} else {
+			// 端口可访问，检查是否需要恢复告警
+			log.Printf("[checkServicePortRule] Port %d is accessible for host %s, checking if alert needs to be resolved", rule.ServicePort, host.HostID)
+			historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
+			if err == nil && len(historyList) > 0 {
+				existingHistory := &historyList[0]
+				if existingHistory.Status == "firing" {
+					log.Printf("[checkServicePortRule] Resolving alert for Rule=%s, Host=%s, Port=%d", rule.Name, host.HostID, rule.ServicePort)
+					e.handleServicePortResolved(rule, host, rule.ServicePort)
+				}
+			}
+		}
+	}
+}
+
+// triggerServicePortAlert 触发服务端口告警
+func (e *AlertEngine) triggerServicePortAlert(rule api.AlertRuleInfo, host api.AgentInfo, port int, message string) {
+	log.Printf("[triggerServicePortAlert] Triggering alert: Rule=%s, Host=%s, Port=%d", rule.Name, host.HostID, port)
+
+	// 创建告警历史记录
+	history := api.AlertHistoryInfo{
+		RuleID:      rule.ID,
+		RuleName:    rule.Name,
+		HostID:      host.HostID,
+		Hostname:    host.Hostname,
+		Severity:    rule.Severity,
+		Status:      "firing",
+		FiredAt:     time.Now(),
+		MetricType:  "service_port",
+		MetricValue: 0, // 端口不可访问时值为0
+		Threshold:   0,
+		Message:     message,
+		Labels: map[string]string{
+			"port": fmt.Sprintf("%d", port),
+		},
+		NotifyStatus: "pending",
+	}
+
+	createdHistory, err := e.storage.CreateAlertHistory(&history)
+	if err != nil {
+		log.Printf("[triggerServicePortAlert] Failed to create alert history: %v", err)
+		return
+	}
+
+	// 更新告警状态
+	e.mu.Lock()
+	alertKey := fmt.Sprintf("%d:%s:%d", rule.ID, host.HostID, port)
+	e.alertStates[alertKey] = &AlertState{
+		Status:    "firing",
+		StartTime: time.Now(),
+	}
+	e.mu.Unlock()
+
+	// 发送通知
+	inhibitKey := fmt.Sprintf("%d:%s:%d", rule.ID, host.HostID, port)
+	e.notifyMu.RLock()
+	lastNotify, exists := e.lastNotifyTime[inhibitKey]
+	e.notifyMu.RUnlock()
+
+	if !exists || time.Since(lastNotify) >= time.Duration(rule.InhibitDuration)*time.Second {
+		go func() {
+			err := e.notifier.Send(rule.NotifyChannels, createdHistory, rule.Receivers)
+			notifyStatus := "success"
+			notifyError := ""
+			if err != nil {
+				notifyStatus = "failed"
+				notifyError = err.Error()
+				log.Printf("Failed to send notification: %v", err)
+			}
+
+			if updateErr := e.updateAlertHistoryNotifyStatus(createdHistory.ID, notifyStatus, notifyError); updateErr != nil {
+				log.Printf("Failed to update alert history notify status: %v", updateErr)
+			} else {
+				log.Printf("Service port alert sent for Rule=%s, Host=%s, Port=%d (status: %s)", rule.Name, host.HostID, port, notifyStatus)
+			}
+
+			// 更新最后通知时间
+			e.notifyMu.Lock()
+			e.lastNotifyTime[inhibitKey] = time.Now()
+			e.notifyMu.Unlock()
+		}()
+	}
+}
+
+// handleServicePortResolved 处理服务端口告警恢复
+func (e *AlertEngine) handleServicePortResolved(rule api.AlertRuleInfo, host api.AgentInfo, port int) {
+	log.Printf("[handleServicePortResolved] Resolving alert: Rule=%s, Host=%s, Port=%d", rule.Name, host.HostID, port)
+
+	// 查找未恢复的告警历史
+	historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
+	if err != nil || len(historyList) == 0 {
+		log.Printf("[handleServicePortResolved] No firing alert found for Rule=%s, Host=%s, Port=%d", rule.Name, host.HostID, port)
+		return
+	}
+
+	existingHistory := &historyList[0]
+	now := time.Now()
+
+	// 更新告警历史为已恢复
+	err = e.storage.UpdateAlertHistory(existingHistory.ID, "resolved", &now)
+	if err != nil {
+		log.Printf("[handleServicePortResolved] Failed to update alert history: %v", err)
+		return
+	}
+
+	// 更新告警状态
+	e.mu.Lock()
+	alertKey := fmt.Sprintf("%d:%s:%d", rule.ID, host.HostID, port)
+	if state, exists := e.alertStates[alertKey]; exists {
+		state.Status = "resolved"
+	}
+	e.mu.Unlock()
+
+	// 发送恢复通知
+	serviceName := "未知服务"
+	services, err := e.storage.GetServiceStatus(host.HostID)
+	if err == nil {
+		for _, svc := range services {
+			if svc.Port == port {
+				serviceName = svc.Name
+				break
+			}
+		}
+	}
+	message := fmt.Sprintf("服务端口 %d (%s) 已恢复可访问", port, serviceName)
+
+	// 更新告警历史消息
+	if updateErr := e.storage.UpdateAlertHistoryMetricValue(existingHistory.ID, 0, message); updateErr != nil {
+		log.Printf("Failed to update alert history message: %v", updateErr)
+	}
+	existingHistory.Message = message
+	existingHistory.Status = "resolved"
+	existingHistory.ResolvedAt = &now
+
+	go func() {
+		err := e.notifier.Send(rule.NotifyChannels, existingHistory, rule.Receivers)
+		notifyStatus := "success"
+		notifyError := ""
+		if err != nil {
+			notifyStatus = "failed"
+			notifyError = err.Error()
+			log.Printf("Failed to send notification: %v", err)
+		}
+
+		if updateErr := e.updateAlertHistoryNotifyStatus(existingHistory.ID, notifyStatus, notifyError); updateErr != nil {
+			log.Printf("Failed to update alert history notify status: %v", updateErr)
+		} else {
+			log.Printf("Service port resolved notification sent for Rule=%s, Host=%s, Port=%d (status: %s)", rule.Name, host.HostID, port, notifyStatus)
+		}
+	}()
+}
+
+// getMetricTypeName 获取指标类型名称
+func getMetricTypeName(metricType string) string {
+	switch metricType {
+	case "cpu":
+		return "CPU使用率"
+	case "memory":
+		return "内存使用率"
+	case "disk":
+		return "磁盘使用率"
+	case "network":
+		return "网络"
+	default:
+		return metricType
+	}
+}
+
+// getConditionName 获取条件名称
+func getConditionName(condition string) string {
+	switch condition {
+	case "gt":
+		return ">"
+	case "gte":
+		return ">="
+	case "lt":
+		return "<"
+	case "lte":
+		return "<="
+	case "eq":
+		return "="
+	case "neq":
+		return "!="
+	default:
+		return condition
+	}
 }
 
 // boolPtr 返回bool指针

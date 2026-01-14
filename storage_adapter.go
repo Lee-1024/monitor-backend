@@ -180,11 +180,13 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 
 		// 添加磁盘数据 - 返回所有分区数组
 		if len(cachedMetrics.Disk.Partitions) > 0 {
+			log.Printf("[GetLatestMetrics] Cache hit: Found %d partitions in cache", len(cachedMetrics.Disk.Partitions))
 			var partitions []map[string]interface{}
 			var rootPartition map[string]interface{}
 			var otherPartitions []map[string]interface{}
 
-			for _, p := range cachedMetrics.Disk.Partitions {
+			for i, p := range cachedMetrics.Disk.Partitions {
+				log.Printf("[GetLatestMetrics] Cache partition %d: mountpoint='%s', device='%s'", i, p.Mountpoint, p.Device)
 				partData := map[string]interface{}{
 					"device":       p.Device,
 					"mountpoint":   p.Mountpoint,
@@ -215,9 +217,12 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			}
 			partitions = append(partitions, otherPartitions...)
 
+			log.Printf("[GetLatestMetrics] Cache: Returning %d partitions", len(partitions))
 			latest.Disk = map[string]interface{}{
 				"partitions": partitions,
 			}
+		} else {
+			log.Printf("[GetLatestMetrics] Cache hit: No partitions found in cache")
 		}
 
 		// 添加网络数据
@@ -457,7 +462,12 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 				"partitions": finalPartitions,
 			}
 
-			log.Printf("Returning %d disk partitions", len(finalPartitions))
+			log.Printf("[GetLatestMetrics] InfluxDB: Returning %d disk partitions", len(finalPartitions))
+			for i, part := range finalPartitions {
+				if mp, ok := part["mountpoint"].(string); ok {
+					log.Printf("[GetLatestMetrics] InfluxDB partition %d: mountpoint='%s'", i, mp)
+				}
+			}
 		} else if measurement == "network" {
 			// 网络：聚合所有接口的数据
 			for result.Next() {
@@ -1504,14 +1514,16 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 	result := make([]api.ServiceInfo, len(services))
 	for i, svc := range services {
 		result[i] = api.ServiceInfo{
-			ID:          svc.ID,
-			HostID:      svc.HostID,
-			Timestamp:   svc.Timestamp,
-			Name:        svc.Name,
-			Status:      svc.Status,
-			Enabled:     svc.Enabled,
-			Description: svc.Description,
-			Uptime:      svc.Uptime,
+			ID:             svc.ID,
+			HostID:         svc.HostID,
+			Timestamp:      svc.Timestamp,
+			Name:           svc.Name,
+			Status:         svc.Status,
+			Enabled:        svc.Enabled,
+			Description:    svc.Description,
+			Uptime:         svc.Uptime,
+			Port:           svc.Port,
+			PortAccessible: svc.PortAccessible,
 		}
 	}
 
@@ -1792,6 +1804,8 @@ func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRul
 		Severity:        rule.Severity,
 		MetricType:      rule.MetricType,
 		HostID:          rule.HostID,
+		Mountpoint:      rule.Mountpoint,
+		ServicePort:     rule.ServicePort,
 		Condition:       rule.Condition,
 		Threshold:       rule.Threshold,
 		Duration:        rule.Duration,
@@ -1860,7 +1874,7 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 	// 由于 handler 中已经处理了部分更新，如果字段在 JSON 中存在就会被设置
 	// 所以我们可以通过检查字段是否为零值来判断是否提供了该字段
 	hasOtherFields := rule.Name != "" || rule.Description != "" || rule.Severity != "" ||
-		rule.MetricType != "" || rule.Condition != "" || rule.Threshold != 0 ||
+		rule.MetricType != "" || rule.Mountpoint != "" || rule.Condition != "" || rule.Threshold != 0 ||
 		rule.Duration != 0 || rule.InhibitDuration != 0 || rule.NotifyChannels != nil ||
 		rule.Receivers != nil || rule.SilenceStart != nil || rule.SilenceEnd != nil
 
@@ -1887,6 +1901,28 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 	}
 	if rule.MetricType != "" {
 		updates["metric_type"] = rule.MetricType
+	}
+	// Mountpoint 可以为空字符串（表示不指定挂载点），需要检查是否在 JSON 中提供
+	// 由于 handler 中只有当 updateData["mountpoint"] 存在时才会设置 rule.Mountpoint
+	// 所以如果 rule.Mountpoint 被设置了（即使为空字符串），说明 JSON 中提供了该字段
+	// 检查方式：如果 rule.Mountpoint 与现有值不同，说明 JSON 中提供了该字段，需要更新
+	// 但如果只更新 enabled，handler 中不会设置 rule.Mountpoint，所以 rule.Mountpoint 是空字符串（零值）
+	// 而 existing.Mountpoint 可能是非空字符串，所以 rule.Mountpoint != existing.Mountpoint 为 true
+	// 为了避免错误更新，我们需要检查：只有当 hasOtherFields 为 true 或者 rule.Mountpoint 不是空字符串时才更新
+	// 但更简单的方法是：检查 rule.Mountpoint 是否在 hasOtherFields 检查中被包含（已经在 hasOtherFields 检查中包含了）
+	// 所以如果 hasOtherFields 为 true，说明 mountpoint 被包含在更新中，需要更新
+	// 如果 hasOtherFields 为 false，但 rule.Mountpoint != existing.Mountpoint，且 rule.Mountpoint 不是空字符串，说明单独更新了 mountpoint
+	if rule.Mountpoint != existing.Mountpoint {
+		// 如果 rule.Mountpoint 与现有值不同，说明 JSON 中提供了该字段
+		// 但如果只更新 enabled，rule.Mountpoint 是空字符串（零值），如果现有值不是空字符串，会错误地更新
+		// 所以我们需要检查：如果 rule.Mountpoint 是空字符串，且 hasOtherFields 为 false，不更新
+		// 如果 rule.Mountpoint 不是空字符串，或者 hasOtherFields 为 true，则更新
+		if rule.Mountpoint != "" || hasOtherFields {
+			updates["mountpoint"] = rule.Mountpoint
+		}
+	} else if hasOtherFields {
+		// 如果值相同但 hasOtherFields 为 true，说明是完整更新，也要更新 mountpoint（虽然值相同）
+		updates["mountpoint"] = rule.Mountpoint
 	}
 	// HostID 可以为空字符串（表示所有主机），所以需要检查是否在 JSON 中提供
 	// 由于 handler 中只有当 updateData["host_id"] 存在时才会设置 rule.HostID
@@ -2037,7 +2073,7 @@ func (s *StorageAdapter) GetAlertRule(id uint) (*api.AlertRuleInfo, error) {
 	// 使用原始 SQL 查询，将 JSON 字段作为文本读取，避免自动反序列化
 	sqlQuery := `
 		SELECT id, created_at, updated_at, name, description, enabled, severity,
-		       metric_type, host_id, condition, threshold, duration,
+		       metric_type, host_id, mountpoint, service_port, condition, threshold, duration,
 		       notify_channels, receivers, silence_start, silence_end, inhibit_duration
 		FROM alert_rules
 		WHERE id = ?
@@ -2048,11 +2084,12 @@ func (s *StorageAdapter) GetAlertRule(id uint) (*api.AlertRuleInfo, error) {
 	var rule AlertRule
 	var notifyChannelsStr, receiversStr sql.NullString
 	var silenceStart, silenceEnd sql.NullTime
+	var mountpointStr sql.NullString
 
 	err := row.Scan(
 		&rule.ID, &rule.CreatedAt, &rule.UpdatedAt,
 		&rule.Name, &rule.Description, &rule.Enabled, &rule.Severity,
-		&rule.MetricType, &rule.HostID, &rule.Condition,
+		&rule.MetricType, &rule.HostID, &mountpointStr, &rule.ServicePort, &rule.Condition,
 		&rule.Threshold, &rule.Duration,
 		&notifyChannelsStr, &receiversStr,
 		&silenceStart, &silenceEnd,
@@ -2060,6 +2097,13 @@ func (s *StorageAdapter) GetAlertRule(id uint) (*api.AlertRuleInfo, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get alert rule: %w", err)
+	}
+
+	// 处理 mountpoint 字段（可能为 NULL）
+	if mountpointStr.Valid {
+		rule.Mountpoint = mountpointStr.String
+	} else {
+		rule.Mountpoint = ""
 	}
 
 	// 手动解析 JSON 字段，容忍无效数据
@@ -2110,7 +2154,7 @@ func (s *StorageAdapter) ListAlertRules(enabled *bool) ([]api.AlertRuleInfo, err
 	// 使用原始 SQL 查询，将 JSON 字段作为文本读取，避免自动反序列化
 	sqlQuery := `
 		SELECT id, created_at, updated_at, name, description, enabled, severity,
-		       metric_type, host_id, condition, threshold, duration,
+		       metric_type, host_id, mountpoint, service_port, condition, threshold, duration,
 		       notify_channels, receivers, silence_start, silence_end, inhibit_duration
 		FROM alert_rules
 	`
@@ -2138,7 +2182,7 @@ func (s *StorageAdapter) ListAlertRules(enabled *bool) ([]api.AlertRuleInfo, err
 		err := rows.Scan(
 			&rule.ID, &rule.CreatedAt, &rule.UpdatedAt,
 			&rule.Name, &rule.Description, &rule.Enabled, &rule.Severity,
-			&rule.MetricType, &rule.HostID, &rule.Condition,
+			&rule.MetricType, &rule.HostID, &rule.Mountpoint, &rule.ServicePort, &rule.Condition,
 			&rule.Threshold, &rule.Duration,
 			&notifyChannelsStr, &receiversStr,
 			&silenceStart, &silenceEnd,
@@ -2259,6 +2303,8 @@ func (s *StorageAdapter) alertRuleToAPI(rule *AlertRule) *api.AlertRuleInfo {
 		Severity:        rule.Severity,
 		MetricType:      rule.MetricType,
 		HostID:          rule.HostID,
+		Mountpoint:      rule.Mountpoint,
+		ServicePort:     rule.ServicePort,
 		Condition:       rule.Condition,
 		Threshold:       rule.Threshold,
 		Duration:        rule.Duration,

@@ -140,14 +140,16 @@ type ScriptExecutionInfo struct {
 
 // ServiceInfo 服务信息
 type ServiceInfo struct {
-	ID          uint      `json:"id"`
-	HostID      string    `json:"host_id"`
-	Timestamp   time.Time `json:"timestamp"`
-	Name        string    `json:"name"`
-	Status      string    `json:"status"`
-	Enabled     bool      `json:"enabled"`
-	Description string    `json:"description"`
-	Uptime      int64     `json:"uptime_seconds"`
+	ID            uint      `json:"id"`
+	HostID        string    `json:"host_id"`
+	Timestamp     time.Time `json:"timestamp"`
+	Name          string    `json:"name"`
+	Status        string    `json:"status"`
+	Enabled       bool      `json:"enabled"`
+	Description   string    `json:"description"`
+	Uptime        int64     `json:"uptime_seconds"`
+	Port          int       `json:"port,omitempty"`          // 服务端口
+	PortAccessible bool    `json:"port_accessible,omitempty"` // 端口是否可访问
 }
 
 // AgentInfo Agent信息
@@ -240,6 +242,8 @@ type AlertRuleInfo struct {
 	Severity       string     `json:"severity"`
 	MetricType     string     `json:"metric_type"`
 	HostID         string     `json:"host_id"`
+	Mountpoint     string     `json:"mountpoint,omitempty"`  // 挂载点（仅用于 disk 指标）
+	ServicePort    int        `json:"service_port,omitempty"` // 服务端口（仅用于 service_port 指标）
 	Condition      string     `json:"condition"`
 	Threshold      float64    `json:"threshold"`
 	Duration       int        `json:"duration"`

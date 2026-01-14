@@ -199,11 +199,13 @@ type ServiceStatus struct {
 	HostID    string    `gorm:"index;size:64" json:"host_id"`
 	Timestamp time.Time `gorm:"index" json:"timestamp"`
 	
-	Name        string `gorm:"index;size:255" json:"name"`
-	Status      string `gorm:"size:32;index" json:"status"` // running, stopped, failed
-	Enabled     bool   `json:"enabled"`
-	Description string `gorm:"type:text" json:"description"`
-	Uptime      int64  `json:"uptime_seconds"`
+	Name          string `gorm:"index;size:255" json:"name"`
+	Status        string `gorm:"size:32;index" json:"status"` // running, stopped, failed
+	Enabled       bool   `json:"enabled"`
+	Description   string `gorm:"type:text" json:"description"`
+	Uptime        int64  `json:"uptime_seconds"`
+	Port          int    `gorm:"default:0" json:"port,omitempty"`          // 服务端口
+	PortAccessible bool `gorm:"default:false" json:"port_accessible,omitempty"` // 端口是否可访问
 }
 
 // AlertRule 告警规则
@@ -218,8 +220,10 @@ type AlertRule struct {
 	Severity    string `gorm:"size:32;default:warning" json:"severity"` // critical, warning, info
 
 	// 规则条件
-	MetricType  string `gorm:"size:32;not null" json:"metric_type"`  // cpu, memory, disk, network
+	MetricType  string `gorm:"size:32;not null" json:"metric_type"`  // cpu, memory, disk, network, host_down, service_port
 	HostID      string `gorm:"size:64;index" json:"host_id"`         // 空表示所有主机
+	Mountpoint  string `gorm:"size:255" json:"mountpoint,omitempty"`  // 挂载点（仅用于 disk 指标，例如：/、/var、/home）
+	ServicePort int    `gorm:"default:0" json:"service_port,omitempty"` // 服务端口（仅用于 service_port 指标）
 	Condition   string `gorm:"size:32;not null" json:"condition"`    // gt, gte, lt, lte, eq, neq
 	Threshold   float64 `gorm:"not null" json:"threshold"`           // 阈值
 	Duration    int     `gorm:"default:60" json:"duration"`          // 持续时间（秒）

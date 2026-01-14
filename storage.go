@@ -607,24 +607,22 @@ func (s *Storage) CacheLatestMetrics(hostID string, metrics *Metrics) error {
 		},
 	}
 
-	// 添加磁盘数据（只缓存根分区或第一个分区）
+	// 添加磁盘数据（缓存所有分区，以支持按挂载点告警）
 	if len(metrics.Disk.Partitions) > 0 {
-		partition := metrics.Disk.Partitions[0]
-		// 优先选择根分区
+		var partitions []map[string]interface{}
 		for _, p := range metrics.Disk.Partitions {
-			if p.Mountpoint == "/" {
-				partition = p
-				break
-			}
+			partitions = append(partitions, map[string]interface{}{
+				"device":       p.Device,
+				"mountpoint":   p.Mountpoint,
+				"fstype":       p.Fstype,
+				"total":        p.Total,
+				"used":         p.Used,
+				"free":         p.Free,
+				"used_percent": p.UsedPercent,
+			})
 		}
 		cacheData["disk"] = map[string]interface{}{
-			"device":       partition.Device,
-			"mountpoint":   partition.Mountpoint,
-			"fstype":       partition.Fstype,
-			"total":        partition.Total,
-			"used":         partition.Used,
-			"free":         partition.Free,
-			"used_percent": partition.UsedPercent,
+			"partitions": partitions,
 		}
 	}
 
@@ -705,10 +703,29 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 		}
 	}
 
-	// 解析磁盘数据
+	// 解析磁盘数据（支持新格式：partitions数组，也兼容旧格式：单个分区）
 	if diskData, ok := cacheData["disk"].(map[string]interface{}); ok {
-		metrics.Disk = DiskMetrics{
-			Partitions: []PartitionMetrics{
+		var partitions []PartitionMetrics
+		
+		// 检查是否是新格式（partitions数组）
+		if partitionsData, ok := diskData["partitions"].([]interface{}); ok {
+			// 新格式：包含所有分区的数组
+			for _, partData := range partitionsData {
+				if partMap, ok := partData.(map[string]interface{}); ok {
+					partitions = append(partitions, PartitionMetrics{
+						Device:      getString(partMap["device"]),
+						Mountpoint:  getString(partMap["mountpoint"]),
+						Fstype:      getString(partMap["fstype"]),
+						Total:       getUint64(partMap["total"]),
+						Used:        getUint64(partMap["used"]),
+						Free:        getUint64(partMap["free"]),
+						UsedPercent: getFloat64(partMap["used_percent"]),
+					})
+				}
+			}
+		} else {
+			// 旧格式：单个分区（兼容性处理）
+			partitions = []PartitionMetrics{
 				{
 					Device:      getString(diskData["device"]),
 					Mountpoint:  getString(diskData["mountpoint"]),
@@ -718,7 +735,11 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 					Free:        getUint64(diskData["free"]),
 					UsedPercent: getFloat64(diskData["used_percent"]),
 				},
-			},
+			}
+		}
+		
+		metrics.Disk = DiskMetrics{
+			Partitions: partitions,
 		}
 	}
 

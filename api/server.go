@@ -144,7 +144,7 @@ func (s *APIServer) setupRoutes() {
 		// 服务状态路由
 		services := v1.Group("/services")
 		{
-			services.GET("", s.getServiceStatus) // 获取服务状态
+			services.GET("", s.getServiceStatus)      // 获取服务状态
 		}
 
 		// 告警规则路由

@@ -187,4 +187,6 @@ message ServiceInfo {
   bool enabled = 3;        // 是否开机自启
   string description = 4;   // 服务描述
   int64 uptime_seconds = 5; // 运行时长（秒）
+  int32 port = 6;          // 服务端口（可选，用于端口检查）
+  bool port_accessible = 7; // 端口是否可访问（可选，用于端口检查结果）
 }
