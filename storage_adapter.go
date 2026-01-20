@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"monitor-backend/api"
 )
 
@@ -25,6 +27,11 @@ func NewStorageAdapter(storage *Storage) *StorageAdapter {
 	return &StorageAdapter{
 		storage: storage,
 	}
+}
+
+// GetRedis 获取Redis客户端（用于LLM任务管理）
+func (s *StorageAdapter) GetRedis() interface{} {
+	return s.storage.redis
 }
 
 // ListAgents 获取Agent列表
@@ -1081,6 +1088,94 @@ func (s *StorageAdapter) GetCrashEvents(hostID string, limit int) ([]api.CrashEv
 	return result, nil
 }
 
+// GetCrashEventsWithPagination 分页获取宕机事件
+func (s *StorageAdapter) GetCrashEventsWithPagination(hostID string, page, pageSize int) ([]api.CrashEvent, int64, error) {
+	var events []CrashEvent
+	var total int64
+	query := s.storage.postgres.Model(&CrashEvent{})
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	// 获取总数
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	offset := (page - 1) * pageSize
+	err := query.Order("offline_time DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&events).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 检查并自动修复：如果Agent当前是online状态，但事件未标记为已恢复，则自动标记
+	for i := range events {
+		if !events[i].IsResolved {
+			// 检查Agent当前状态
+			var agent Agent
+			if err := s.storage.postgres.Where("host_id = ?", events[i].HostID).First(&agent).Error; err == nil {
+				if agent.Status == "online" {
+					// Agent已恢复，但事件未标记，自动修复
+					now := time.Now()
+					duration := now.Sub(events[i].OfflineTime).Seconds()
+					s.storage.postgres.Model(&events[i]).Updates(map[string]interface{}{
+						"online_time": &now,
+						"duration":    int64(duration),
+						"is_resolved": true,
+					})
+					events[i].IsResolved = true
+					events[i].OnlineTime = &now
+					events[i].Duration = int64(duration)
+					log.Printf("Auto-resolved crash event %d for host %s (agent is online)", events[i].ID, events[i].HostID)
+				}
+			}
+		}
+	}
+
+	// 转换为API格式
+	result := make([]api.CrashEvent, len(events))
+	for i, event := range events {
+		result[i] = api.CrashEvent{
+			ID:              event.ID,
+			HostID:          event.HostID,
+			Hostname:        event.Hostname,
+			OfflineTime:     event.OfflineTime,
+			OnlineTime:      event.OnlineTime,
+			Duration:        event.Duration,
+			LastCPU:         event.LastCPU,
+			LastMemory:      event.LastMemory,
+			LastDisk:        event.LastDisk,
+			LastNetwork:     event.LastNetwork,
+			Reason:          event.Reason,
+			IsResolved:      event.IsResolved,
+			MetricsSnapshot: event.MetricsSnapshot,
+		}
+	}
+
+	return result, total, nil
+}
+
+// DeleteCrashEvents 批量删除宕机事件
+func (s *StorageAdapter) DeleteCrashEvents(ids []uint) error {
+	if len(ids) == 0 {
+		return fmt.Errorf("no crash event IDs provided")
+	}
+
+	err := s.storage.postgres.Where("id IN ?", ids).Delete(&CrashEvent{}).Error
+	if err != nil {
+		log.Printf("[Storage] Failed to delete crash events: %v", err)
+		return err
+	}
+
+	log.Printf("[Storage] Successfully deleted %d crash events", len(ids))
+	return nil
+}
+
 // GetCrashEventDetail 获取单个宕机事件详情
 func (s *StorageAdapter) GetCrashEventDetail(id uint) (*api.CrashEvent, error) {
 	event, err := s.storage.GetCrashEventDetail(id)
@@ -1391,6 +1486,314 @@ func (s *StorageAdapter) GetLogs(hostID, level string, start, end time.Time, lim
 	}
 
 	return result, nil
+}
+
+// GetLogsWithPagination 分页获取日志列表
+func (s *StorageAdapter) GetLogsWithPagination(hostID, level string, start, end time.Time, page, pageSize int) ([]api.LogInfo, int64, error) {
+	var logs []LogEntry
+	var total int64
+	query := s.storage.postgres.Model(&LogEntry{})
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+	if level != "" {
+		query = query.Where("level = ?", level)
+	}
+	if !start.IsZero() {
+		query = query.Where("timestamp >= ?", start)
+	}
+	if !end.IsZero() {
+		query = query.Where("timestamp <= ?", end)
+	}
+
+	// 获取总数
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	offset := (page - 1) * pageSize
+	err := query.Order("timestamp DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&logs).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	result := make([]api.LogInfo, len(logs))
+	for i, l := range logs {
+		result[i] = api.LogInfo{
+			ID:        l.ID,
+			HostID:    l.HostID,
+			Timestamp: l.Timestamp,
+			Source:    l.Source,
+			Level:     l.Level,
+			Message:   l.Message,
+			Tags:      l.Tags,
+		}
+	}
+
+	return result, total, nil
+}
+
+// ============================================
+// 异常检测相关方法
+// ============================================
+
+// CreateAnomalyEvent 创建异常事件
+func (s *StorageAdapter) CreateAnomalyEvent(event *api.AnomalyEventInfo) error {
+	// 序列化相关数据
+	var relatedLogsJSON, relatedMetricsJSON, recommendationsJSON string
+
+	if len(event.RelatedLogs) > 0 {
+		logIDs := make([]uint, len(event.RelatedLogs))
+		for i, log := range event.RelatedLogs {
+			logIDs[i] = log.ID
+		}
+		if data, err := json.Marshal(logIDs); err == nil {
+			relatedLogsJSON = string(data)
+		}
+	}
+
+	if event.RelatedMetrics != nil {
+		if data, err := json.Marshal(event.RelatedMetrics); err == nil {
+			relatedMetricsJSON = string(data)
+		}
+	}
+
+	if len(event.Recommendations) > 0 {
+		if data, err := json.Marshal(event.Recommendations); err == nil {
+			recommendationsJSON = string(data)
+		}
+	}
+
+	anomalyEvent := &AnomalyEvent{
+		HostID:          event.HostID,
+		Type:            event.Type,
+		Severity:        event.Severity,
+		MetricType:      event.MetricType,
+		Timestamp:       event.Timestamp,
+		Value:           event.Value,
+		ExpectedValue:   event.ExpectedValue,
+		Deviation:       event.Deviation,
+		Confidence:      event.Confidence,
+		Message:         event.Message,
+		RootCause:       event.RootCause,
+		RelatedLogs:     relatedLogsJSON,
+		RelatedMetrics:  relatedMetricsJSON,
+		Recommendations: recommendationsJSON,
+		IsResolved:      false,
+	}
+
+	if err := s.storage.postgres.Create(anomalyEvent).Error; err != nil {
+		return err
+	}
+
+	// 更新返回的ID
+	event.ID = anomalyEvent.ID
+	event.CreatedAt = anomalyEvent.CreatedAt
+	event.UpdatedAt = anomalyEvent.UpdatedAt
+
+	return nil
+}
+
+// GetAnomalyEvents 获取异常事件列表
+func (s *StorageAdapter) GetAnomalyEvents(hostID, severity, anomalyType string, isResolved *bool, limit int) ([]api.AnomalyEventInfo, error) {
+	var events []AnomalyEvent
+	query := s.storage.postgres.Order("timestamp DESC")
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+	if severity != "" {
+		query = query.Where("severity = ?", severity)
+	}
+	if anomalyType != "" {
+		query = query.Where("type = ?", anomalyType)
+	}
+	if isResolved != nil {
+		query = query.Where("is_resolved = ?", *isResolved)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Find(&events).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换为API格式
+	result := make([]api.AnomalyEventInfo, len(events))
+	for i, event := range events {
+		anomalyInfo := api.AnomalyEventInfo{
+			ID:            event.ID,
+			CreatedAt:     event.CreatedAt,
+			UpdatedAt:     event.UpdatedAt,
+			HostID:        event.HostID,
+			Type:          event.Type,
+			Severity:      event.Severity,
+			MetricType:    event.MetricType,
+			Timestamp:     event.Timestamp,
+			Value:         event.Value,
+			ExpectedValue: event.ExpectedValue,
+			Deviation:     event.Deviation,
+			Confidence:    event.Confidence,
+			Message:       event.Message,
+			RootCause:     event.RootCause,
+			IsResolved:    event.IsResolved,
+			ResolvedAt:    event.ResolvedAt,
+			ResolvedBy:    event.ResolvedBy,
+		}
+
+		// 反序列化相关数据
+		if event.RelatedLogs != "" {
+			var logIDs []uint
+			if err := json.Unmarshal([]byte(event.RelatedLogs), &logIDs); err == nil && len(logIDs) > 0 {
+				// 获取日志详情
+				var logs []LogEntry
+				s.storage.postgres.Where("id IN ?", logIDs).Find(&logs)
+				anomalyInfo.RelatedLogs = make([]api.LogInfo, len(logs))
+				for j, log := range logs {
+					anomalyInfo.RelatedLogs[j] = api.LogInfo{
+						ID:        log.ID,
+						HostID:    log.HostID,
+						Timestamp: log.Timestamp,
+						Source:    log.Source,
+						Level:     log.Level,
+						Message:   log.Message,
+						Tags:      log.Tags,
+					}
+				}
+			}
+		}
+
+		if event.RelatedMetrics != "" {
+			json.Unmarshal([]byte(event.RelatedMetrics), &anomalyInfo.RelatedMetrics)
+		}
+
+		if event.Recommendations != "" {
+			json.Unmarshal([]byte(event.Recommendations), &anomalyInfo.Recommendations)
+		}
+
+		result[i] = anomalyInfo
+	}
+
+	return result, nil
+}
+
+// GetAnomalyEventDetail 获取异常事件详情
+func (s *StorageAdapter) GetAnomalyEventDetail(id uint) (*api.AnomalyEventInfo, error) {
+	var event AnomalyEvent
+	err := s.storage.postgres.First(&event, id).Error
+	if err != nil {
+		return nil, err
+	}
+
+	anomalyInfo := &api.AnomalyEventInfo{
+		ID:            event.ID,
+		CreatedAt:     event.CreatedAt,
+		UpdatedAt:     event.UpdatedAt,
+		HostID:        event.HostID,
+		Type:          event.Type,
+		Severity:      event.Severity,
+		MetricType:    event.MetricType,
+		Timestamp:     event.Timestamp,
+		Value:         event.Value,
+		ExpectedValue: event.ExpectedValue,
+		Deviation:     event.Deviation,
+		Confidence:    event.Confidence,
+		Message:       event.Message,
+		RootCause:     event.RootCause,
+		IsResolved:    event.IsResolved,
+		ResolvedAt:    event.ResolvedAt,
+		ResolvedBy:    event.ResolvedBy,
+	}
+
+	// 反序列化相关数据
+	if event.RelatedLogs != "" {
+		var logIDs []uint
+		if err := json.Unmarshal([]byte(event.RelatedLogs), &logIDs); err == nil && len(logIDs) > 0 {
+			var logs []LogEntry
+			s.storage.postgres.Where("id IN ?", logIDs).Find(&logs)
+			anomalyInfo.RelatedLogs = make([]api.LogInfo, len(logs))
+			for i, log := range logs {
+				anomalyInfo.RelatedLogs[i] = api.LogInfo{
+					ID:        log.ID,
+					HostID:    log.HostID,
+					Timestamp: log.Timestamp,
+					Source:    log.Source,
+					Level:     log.Level,
+					Message:   log.Message,
+					Tags:      log.Tags,
+				}
+			}
+		}
+	}
+
+	if event.RelatedMetrics != "" {
+		json.Unmarshal([]byte(event.RelatedMetrics), &anomalyInfo.RelatedMetrics)
+	}
+
+	if event.Recommendations != "" {
+		json.Unmarshal([]byte(event.Recommendations), &anomalyInfo.Recommendations)
+	}
+
+	return anomalyInfo, nil
+}
+
+// ResolveAnomalyEvent 标记异常事件为已解决
+func (s *StorageAdapter) ResolveAnomalyEvent(id uint, resolvedBy string) error {
+	now := time.Now()
+	return s.storage.postgres.Model(&AnomalyEvent{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"is_resolved": true,
+			"resolved_at": &now,
+			"resolved_by": resolvedBy,
+		}).Error
+}
+
+// GetAnomalyStatistics 获取异常统计信息
+func (s *StorageAdapter) GetAnomalyStatistics(hostID string) (*api.AnomalyStatistics, error) {
+	var events []AnomalyEvent
+	query := s.storage.postgres
+
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	err := query.Find(&events).Error
+	if err != nil {
+		return nil, err
+	}
+
+	stats := &api.AnomalyStatistics{
+		TotalAnomalies:  len(events),
+		UnresolvedCount: 0,
+		BySeverity:      make(map[string]int),
+		ByType:          make(map[string]int),
+		RecentAnomalies: []api.AnomalyEventInfo{},
+	}
+
+	// 统计未解决数量
+	for _, event := range events {
+		if !event.IsResolved {
+			stats.UnresolvedCount++
+		}
+		stats.BySeverity[event.Severity]++
+		stats.ByType[event.Type]++
+	}
+
+	// 获取最近的异常事件（最多10个）
+	recentEvents, err := s.GetAnomalyEvents(hostID, "", "", nil, 10)
+	if err == nil {
+		stats.RecentAnomalies = recentEvents
+	}
+
+	return stats, nil
 }
 
 // ============================================
@@ -2720,4 +3123,381 @@ func (s *StorageAdapter) notificationChannelToAPI(channel *NotificationChannel) 
 		Config:      channel.Config,
 		Description: channel.Description,
 	}
+}
+
+// GetPredictionData 获取预测所需的历史数据
+func (s *StorageAdapter) GetPredictionData(hostID, metricType string, days int) ([]api.PredictionDataPoint, error) {
+	ctx := context.Background()
+
+	// 使用相对时间格式（Flux查询标准格式）
+	// 限制查询天数，避免查询过多数据导致超时
+	maxDays := 60
+	if days > maxDays {
+		days = maxDays
+		log.Printf("GetPredictionData: limiting query days to %d", maxDays)
+	}
+	start := fmt.Sprintf("-%dd", days)
+
+	// 根据指标类型选择字段
+	var field string
+	switch metricType {
+	case "cpu":
+		field = "usage_percent"
+	case "memory":
+		field = "used_percent"
+	case "disk":
+		field = "used_percent"
+	default:
+		return nil, fmt.Errorf("unsupported metric type for prediction: %s", metricType)
+	}
+
+	// 构建Flux查询 - 按小时聚合以减少数据量
+	var query string
+	if metricType == "disk" {
+		// 磁盘：选择根分区或最大分区
+		query = fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> filter(fn: (r) => r["_field"] == "%s")
+  |> filter(fn: (r) => r["mountpoint"] == "/")
+  |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+  |> sort(columns: ["_time"])`,
+			s.storage.config.InfluxDB.Bucket, start, metricType, hostID, field)
+	} else {
+		// CPU和内存：直接查询
+		query = fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> filter(fn: (r) => r["_field"] == "%s")
+  |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+  |> sort(columns: ["_time"])`,
+			s.storage.config.InfluxDB.Bucket, start, metricType, hostID, field)
+	}
+
+	log.Printf("GetPredictionData query for %s/%s: %s", hostID, metricType, query)
+
+	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
+	result, err := queryAPI.Query(ctx, query)
+	if err != nil {
+		log.Printf("GetPredictionData InfluxDB query error: %v", err)
+		return nil, fmt.Errorf("influxdb query failed: %v", err)
+	}
+	defer result.Close()
+
+	// 检查查询错误
+	if result.Err() != nil {
+		log.Printf("GetPredictionData InfluxDB result error: %v", result.Err())
+		return nil, fmt.Errorf("influxdb result error: %v", result.Err())
+	}
+
+	points := make([]api.PredictionDataPoint, 0)
+	recordCount := 0
+	for result.Next() {
+		record := result.Record()
+		recordCount++
+
+		value := record.Value()
+		if value == nil {
+			continue
+		}
+
+		var floatValue float64
+		switch v := value.(type) {
+		case float64:
+			floatValue = v
+		case int64:
+			floatValue = float64(v)
+		case int:
+			floatValue = float64(v)
+		default:
+			log.Printf("Unexpected value type: %T, value: %v", value, value)
+			continue
+		}
+
+		points = append(points, api.PredictionDataPoint{
+			Timestamp: record.Time(),
+			Value:     floatValue,
+		})
+	}
+
+	log.Printf("GetPredictionData: retrieved %d data points from %d records", len(points), recordCount)
+
+	if len(points) == 0 {
+		return nil, fmt.Errorf("no data points found for host %s, metric type %s, days %d", hostID, metricType, days)
+	}
+
+	return points, nil
+}
+
+// CreateLLMModelConfig 创建LLM模型配置
+func (s *StorageAdapter) CreateLLMModelConfig(config *api.LLMModelConfigInfo) (*api.LLMModelConfigInfo, error) {
+	// 先检查是否存在相同名称的配置（包括已软删除的）
+	// 如果存在已删除的同名配置，先彻底删除它，避免唯一索引冲突
+	var existingConfig LLMModelConfig
+	err := s.storage.postgres.Unscoped().Where("name = ?", config.Name).First(&existingConfig).Error
+	if err == nil {
+		// 如果找到已删除的记录，先彻底删除它
+		if deleteErr := s.storage.postgres.Unscoped().Delete(&existingConfig).Error; deleteErr != nil {
+			log.Printf("[Storage] 删除已存在的同名配置失败: %v", deleteErr)
+		} else {
+			log.Printf("[Storage] 发现已删除的同名配置 '%s' (ID: %d)，已彻底删除，允许重新创建", config.Name, existingConfig.ID)
+		}
+	} else if err != gorm.ErrRecordNotFound {
+		// 其他错误
+		log.Printf("[Storage] 检查配置名称时出错: %v", err)
+		return nil, err
+	}
+
+	llmConfig := &LLMModelConfig{
+		Name:        config.Name,
+		Provider:    config.Provider,
+		APIKey:      config.APIKey,
+		BaseURL:     config.BaseURL,
+		Model:       config.Model,
+		Temperature: config.Temperature,
+		MaxTokens:   config.MaxTokens,
+		Timeout:     config.Timeout,
+		Enabled:     config.Enabled,
+		IsDefault:   config.IsDefault,
+		Description: config.Description,
+		Config:      config.Config,
+	}
+
+	if err := s.storage.postgres.Create(llmConfig).Error; err != nil {
+		// 检查是否是唯一约束冲突
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "unique constraint") {
+			log.Printf("[Storage] 创建LLM配置失败: 配置名称 '%s' 已存在", config.Name)
+			return nil, fmt.Errorf("配置名称 '%s' 已存在，请使用其他名称", config.Name)
+		}
+		log.Printf("[Storage] 创建LLM配置失败: %v", err)
+		return nil, err
+	}
+
+	// 如果设置为默认，取消其他默认配置
+	if config.IsDefault {
+		s.storage.postgres.Model(&LLMModelConfig{}).Where("id != ?", llmConfig.ID).Update("is_default", false)
+	}
+
+	return s.llmModelConfigToAPI(llmConfig), nil
+}
+
+// UpdateLLMModelConfig 更新LLM模型配置
+func (s *StorageAdapter) UpdateLLMModelConfig(id uint, config *api.LLMModelConfigInfo) error {
+	updates := map[string]interface{}{
+		"name":        config.Name,
+		"provider":    config.Provider,
+		"base_url":    config.BaseURL,
+		"model":       config.Model,
+		"temperature": config.Temperature,
+		"max_tokens":  config.MaxTokens,
+		"timeout":     config.Timeout,
+		"enabled":     config.Enabled,
+		"is_default":  config.IsDefault,
+		"description": config.Description,
+		"config":      config.Config,
+	}
+
+	// 如果提供了新的API密钥，更新它
+	if config.APIKey != "" && !strings.Contains(config.APIKey, "****") {
+		updates["api_key"] = config.APIKey
+	}
+
+	if err := s.storage.postgres.Model(&LLMModelConfig{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		// 检查是否是唯一约束冲突
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "unique constraint") {
+			log.Printf("[Storage] 更新LLM配置失败: 配置名称 '%s' 已存在", config.Name)
+			return fmt.Errorf("配置名称 '%s' 已存在，请使用其他名称", config.Name)
+		}
+		log.Printf("[Storage] 更新LLM配置失败: %v", err)
+		return err
+	}
+
+	// 如果设置为默认，取消其他默认配置
+	if config.IsDefault {
+		s.storage.postgres.Model(&LLMModelConfig{}).Where("id != ?", id).Update("is_default", false)
+	}
+
+	return nil
+}
+
+// DeleteLLMModelConfig 删除LLM模型配置
+func (s *StorageAdapter) DeleteLLMModelConfig(id uint) error {
+	// 使用 Unscoped().Delete() 确保硬删除，即使模型有 DeletedAt 字段也会真正删除
+	// 这样可以确保唯一索引不会因为软删除的记录而阻止重新创建相同名称的配置
+	result := s.storage.postgres.Unscoped().Delete(&LLMModelConfig{}, id)
+	if result.Error != nil {
+		log.Printf("[Storage] 删除LLM配置失败，ID: %d, 错误: %v", id, result.Error)
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		log.Printf("[Storage] 警告: 尝试删除不存在的LLM配置，ID: %d", id)
+		return fmt.Errorf("LLM配置不存在，ID: %d", id)
+	}
+	log.Printf("[Storage] 成功删除LLM配置，ID: %d, 影响行数: %d", id, result.RowsAffected)
+	return nil
+}
+
+// GetLLMModelConfig 获取LLM模型配置
+func (s *StorageAdapter) GetLLMModelConfig(id uint) (*api.LLMModelConfigInfo, error) {
+	var config LLMModelConfig
+	if err := s.storage.postgres.First(&config, id).Error; err != nil {
+		return nil, err
+	}
+	return s.llmModelConfigToAPI(&config), nil
+}
+
+// GetLLMModelConfigWithKey 获取LLM模型配置（包含完整API密钥，用于测试）
+func (s *StorageAdapter) GetLLMModelConfigWithKey(id uint) (*api.LLMModelConfigInfo, error) {
+	var config LLMModelConfig
+	if err := s.storage.postgres.First(&config, id).Error; err != nil {
+		return nil, err
+	}
+	// 返回完整配置（包括完整API密钥）
+	return &api.LLMModelConfigInfo{
+		ID:          config.ID,
+		CreatedAt:   config.CreatedAt,
+		UpdatedAt:   config.UpdatedAt,
+		Name:        config.Name,
+		Provider:    config.Provider,
+		APIKey:      config.APIKey, // 返回完整密钥
+		BaseURL:     config.BaseURL,
+		Model:       config.Model,
+		Temperature: config.Temperature,
+		MaxTokens:   config.MaxTokens,
+		Timeout:     config.Timeout,
+		Enabled:     config.Enabled,
+		IsDefault:   config.IsDefault,
+		Description: config.Description,
+		Config:      config.Config,
+	}, nil
+}
+
+// GetDefaultLLMModelConfig 获取默认LLM模型配置（返回完整API密钥，用于内部使用）
+func (s *StorageAdapter) GetDefaultLLMModelConfig() (*api.LLMModelConfigInfo, error) {
+	var config LLMModelConfig
+	err := s.storage.postgres.Where("is_default = ? AND enabled = ?", true, true).First(&config).Error
+	if err != nil {
+		// 如果没有默认配置，尝试返回第一个启用的配置
+		if err == gorm.ErrRecordNotFound {
+			err = s.storage.postgres.Where("enabled = ?", true).First(&config).Error
+			if err == gorm.ErrRecordNotFound {
+				// 没有找到任何配置，这是正常情况，返回nil而不是错误
+				return nil, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	// 返回完整配置（包括完整API密钥）
+	return &api.LLMModelConfigInfo{
+		ID:          config.ID,
+		CreatedAt:   config.CreatedAt,
+		UpdatedAt:   config.UpdatedAt,
+		Name:        config.Name,
+		Provider:    config.Provider,
+		APIKey:      config.APIKey, // 返回完整密钥
+		BaseURL:     config.BaseURL,
+		Model:       config.Model,
+		Temperature: config.Temperature,
+		MaxTokens:   config.MaxTokens,
+		Timeout:     config.Timeout,
+		Enabled:     config.Enabled,
+		IsDefault:   config.IsDefault,
+		Description: config.Description,
+		Config:      config.Config,
+	}, nil
+}
+
+// ListLLMModelConfigs 列出LLM模型配置
+func (s *StorageAdapter) ListLLMModelConfigs(enabled *bool) ([]api.LLMModelConfigInfo, error) {
+	var configs []LLMModelConfig
+	query := s.storage.postgres.Model(&LLMModelConfig{})
+
+	if enabled != nil {
+		query = query.Where("enabled = ?", *enabled)
+	}
+
+	if err := query.Order("is_default DESC, created_at DESC").Find(&configs).Error; err != nil {
+		log.Printf("[Storage] 查询LLM配置列表失败: %v", err)
+		return nil, err
+	}
+
+	log.Printf("[Storage] 查询到 %d 个LLM配置", len(configs))
+	for i, config := range configs {
+		log.Printf("[Storage] 配置[%d]: ID=%d, 名称=%s, is_default=%v", i, config.ID, config.Name, config.IsDefault)
+	}
+
+	result := make([]api.LLMModelConfigInfo, len(configs))
+	for i, config := range configs {
+		result[i] = *s.llmModelConfigToAPI(&config)
+		log.Printf("[Storage] 转换后的配置[%d]: ID=%d, 名称=%s, is_default=%v", i, result[i].ID, result[i].Name, result[i].IsDefault)
+	}
+
+	return result, nil
+}
+
+// SetDefaultLLMModelConfig 设置默认LLM模型配置
+func (s *StorageAdapter) SetDefaultLLMModelConfig(id uint) error {
+	log.Printf("[Storage] 开始设置默认LLM配置，ID: %d", id)
+
+	// 先取消所有默认配置（必须有WHERE条件，即使条件为true）
+	result := s.storage.postgres.Model(&LLMModelConfig{}).Where("is_default = ?", true).Update("is_default", false)
+	if result.Error != nil {
+		log.Printf("[Storage] 取消默认配置失败: %v", result.Error)
+		return result.Error
+	}
+	log.Printf("[Storage] 已取消 %d 个默认配置", result.RowsAffected)
+
+	// 设置新的默认配置
+	result = s.storage.postgres.Model(&LLMModelConfig{}).Where("id = ?", id).Update("is_default", true)
+	if result.Error != nil {
+		log.Printf("[Storage] 设置默认配置失败: %v", result.Error)
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		log.Printf("[Storage] 警告: 没有找到ID为 %d 的配置", id)
+		return fmt.Errorf("config with id %d not found", id)
+	}
+	log.Printf("[Storage] 成功设置ID %d 为默认配置，影响行数: %d", id, result.RowsAffected)
+
+	return nil
+}
+
+// llmModelConfigToAPI 转换为API格式
+func (s *StorageAdapter) llmModelConfigToAPI(config *LLMModelConfig) *api.LLMModelConfigInfo {
+	// 隐藏API密钥的部分内容（只显示前4位和后4位）
+	apiKey := config.APIKey
+	if len(apiKey) > 8 {
+		apiKey = apiKey[:4] + "****" + apiKey[len(apiKey)-4:]
+	} else if len(apiKey) > 0 {
+		apiKey = "****"
+	}
+
+	return &api.LLMModelConfigInfo{
+		ID:          config.ID,
+		CreatedAt:   config.CreatedAt,
+		UpdatedAt:   config.UpdatedAt,
+		Name:        config.Name,
+		Provider:    config.Provider,
+		APIKey:      apiKey, // 返回隐藏后的密钥
+		BaseURL:     config.BaseURL,
+		Model:       config.Model,
+		Temperature: config.Temperature,
+		MaxTokens:   config.MaxTokens,
+		Timeout:     config.Timeout,
+		Enabled:     config.Enabled,
+		IsDefault:   config.IsDefault,
+		Description: config.Description,
+		Config:      config.Config,
+	}
+}
+
+// GetDB 获取数据库连接
+func (s *StorageAdapter) GetDB() interface{} {
+	return s.storage.postgres
 }

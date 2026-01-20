@@ -16,6 +16,10 @@ type APIServer struct {
 	storage           StorageInterface
 	config            *APIConfig
 	notificationManager interface{} // NotificationManager 接口，避免循环依赖
+	predictor         PredictorInterface // 预测器接口
+	llmManager        interface{ GetClient() LLMClientInterface } // LLM管理器接口
+	taskManager       *LLMTaskManager // LLM任务管理器
+	anomalyDetector   interface{} // 异常检测器接口（避免循环依赖）
 }
 
 type APIConfig struct {
@@ -24,7 +28,7 @@ type APIConfig struct {
 	AuthRequired bool // 是否要求认证
 }
 
-func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManager interface{}) *APIServer {
+func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManager interface{}, predictor PredictorInterface, llmManager interface{ GetClient() LLMClientInterface }, anomalyDetector interface{}) *APIServer {
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
@@ -40,11 +44,26 @@ func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManag
 		MaxAge:           12 * time.Hour,
 	}))
 
+	// 初始化LLM任务管理器
+	var taskManager *LLMTaskManager
+	if redisClient := storage.GetRedis(); redisClient != nil {
+		// 使用类型断言获取Redis客户端
+		type RedisClient interface {
+			Get(ctx interface{}, key string) interface{}
+		}
+		// 直接使用interface{}，在llm_task.go中处理类型转换
+		taskManager = NewLLMTaskManagerFromInterface(redisClient)
+	}
+
 	server := &APIServer{
 		router:             router,
 		storage:            storage,
 		config:             config,
 		notificationManager: notificationManager,
+		predictor:          predictor,
+		llmManager:         llmManager,
+		taskManager:        taskManager,
+		anomalyDetector:    anomalyDetector,
 	}
 
 	server.setupRoutes()
@@ -102,12 +121,90 @@ func (s *APIServer) setupRoutes() {
 			stats.GET("/top", s.getTopMetrics)    // 获取Top指标
 		}
 
+		// 预测分析相关
+		predictions := v1.Group("/predictions")
+		{
+			predictions.GET("/capacity", s.getCapacityPrediction) // 获取容量预测
+			predictions.GET("/capacity/stream", s.streamCapacityAnalysis) // 流式获取容量分析（SSE）
+			predictions.GET("/cost-optimization", s.getCostOptimization) // 获取成本优化建议
+			predictions.GET("/cost-optimization/stream", s.streamCostOptimization) // 流式获取成本优化建议（SSE）
+			predictions.GET("/task/:task_id", s.getLLMTaskStatus) // 获取LLM任务状态
+		}
+
+		// LLM模型配置相关
+		llm := v1.Group("/llm")
+		{
+			llm.GET("/models", s.listLLMModelConfigs)           // 获取模型配置列表
+			llm.POST("/models", s.createLLMModelConfig)        // 创建模型配置
+			llm.POST("/models/test", s.testLLMModelConfig)      // 测试模型配置（必须在 /models/:id 之前）
+			llm.POST("/models/:id/test", s.testLLMModelConfigByID) // 通过ID测试模型配置（必须在 /models/:id 之前）
+			llm.POST("/models/:id/set-default", s.setDefaultLLMModelConfig) // 设置默认模型配置（必须在 /models/:id 之前）
+			llm.GET("/models/:id", s.getLLMModelConfig)         // 获取模型配置
+			llm.PUT("/models/:id", s.updateLLMModelConfig)      // 更新模型配置
+			llm.DELETE("/models/:id", s.deleteLLMModelConfig)   // 删除模型配置
+		}
+
 		// 宕机分析路由
 		crash := v1.Group("/crash")
 		{
 			crash.GET("/events", s.getCrashEvents)              // 获取宕机事件列表
 			crash.GET("/events/:id", s.getCrashEventDetail)     // 获取宕机事件详情
+			crash.DELETE("/events", s.deleteCrashEvents)        // 批量删除宕机事件
 			crash.GET("/analysis/:host_id", s.getCrashAnalysis) // 获取宕机分析
+		}
+
+		// 异常检测路由
+		anomalies := v1.Group("/anomalies")
+		{
+			anomalies.POST("/detect", s.detectAnomalies)                    // 检测异常（指标和日志）
+			anomalies.GET("/detect/stream", s.streamAnomalyAnalysis)        // 流式获取异常分析（SSE）
+			anomalies.GET("/events", s.getAnomalyEvents)                    // 获取异常事件列表
+			anomalies.GET("/events/:id", s.getAnomalyEventDetail)          // 获取异常事件详情
+			anomalies.POST("/events/:id/resolve", s.resolveAnomalyEvent)   // 标记异常事件为已解决
+			anomalies.GET("/statistics", s.getAnomalyStatistics)            // 获取异常统计信息
+		}
+
+		// 性能分析路由
+		performance := v1.Group("/performance")
+		{
+			performance.GET("/analysis/stream", s.streamPerformanceAnalysis) // 流式获取性能分析（SSE）
+		}
+
+		// 知识库路由
+		knowledge := v1.Group("/knowledge")
+		{
+			// 故障处理知识库
+			knowledge.GET("/troubleshooting", s.listTroubleshootingGuides)           // 获取故障处理知识库列表
+			knowledge.GET("/troubleshooting/:id", s.getTroubleshootingGuide)          // 获取故障处理知识库详情
+			knowledge.POST("/troubleshooting", s.createTroubleshootingGuide)          // 创建故障处理知识库
+			knowledge.PUT("/troubleshooting/:id", s.updateTroubleshootingGuide)       // 更新故障处理知识库
+			knowledge.DELETE("/troubleshooting/:id", s.deleteTroubleshootingGuide)    // 删除故障处理知识库
+
+			// 最佳实践文档
+			knowledge.GET("/best-practices", s.listBestPractices)                    // 获取最佳实践文档列表
+			knowledge.GET("/best-practices/:id", s.getBestPractice)                  // 获取最佳实践文档详情
+			knowledge.POST("/best-practices", s.createBestPractice)                  // 创建最佳实践文档
+			knowledge.PUT("/best-practices/:id", s.updateBestPractice)               // 更新最佳实践文档
+			knowledge.DELETE("/best-practices/:id", s.deleteBestPractice)            // 删除最佳实践文档
+
+			// 故障案例库
+			knowledge.GET("/case-studies", s.listCaseStudies)                        // 获取故障案例库列表
+			knowledge.GET("/case-studies/:id", s.getCaseStudy)                       // 获取故障案例库详情
+			knowledge.POST("/case-studies", s.createCaseStudy)                      // 创建故障案例库
+			knowledge.PUT("/case-studies/:id", s.updateCaseStudy)                   // 更新故障案例库
+			knowledge.DELETE("/case-studies/:id", s.deleteCaseStudy)                // 删除故障案例库
+
+			// LLM搜索
+			knowledge.GET("/search/stream", s.searchKnowledgeBase)                  // 流式搜索知识库（SSE）
+		}
+
+		// 智能巡检路由
+		inspection := v1.Group("/inspection")
+		{
+			inspection.POST("/run", s.runInspection)                              // 执行巡检
+			inspection.GET("/reports", s.listInspectionReports)                   // 获取巡检报告列表
+			inspection.GET("/reports/:id", s.getInspectionReport)                 // 获取巡检报告详情
+			inspection.GET("/reports/:id/stream", s.streamInspectionReport)       // 流式生成巡检日报（SSE）
 		}
 
 		// 用户管理路由（需要管理员权限）

@@ -21,3 +21,14 @@ redis:
 jwt_secret: "bbcceewwx1234567890"
 # 是否要求认证，设置为false可以在开发环境中禁用认证
 auth_required: true
+
+# LLM配置（可选，用于智能分析和成本优化建议）
+llm:
+  enabled: false  # 是否启用LLM功能
+  provider: "openai"  # openai, claude, custom
+  api_key: ""  # LLM API密钥
+  base_url: ""  # 自定义API地址（可选，用于custom provider）
+  model: "gpt-3.5-turbo"  # 模型名称
+  temperature: 0.7  # 温度参数（0-1）
+  max_tokens: 8000  # 最大token数（默认8000，确保巡检日报等长文本生成完整）
+  timeout: 30  # 超时时间（秒）

@@ -26,8 +26,17 @@ type StorageInterface interface {
 
 	// 宕机分析相关（新增）
 	GetCrashEvents(hostID string, limit int) ([]CrashEvent, error)
+	GetCrashEventsWithPagination(hostID string, page, pageSize int) ([]CrashEvent, int64, error) // 分页获取宕机事件
 	GetCrashEventDetail(id uint) (*CrashEvent, error)
 	GetCrashAnalysis(hostID string) (*CrashAnalysis, error)
+	DeleteCrashEvents(ids []uint) error // 批量删除宕机事件
+
+	// 异常检测相关
+	CreateAnomalyEvent(event *AnomalyEventInfo) error
+	GetAnomalyEvents(hostID, severity, anomalyType string, isResolved *bool, limit int) ([]AnomalyEventInfo, error)
+	GetAnomalyEventDetail(id uint) (*AnomalyEventInfo, error)
+	ResolveAnomalyEvent(id uint, resolvedBy string) error
+	GetAnomalyStatistics(hostID string) (*AnomalyStatistics, error)
 
 	// 用户管理相关
 	CreateUser(username, email, password, role string) (*UserInfo, error)
@@ -44,13 +53,14 @@ type StorageInterface interface {
 	GetProcesses(hostID string, limit int) ([]ProcessInfo, error)
 	GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]ProcessHistoryPoint, error)
 	GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error)
-	
+
 	// 日志相关
 	GetLogs(hostID, level string, start, end time.Time, limit int) ([]LogInfo, error)
-	
+	GetLogsWithPagination(hostID, level string, start, end time.Time, page, pageSize int) ([]LogInfo, int64, error) // 分页获取日志
+
 	// 脚本执行相关
 	GetScriptExecutions(hostID, scriptID string, limit int) ([]ScriptExecutionInfo, error)
-	
+
 	// 服务状态相关
 	GetServiceStatus(hostID string) ([]ServiceInfo, error)
 
@@ -87,6 +97,25 @@ type StorageInterface interface {
 	GetNotificationChannel(id uint) (*NotificationChannelInfo, error)
 	GetNotificationChannelByType(channelType string) (*NotificationChannelInfo, error)
 	ListNotificationChannels(enabled *bool) ([]NotificationChannelInfo, error)
+
+	// 预测分析相关
+	GetPredictionData(hostID, metricType string, days int) ([]PredictionDataPoint, error)
+
+	// LLM模型配置相关
+	CreateLLMModelConfig(config *LLMModelConfigInfo) (*LLMModelConfigInfo, error)
+	UpdateLLMModelConfig(id uint, config *LLMModelConfigInfo) error
+	DeleteLLMModelConfig(id uint) error
+	GetLLMModelConfig(id uint) (*LLMModelConfigInfo, error)
+	GetLLMModelConfigWithKey(id uint) (*LLMModelConfigInfo, error) // 获取完整配置（包含完整API密钥）
+	GetDefaultLLMModelConfig() (*LLMModelConfigInfo, error)
+	ListLLMModelConfigs(enabled *bool) ([]LLMModelConfigInfo, error)
+	SetDefaultLLMModelConfig(id uint) error
+
+	// Redis访问（用于任务管理）
+	GetRedis() interface{} // 返回Redis客户端
+
+	// 数据库访问（用于知识库等需要直接操作数据库的场景）
+	GetDB() interface{} // 返回*gorm.DB
 }
 
 // ProcessHistoryPoint 进程历史数据点
@@ -115,12 +144,12 @@ type ProcessInfo struct {
 
 // LogInfo 日志信息
 type LogInfo struct {
-	ID        uint      `json:"id"`
-	HostID    string    `json:"host_id"`
-	Timestamp time.Time `json:"timestamp"`
-	Source    string    `json:"source"`
-	Level     string    `json:"level"`
-	Message   string    `json:"message"`
+	ID        uint              `json:"id"`
+	HostID    string            `json:"host_id"`
+	Timestamp time.Time         `json:"timestamp"`
+	Source    string            `json:"source"`
+	Level     string            `json:"level"`
+	Message   string            `json:"message"`
 	Tags      map[string]string `json:"tags"`
 }
 
@@ -140,16 +169,16 @@ type ScriptExecutionInfo struct {
 
 // ServiceInfo 服务信息
 type ServiceInfo struct {
-	ID            uint      `json:"id"`
-	HostID        string    `json:"host_id"`
-	Timestamp     time.Time `json:"timestamp"`
-	Name          string    `json:"name"`
-	Status        string    `json:"status"`
-	Enabled       bool      `json:"enabled"`
-	Description   string    `json:"description"`
-	Uptime        int64     `json:"uptime_seconds"`
-	Port          int       `json:"port,omitempty"`          // 服务端口
-	PortAccessible bool    `json:"port_accessible,omitempty"` // 端口是否可访问
+	ID             uint      `json:"id"`
+	HostID         string    `json:"host_id"`
+	Timestamp      time.Time `json:"timestamp"`
+	Name           string    `json:"name"`
+	Status         string    `json:"status"`
+	Enabled        bool      `json:"enabled"`
+	Description    string    `json:"description"`
+	Uptime         int64     `json:"uptime_seconds"`
+	Port           int       `json:"port,omitempty"`            // 服务端口
+	PortAccessible bool      `json:"port_accessible,omitempty"` // 端口是否可访问
 }
 
 // AgentInfo Agent信息
@@ -224,7 +253,7 @@ type CrashEvent struct {
 // CrashAnalysis 宕机分析
 type CrashAnalysis struct {
 	TotalCrashes   int            `json:"total_crashes"`
-	ResolvedCount  int            `json:"resolved_count"`  // 已恢复数量
+	ResolvedCount  int            `json:"resolved_count"` // 已恢复数量
 	RecentCrashes  []CrashEvent   `json:"recent_crashes"`
 	CrashFrequency string         `json:"crash_frequency"`
 	MainReasons    map[string]int `json:"main_reasons"`
@@ -233,25 +262,25 @@ type CrashAnalysis struct {
 
 // AlertRuleInfo 告警规则信息
 type AlertRuleInfo struct {
-	ID             uint       `json:"id"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	Name           string     `json:"name"`
-	Description    string     `json:"description"`
-	Enabled        bool       `json:"enabled"`
-	Severity       string     `json:"severity"`
-	MetricType     string     `json:"metric_type"`
-	HostID         string     `json:"host_id"`
-	Mountpoint     string     `json:"mountpoint,omitempty"`  // 挂载点（仅用于 disk 指标）
-	ServicePort    int        `json:"service_port,omitempty"` // 服务端口（仅用于 service_port 指标）
-	Condition      string     `json:"condition"`
-	Threshold      float64    `json:"threshold"`
-	Duration       int        `json:"duration"`
-	NotifyChannels []string   `json:"notify_channels"`
-	Receivers      []string   `json:"receivers"`
-	SilenceStart   *time.Time `json:"silence_start,omitempty"`
-	SilenceEnd     *time.Time `json:"silence_end,omitempty"`
-	InhibitDuration int       `json:"inhibit_duration"` // 抑制持续时间（秒）
+	ID              uint       `json:"id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	Name            string     `json:"name"`
+	Description     string     `json:"description"`
+	Enabled         bool       `json:"enabled"`
+	Severity        string     `json:"severity"`
+	MetricType      string     `json:"metric_type"`
+	HostID          string     `json:"host_id"`
+	Mountpoint      string     `json:"mountpoint,omitempty"`   // 挂载点（仅用于 disk 指标）
+	ServicePort     int        `json:"service_port,omitempty"` // 服务端口（仅用于 service_port 指标）
+	Condition       string     `json:"condition"`
+	Threshold       float64    `json:"threshold"`
+	Duration        int        `json:"duration"`
+	NotifyChannels  []string   `json:"notify_channels"`
+	Receivers       []string   `json:"receivers"`
+	SilenceStart    *time.Time `json:"silence_start,omitempty"`
+	SilenceEnd      *time.Time `json:"silence_end,omitempty"`
+	InhibitDuration int        `json:"inhibit_duration"` // 抑制持续时间（秒）
 }
 
 // AlertHistoryInfo 告警历史信息
@@ -300,4 +329,62 @@ type NotificationChannelInfo struct {
 	Enabled     bool              `json:"enabled"`
 	Config      map[string]string `json:"config"`
 	Description string            `json:"description"`
+}
+
+// PredictionDataPoint 预测数据点
+type PredictionDataPoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Value     float64   `json:"value"`
+}
+
+// LLMModelConfigInfo LLM模型配置信息
+type LLMModelConfigInfo struct {
+	ID          uint              `json:"id"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	Name        string            `json:"name"`
+	Provider    string            `json:"provider"`    // openai, deepseek, qwen, doubao, zhipu, claude, custom
+	APIKey      string            `json:"api_key"`     // API密钥（返回时可能隐藏部分）
+	BaseURL     string            `json:"base_url"`    // API地址
+	Model       string            `json:"model"`       // 模型名称
+	Temperature float64           `json:"temperature"` // 温度参数
+	MaxTokens   int               `json:"max_tokens"`  // 最大token数
+	Timeout     int               `json:"timeout"`     // 超时时间（秒）
+	Enabled     bool              `json:"enabled"`     // 是否启用
+	IsDefault   bool              `json:"is_default"`  // 是否默认配置
+	Description string            `json:"description"` // 描述
+	Config      map[string]string `json:"config"`      // 额外配置
+}
+
+// AnomalyEventInfo 异常事件信息
+type AnomalyEventInfo struct {
+	ID              uint                   `json:"id"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
+	HostID          string                 `json:"host_id"`
+	Type            string                 `json:"type"`
+	Severity        string                 `json:"severity"`
+	MetricType      string                 `json:"metric_type,omitempty"`
+	Timestamp       time.Time              `json:"timestamp"`
+	Value           float64                `json:"value"`
+	ExpectedValue   float64                `json:"expected_value,omitempty"`
+	Deviation       float64                `json:"deviation"`
+	Confidence      float64                `json:"confidence"`
+	Message         string                 `json:"message"`
+	RootCause       string                 `json:"root_cause,omitempty"`
+	RelatedLogs     []LogInfo              `json:"related_logs,omitempty"`
+	RelatedMetrics  map[string]interface{} `json:"related_metrics,omitempty"`
+	Recommendations []string               `json:"recommendations,omitempty"`
+	IsResolved      bool                   `json:"is_resolved"`
+	ResolvedAt      *time.Time             `json:"resolved_at,omitempty"`
+	ResolvedBy      string                 `json:"resolved_by,omitempty"`
+}
+
+// AnomalyStatistics 异常统计
+type AnomalyStatistics struct {
+	TotalAnomalies  int                `json:"total_anomalies"`
+	UnresolvedCount int                `json:"unresolved_count"`
+	BySeverity      map[string]int     `json:"by_severity"`
+	ByType          map[string]int     `json:"by_type"`
+	RecentAnomalies []AnomalyEventInfo `json:"recent_anomalies"`
 }

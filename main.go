@@ -6,7 +6,9 @@ package main
 import (
 	"log"
 	"monitor-backend/alerter"
+	"monitor-backend/analyzer"
 	"monitor-backend/api"
+	"monitor-backend/llm"
 	"monitor-backend/notifier"
 	"net"
 	"os"
@@ -68,6 +70,15 @@ func main() {
 	alertEngine.Start()
 	defer alertEngine.Stop()
 
+	// 初始化预测器（默认阈值80%）
+	predictorAdapter := analyzer.NewPredictorAdapter(80.0)
+
+	// 初始化异常检测器适配器
+	anomalyDetectorAdapter := analyzer.NewAnomalyDetectorAdapter()
+
+	// 初始化LLM管理器（从数据库加载配置）
+	llmManager := llm.NewLLMManager(storageAdapter)
+
 	// 启动HTTP API服务器
 	go func() {
 		// 初始化JWT密钥
@@ -83,7 +94,7 @@ func main() {
 			AuthRequired: config.AuthRequired,
 		}
 
-		apiServer := api.NewAPIServer(storageAdapter, apiConfig, notificationManager)
+		apiServer := api.NewAPIServer(storageAdapter, apiConfig, notificationManager, predictorAdapter, llmManager, anomalyDetectorAdapter)
 
 		log.Printf("HTTP API server started on %s", config.HTTPAddr)
 

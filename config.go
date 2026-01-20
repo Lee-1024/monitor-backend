@@ -18,6 +18,7 @@ type Config struct {
 	InfluxDB      InfluxDBConfig   `yaml:"influxdb"`
 	PostgreSQL    PostgreSQLConfig `yaml:"postgresql"`
 	Redis         RedisConfig      `yaml:"redis"`
+	LLM           LLMConfig        `yaml:"llm"`
 }
 
 type InfluxDBConfig struct {
@@ -39,6 +40,17 @@ type RedisConfig struct {
 	Addr     string `yaml:"addr"`
 	Password string `yaml:"password"`
 	DB       int    `yaml:"db"`
+}
+
+type LLMConfig struct {
+	Provider    string  `yaml:"provider"`     // openai, claude, custom
+	APIKey      string  `yaml:"api_key"`
+	BaseURL     string  `yaml:"base_url"`     // 自定义API地址
+	Model       string  `yaml:"model"`        // 模型名称
+	Temperature float64 `yaml:"temperature"`  // 温度参数
+	MaxTokens   int     `yaml:"max_tokens"`   // 最大token数
+	Timeout     int     `yaml:"timeout"`      // 超时时间（秒）
+	Enabled     bool    `yaml:"enabled"`      // 是否启用
 }
 
 func LoadConfig() *Config {

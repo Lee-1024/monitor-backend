@@ -70,6 +70,14 @@ func NewStorage(config *Config) *Storage {
 		&AlertHistory{},
 		&AlertSilence{},
 		&NotificationChannel{},
+		&LLMModelConfig{},
+		&AnomalyEvent{},
+		&KnowledgeBase{},
+		&TroubleshootingGuide{},
+		&BestPractice{},
+		&CaseStudy{},
+		&InspectionReport{},
+		&InspectionRecord{},
 	)
 
 	// 初始化默认管理员用户
