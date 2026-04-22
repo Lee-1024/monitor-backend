@@ -409,6 +409,37 @@ go run .
 
 ## 🚢 部署
 
+### Docker 构建与运行
+
+项目提供 `Dockerfile`，可用于构建 Backend 镜像。运行前需确保 PostgreSQL、InfluxDB（及可选 Redis）已就绪，并通过配置文件或挂载卷提供 `config.yaml`。
+
+**构建镜像：**
+
+```bash
+cd monitor-backend
+docker build -t monitor-backend:latest .
+```
+
+**运行容器：**
+
+将 `config.yaml` 放在宿主机某路径（如 `/opt/monitor-backend/config.yaml`），挂载进容器并暴露 gRPC/HTTP 端口：
+
+```bash
+docker run -d --name monitor-backend \
+  -p 50051:50051 -p 8080:8080 \
+  -v /opt/monitor-backend/config.yaml:/app/config.yaml \
+  -e CONFIG_PATH=config.yaml \
+  monitor-backend:latest
+```
+
+**依赖说明：**
+
+- **PostgreSQL**：元数据、配置、用户等，需在 `config.yaml` 中配置连接信息。
+- **InfluxDB**：时序指标存储，需在 `config.yaml` 中配置 URL、Token、Org、Bucket。
+- **Redis**（可选）：会话等缓存，按需在配置中启用。
+
+若使用 Docker Compose，可将上述数据库与 Backend 同网段部署，并确保 `config.yaml` 中的主机名为 Compose 服务名（如 `postgres`、`influxdb`、`redis`）。
+
 ### 编译
 
 ```bash

@@ -79,8 +79,12 @@ func LoadConfig() *Config {
 		},
 	}
 
+	configPath := os.Getenv("CONFIG_PATH")
+	if configPath == "" {
+		configPath = "config.yaml"
+	}
 	// 尝试从配置文件加载
-	if data, err := os.ReadFile("config.yaml"); err == nil {
+	if data, err := os.ReadFile(configPath); err == nil {
 		if err := yaml.Unmarshal(data, config); err != nil {
 			log.Printf("Failed to parse config: %v", err)
 		}
