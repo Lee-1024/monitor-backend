@@ -51,6 +51,7 @@ type StorageInterface interface {
 
 	// 进程监控相关
 	GetProcesses(hostID string, limit int) ([]ProcessInfo, error)
+	GetProcessesWithPagination(hostID string, page, pageSize int) ([]ProcessInfo, int64, error)
 	GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]ProcessHistoryPoint, error)
 	GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error)
 

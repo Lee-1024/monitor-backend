@@ -1,21 +1,21 @@
 grpc_addr: ":50051"
 
 influxdb:
-  url: "http://localhost:8086"
-  token: "cHfXu1O9XyjMrYV041gi6uN6nE_0-yaqWWHj4xtPAToMnqYzoa1EcnOKoSaWsotOk60DmapD3DiamzcWiWeQBQ=="
+  url: "http://10.54.56.54:31106"
+  token: "C5lsHVddzZptaXLbi-J3InAyZUw_QGgM09DGFuHVMfrZl22tu9Y_bl0XVN3cotLAhhzCbzvOP4ncGELghxpA1Q=="
   org: "monitor"
   bucket: "metrics"
 
 postgresql:
-  host: "localhost"
-  port: 5433
-  user: "monitor"
-  password: "monitor123"
-  database: "monitor"
+  host: "10.54.56.54"
+  port: 31060
+  user: "admin"
+  password: "secure_password"
+  database: "myappdb"
 
 redis:
-  addr: "localhost:6379"
-  password: ""
+  addr: "10.54.56.54:30379"
+  password: "admin123456"
   db: 0
 
 jwt_secret: "bbcceewwx1234567890"

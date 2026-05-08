@@ -25,7 +25,8 @@ const (
 	ProviderQwen     LLMProvider = "qwen"   // 阿里千问
 	ProviderDoubao   LLMProvider = "doubao" // 豆包
 	ProviderZhipu    LLMProvider = "zhipu"  // 智普
-	ProviderCustom   LLMProvider = "custom"
+	ProviderMiniMax  LLMProvider = "minimax"
+	ProviderCustom   LLMProvider = "openai_compatible" // OpenAI兼容（通用）
 )
 
 // LLMConfig LLM配置
@@ -91,7 +92,8 @@ func (c *LLMClient) TestConnection() (string, error) {
 	var err error
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek:
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
+		// 使用OpenAI兼容格式调用
 		response, err = c.callOpenAICompatible(testPrompt)
 	case ProviderClaude:
 		response, err = c.callClaude(testPrompt)
@@ -101,8 +103,6 @@ func (c *LLMClient) TestConnection() (string, error) {
 		response, err = c.callDoubao(testPrompt)
 	case ProviderZhipu:
 		response, err = c.callZhipu(testPrompt)
-	case ProviderCustom:
-		response, err = c.callCustom(testPrompt)
 	default:
 		return "", fmt.Errorf("unsupported LLM provider: %s", c.config.Provider)
 	}
@@ -144,8 +144,8 @@ func (c *LLMClient) AnalyzeCapacity(req AnalysisRequest) (*AnalysisResponse, err
 	var err error
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek:
-		// DeepSeek使用OpenAI兼容的API格式
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
+		// DeepSeek、MiniMax和OpenAI兼容使用OpenAI兼容的API格式
 		log.Printf("[LLM] 调用OpenAI兼容API")
 		response, err = c.callOpenAICompatible(prompt)
 	case ProviderClaude:
@@ -160,9 +160,6 @@ func (c *LLMClient) AnalyzeCapacity(req AnalysisRequest) (*AnalysisResponse, err
 	case ProviderZhipu:
 		log.Printf("[LLM] 调用Zhipu API")
 		response, err = c.callZhipu(prompt)
-	case ProviderCustom:
-		log.Printf("[LLM] 调用Custom API")
-		response, err = c.callCustom(prompt)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", c.config.Provider)
 	}
@@ -815,6 +812,101 @@ func (c *LLMClient) callZhipu(prompt string) (*AnalysisResponse, error) {
 		log.Printf("[LLM] 警告: Zhipu API 返回的内容为空，完整响应: %s", string(bodyBytes))
 		return nil, fmt.Errorf("Zhipu API returned empty content")
 	}
+	return c.parseLLMResponse(content), nil
+}
+
+// callMiniMax 调用MiniMax API
+func (c *LLMClient) callMiniMax(prompt string) (*AnalysisResponse, error) {
+	url := "https://api.minimax.chat/v1/text/chatcompletion_v2"
+	if c.config.BaseURL != "" {
+		url = strings.TrimSpace(c.config.BaseURL)
+	}
+
+	model := c.config.Model
+	if model == "" {
+		model = "MiniMax-Text-01"
+	}
+
+	log.Printf("[LLM] MiniMax API 请求开始...")
+	log.Printf("[LLM] MiniMax API 地址: %s", url)
+	log.Printf("[LLM] MiniMax 模型: %s", model)
+
+	requestBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+		"temperature": c.config.Temperature,
+		"max_tokens":  c.config.MaxTokens,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+
+	log.Printf("[LLM] MiniMax API 发送请求...")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		log.Printf("[LLM] MiniMax API 请求失败: %v", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	log.Printf("[LLM] MiniMax API 响应状态码: %d", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[LLM] MiniMax API 错误响应: %s", string(body))
+		return nil, fmt.Errorf("MiniMax API error: %s, body: %s", resp.Status, string(body))
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		log.Printf("[LLM] MiniMax API 响应解析失败: %v", err)
+		return nil, err
+	}
+
+	if result.Error.Message != "" {
+		log.Printf("[LLM] MiniMax API 返回错误: %s", result.Error.Message)
+		return nil, fmt.Errorf("MiniMax API error: %s", result.Error.Message)
+	}
+
+	if len(result.Choices) == 0 {
+		log.Printf("[LLM] MiniMax API 返回的choices为空")
+		return nil, fmt.Errorf("no response from MiniMax")
+	}
+
+	content := result.Choices[0].Message.Content
+	log.Printf("[LLM] MiniMax API 返回内容长度: %d 字符", len(content))
+
 	return c.parseLLMResponse(content), nil
 }
 

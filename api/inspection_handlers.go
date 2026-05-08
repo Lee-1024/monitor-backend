@@ -682,14 +682,16 @@ func (s *APIServer) listInspectionReports(c *gin.Context) {
 		return
 	}
 
-	query := db.Table("inspection_reports")
-
+	// 使用子查询获取去重后的报告列表
+	subQuery := db.Table("inspection_reports").Select("DISTINCT ON (date) *").Order("date DESC, created_at DESC")
+	
+	// 先获取总数
 	var total int64
-	query.Count(&total)
+	db.Table("(?) as unique_reports", subQuery).Count(&total)
 
 	var reports []map[string]interface{}
 	offset := (page - 1) * pageSize
-	if err := query.Order("date DESC").Offset(offset).Limit(pageSize).Find(&reports).Error; err != nil {
+	if err := db.Table("(?) as unique_reports", subQuery).Order("date DESC").Offset(offset).Limit(pageSize).Find(&reports).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, Response{
 			Code:    500,
 			Message: "Failed to get inspection reports: " + err.Error(),

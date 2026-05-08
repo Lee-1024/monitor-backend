@@ -1001,6 +1001,11 @@ func (e *AlertEngine) triggerAlert(rule api.AlertRuleInfo, host api.AgentInfo, m
 		Labels:       make(map[string]string),
 		NotifyStatus: "pending",
 	}
+	
+	// 对于磁盘告警，填充挂载点信息
+	if rule.MetricType == "disk" && rule.Mountpoint != "" {
+		history.Labels["mountpoint"] = rule.Mountpoint
+	}
 
 	// 保存告警历史
 	savedHistory, err := e.storage.CreateAlertHistory(history)

@@ -326,14 +326,14 @@ type LLMModelConfig struct {
 	UpdatedAt time.Time `json:"updated_at"`
 
 	Name        string            `gorm:"size:255;not null;uniqueIndex" json:"name"` // 配置名称
-	Provider    string            `gorm:"size:32;not null" json:"provider"`            // openai, deepseek, qwen, doubao, zhipu, claude, custom
-	APIKey      string            `gorm:"type:text" json:"api_key"`                    // API密钥
+	Provider    string            `gorm:"size:32;not null" json:"provider"`            // openai, deepseek, qwen, doubao, zhipu, claude, minimax, openai_compatible
+	APIKey      string            `gorm:"type:text" json:"api_key"`                   // API密钥
 	BaseURL     string            `gorm:"size:512" json:"base_url"`                   // API地址
-	Model       string            `gorm:"size:128" json:"model"`                      // 模型名称
-	Temperature float64           `gorm:"default:0.7" json:"temperature"`             // 温度参数
-	MaxTokens   int               `gorm:"default:8000" json:"max_tokens"`             // 最大token数（默认8000，确保巡检日报等长文本生成完整）
-	Timeout     int               `gorm:"default:30" json:"timeout"`                  // 超时时间（秒）
-	Enabled     bool              `gorm:"default:true" json:"enabled"`                 // 是否启用
+	Model       string            `gorm:"size:128" json:"model"`                     // 模型名称
+	Temperature float64           `gorm:"default:0.7" json:"temperature"`            // 温度参数
+	MaxTokens   int               `gorm:"default:8000" json:"max_tokens"`            // 最大token数（默认8000，确保巡检日报等长文本生成完整）
+	Timeout     int               `gorm:"default:30" json:"timeout"`                 // 超时时间（秒）
+	Enabled     bool              `gorm:"default:true" json:"enabled"`                // 是否启用
 	IsDefault   bool              `gorm:"default:false" json:"is_default"`           // 是否默认配置
 	Description string            `gorm:"type:text" json:"description"`              // 描述
 	Config      map[string]string `gorm:"serializer:json" json:"config"`              // 额外配置

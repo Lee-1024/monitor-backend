@@ -276,18 +276,18 @@ func (s *APIServer) getTopMetrics(c *gin.Context) {
 // getCrashEvents 获取宕机事件列表（支持分页）
 func (s *APIServer) getCrashEvents(c *gin.Context) {
 	hostID := c.Query("host_id")
-	
+
 	// 检查是否使用分页参数
 	pageStr := c.DefaultQuery("page", "")
 	pageSizeStr := c.DefaultQuery("page_size", "")
-	
+
 	if pageStr != "" && pageSizeStr != "" {
 		// 使用分页模式
 		page, err := strconv.Atoi(pageStr)
 		if err != nil || page < 1 {
 			page = 1
 		}
-		
+
 		pageSize, err := strconv.Atoi(pageSizeStr)
 		if err != nil || pageSize < 1 {
 			pageSize = 20
@@ -295,7 +295,7 @@ func (s *APIServer) getCrashEvents(c *gin.Context) {
 		if pageSize > 100 {
 			pageSize = 100 // 限制最大每页数量
 		}
-		
+
 		events, total, err := s.storage.GetCrashEventsWithPagination(hostID, page, pageSize)
 		if err != nil {
 			log.Printf("Failed to get crash events: %v", err)
@@ -305,20 +305,20 @@ func (s *APIServer) getCrashEvents(c *gin.Context) {
 			})
 			return
 		}
-		
+
 		c.JSON(http.StatusOK, Response{
 			Code:    200,
 			Message: "Success",
 			Data: map[string]interface{}{
-				"events": events,
-				"total":  total,
-				"page":   page,
+				"events":    events,
+				"total":     total,
+				"page":      page,
 				"page_size": pageSize,
 			},
 		})
 		return
 	}
-	
+
 	// 兼容旧的非分页模式
 	limit := 50
 	if l := c.Query("limit"); l != "" {
@@ -526,15 +526,67 @@ func calculateAvgDowntime(events []CrashEvent) string {
 // 进程监控相关处理函数
 // ============================================
 
-// getProcesses 获取进程列表
+// getProcesses 获取进程列表（支持分页）
 func (s *APIServer) getProcesses(c *gin.Context) {
 	hostID := c.Query("host_id")
-	limit := 50
+
+	// 分页参数
+	page := 1
+	pageSize := 10
+	if pageStr := c.Query("page"); pageStr != "" {
+		fmt.Sscanf(pageStr, "%d", &page)
+	}
+	if pageSizeStr := c.Query("page_size"); pageSizeStr != "" {
+		fmt.Sscanf(pageSizeStr, "%d", &pageSize)
+		if pageSize > 100 {
+			pageSize = 100 // 最大100条
+		}
+	}
+
+	// 保留limit参数用于向后兼容
+	limit := 0
 	if limitStr := c.Query("limit"); limitStr != "" {
 		fmt.Sscanf(limitStr, "%d", &limit)
 	}
 
-	processes, err := s.storage.GetProcesses(hostID, limit)
+	var processes []interface{}
+	var total int64 = 0
+	var err error
+
+	hasPage := c.Query("page") != "" && c.Query("page_size") != ""
+
+	if hasPage {
+		// 使用分页模式
+		var processesData []ProcessInfo
+		processesData, total, err = s.storage.GetProcessesWithPagination(hostID, page, pageSize)
+		if err == nil {
+			processes = make([]interface{}, len(processesData))
+			for i, p := range processesData {
+				processes[i] = p
+			}
+		}
+	} else if limit > 0 {
+		// 使用旧的limit模式（向后兼容）
+		var processesData []ProcessInfo
+		processesData, err = s.storage.GetProcesses(hostID, limit)
+		if err == nil {
+			processes = make([]interface{}, len(processesData))
+			for i, p := range processesData {
+				processes[i] = p
+			}
+		}
+	} else {
+		// 默认返回前100条
+		var processesData []ProcessInfo
+		processesData, err = s.storage.GetProcesses(hostID, 100)
+		if err == nil {
+			processes = make([]interface{}, len(processesData))
+			for i, p := range processesData {
+				processes[i] = p
+			}
+		}
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, Response{
 			Code:    500,
@@ -543,23 +595,38 @@ func (s *APIServer) getProcesses(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, Response{
-		Code:    200,
-		Message: "Success",
-		Data:    processes,
-	})
+	// 如果使用分页，返回分页信息
+	if hasPage {
+		c.JSON(http.StatusOK, Response{
+			Code:    200,
+			Message: "Success",
+			Data: map[string]interface{}{
+				"processes": processes,
+				"total":     total,
+				"page":      page,
+				"page_size": pageSize,
+			},
+		})
+	} else {
+		// 旧格式（向后兼容）
+		c.JSON(http.StatusOK, Response{
+			Code:    200,
+			Message: "Success",
+			Data:    processes,
+		})
+	}
 }
 
 // getProcessHistory 获取进程历史数据
 func (s *APIServer) getProcessHistory(c *gin.Context) {
 	hostID := c.Query("host_id")
-	processNamesStr := c.Query("process_names") // 逗号分隔的进程名列表，如果为空则自动查找历史中占用最高的进程
+	processNamesStr := c.Query("process_names")        // 逗号分隔的进程名列表，如果为空则自动查找历史中占用最高的进程
 	metricType := c.DefaultQuery("metric_type", "cpu") // cpu 或 memory，用于确定如何查找top进程
 	topN := 10
 	if topNStr := c.Query("top_n"); topNStr != "" {
 		fmt.Sscanf(topNStr, "%d", &topN)
 	}
-	
+
 	limit := 5000
 	if limitStr := c.Query("limit"); limitStr != "" {
 		fmt.Sscanf(limitStr, "%d", &limit)
@@ -635,7 +702,7 @@ func (s *APIServer) getProcessHistory(c *gin.Context) {
 func (s *APIServer) getLogs(c *gin.Context) {
 	hostID := c.Query("host_id")
 	level := c.Query("level")
-	
+
 	var start, end time.Time
 	if startStr := c.Query("start"); startStr != "" {
 		start, _ = time.Parse(time.RFC3339, startStr)
@@ -647,14 +714,14 @@ func (s *APIServer) getLogs(c *gin.Context) {
 	// 检查是否使用分页参数
 	pageStr := c.DefaultQuery("page", "")
 	pageSizeStr := c.DefaultQuery("page_size", "")
-	
+
 	if pageStr != "" && pageSizeStr != "" {
 		// 使用分页模式
 		page, err := strconv.Atoi(pageStr)
 		if err != nil || page < 1 {
 			page = 1
 		}
-		
+
 		pageSize, err := strconv.Atoi(pageSizeStr)
 		if err != nil || pageSize < 1 {
 			pageSize = 20
@@ -662,7 +729,7 @@ func (s *APIServer) getLogs(c *gin.Context) {
 		if pageSize > 100 {
 			pageSize = 100 // 限制最大每页数量
 		}
-		
+
 		logs, total, err := s.storage.GetLogsWithPagination(hostID, level, start, end, page, pageSize)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, Response{
@@ -671,7 +738,7 @@ func (s *APIServer) getLogs(c *gin.Context) {
 			})
 			return
 		}
-		
+
 		c.JSON(http.StatusOK, Response{
 			Code:    200,
 			Message: "Success",
@@ -684,7 +751,7 @@ func (s *APIServer) getLogs(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// 兼容旧的非分页模式
 	limit := 100
 	if limitStr := c.Query("limit"); limitStr != "" {
@@ -800,9 +867,9 @@ func (s *APIServer) createAlertRule(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[createAlertRule] Received rule: Name=%s, NotifyChannels=%v, Receivers=%v", 
+	log.Printf("[createAlertRule] Received rule: Name=%s, NotifyChannels=%v, Receivers=%v",
 		rule.Name, rule.NotifyChannels, rule.Receivers)
-	
+
 	// 确保 NotifyChannels 和 Receivers 不是 nil
 	if rule.NotifyChannels == nil {
 		rule.NotifyChannels = []string{}
@@ -823,7 +890,7 @@ func (s *APIServer) createAlertRule(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[createAlertRule] Rule created successfully: ID=%d, NotifyChannels=%v", 
+	log.Printf("[createAlertRule] Rule created successfully: ID=%d, NotifyChannels=%v",
 		created.ID, created.NotifyChannels)
 
 	c.JSON(http.StatusOK, Response{
@@ -885,7 +952,7 @@ func (s *APIServer) updateAlertRule(c *gin.Context) {
 
 	// 转换为 AlertRuleInfo 结构，但只包含实际提供的字段
 	var rule AlertRuleInfo
-	
+
 	if name, ok := updateData["name"].(string); ok && name != "" {
 		rule.Name = name
 	}
@@ -1124,7 +1191,7 @@ func (s *APIServer) deleteAlertHistories(c *gin.Context) {
 	var request struct {
 		IDs []uint `json:"ids" binding:"required"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, Response{
 			Code:    400,
@@ -1523,8 +1590,8 @@ func (s *APIServer) deleteNotificationChannel(c *gin.Context) {
 // 获取容量预测
 func (s *APIServer) getCapacityPrediction(c *gin.Context) {
 	hostID := c.Query("host_id")
-	metricType := c.DefaultQuery("type", "cpu") // cpu, memory, disk
-	days := c.DefaultQuery("days", "30")         // 预测未来多少天
+	metricType := c.DefaultQuery("type", "cpu")    // cpu, memory, disk
+	days := c.DefaultQuery("days", "30")           // 预测未来多少天
 	threshold := c.DefaultQuery("threshold", "80") // 阈值（百分比）
 
 	if hostID == "" {
@@ -1613,7 +1680,7 @@ func (s *APIServer) getCapacityPrediction(c *gin.Context) {
 
 	// 查询参数中是否包含enable_llm，如果为true才进行AI分析
 	enableLLM := c.DefaultQuery("enable_llm", "false") == "true"
-	
+
 	var llmTaskID string
 	if enableLLM {
 		llmClient := s.llmManager.GetClient()
@@ -1628,7 +1695,7 @@ func (s *APIServer) getCapacityPrediction(c *gin.Context) {
 				"DaysToThreshold": result.DaysToThreshold,
 				"Trend":           result.Trend,
 			}
-			
+
 			task, err := s.taskManager.CreateTask("capacity", llmReq)
 			if err == nil {
 				llmTaskID = task.ID
@@ -1697,7 +1764,7 @@ func (s *APIServer) getCostOptimization(c *gin.Context) {
 			log.Printf("Failed to get prediction data for %s/%s: %v", hostID, resourceType, err)
 			continue
 		}
-		
+
 		if len(dataPoints) < 2 {
 			log.Printf("Insufficient data points for %s/%s: %d", hostID, resourceType, len(dataPoints))
 			continue
@@ -1743,7 +1810,7 @@ func (s *APIServer) getCostOptimization(c *gin.Context) {
 			"hostname":    hostname,
 			"predictions": predictions,
 		}
-		
+
 		task, err := s.taskManager.CreateTask("cost_optimization", taskParams)
 		if err == nil {
 			llmTaskID = task.ID
@@ -1769,7 +1836,7 @@ func (s *APIServer) getCostOptimization(c *gin.Context) {
 // 获取LLM任务状态
 func (s *APIServer) getLLMTaskStatus(c *gin.Context) {
 	taskID := c.Param("task_id")
-	
+
 	if s.taskManager == nil {
 		c.JSON(http.StatusServiceUnavailable, Response{
 			Code:    503,
@@ -1896,7 +1963,7 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 	type ClientGetter interface {
 		GetClient() interface{} // 返回 *LLMClient
 	}
-	
+
 	var actualClient interface{}
 	if getter, ok := llmClient.(ClientGetter); ok {
 		actualClient = getter.GetClient()
@@ -1906,7 +1973,7 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 		if llmClientValue.Kind() == reflect.Ptr {
 			llmClientValue = llmClientValue.Elem()
 		}
-		
+
 		// 尝试调用 GetClient 方法
 		getClientMethod := reflect.ValueOf(llmClient).MethodByName("GetClient")
 		if getClientMethod.IsValid() {
@@ -1916,7 +1983,7 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	// 如果无法获取实际的 client，回退到普通调用
 	if actualClient == nil {
 		log.Printf("[API] 无法获取LLM客户端实例，使用普通调用")
@@ -1951,7 +2018,7 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 		c.Writer.Flush()
 		return
 	}
-	
+
 	// 通过反射调用 StreamCapacityAnalysis 方法
 	streamMethod := reflect.ValueOf(actualClient).MethodByName("StreamCapacityAnalysis")
 	if !streamMethod.IsValid() {
@@ -1988,12 +2055,12 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 		c.Writer.Flush()
 		return
 	}
-	
+
 	// 构建 AnalysisRequest（通过反射创建）
 	// StreamCapacityAnalysis 方法签名: func (c *LLMClient) StreamCapacityAnalysis(req AnalysisRequest, writer io.Writer) error
 	// 注意：req 是值类型，不是指针
 	reqType := streamMethod.Type().In(0)
-	
+
 	// 创建值类型（不是指针）
 	var reqValue reflect.Value
 	if reqType.Kind() == reflect.Ptr {
@@ -2003,9 +2070,9 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 		// 如果方法期望值类型，创建值
 		reqValue = reflect.New(reqType)
 	}
-	
+
 	reqElem := reqValue.Elem()
-	
+
 	// 设置字段值
 	if field := reqElem.FieldByName("ResourceType"); field.IsValid() && field.Kind() == reflect.String {
 		field.SetString(metricType)
@@ -2028,7 +2095,7 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 	if field := reqElem.FieldByName("Trend"); field.IsValid() && field.Kind() == reflect.String {
 		field.SetString(result.Trend)
 	}
-	
+
 	// 根据方法期望的类型传递参数
 	var callArg reflect.Value
 	if reqType.Kind() == reflect.Ptr {
@@ -2038,14 +2105,14 @@ func (s *APIServer) streamCapacityAnalysis(c *gin.Context) {
 		// 方法期望值类型，传递值（不是指针）
 		callArg = reqElem
 	}
-	
+
 	// 调用流式方法
 	log.Printf("[API] 使用流式分析，参数类型: %v, 传递类型: %v", reqType, callArg.Type())
 	results := streamMethod.Call([]reflect.Value{
 		callArg,
 		reflect.ValueOf(c.Writer),
 	})
-	
+
 	if len(results) > 0 && !results[0].IsNil() {
 		// 有错误
 		if err, ok := results[0].Interface().(error); ok {
@@ -2069,9 +2136,9 @@ func formatAnalysisResponseForStream(resp interface{}) string {
 	if rv.Kind() == reflect.Ptr {
 		rv = rv.Elem()
 	}
-	
+
 	var result strings.Builder
-	
+
 	// 尝试获取常见字段
 	if summary := rv.FieldByName("Summary"); summary.IsValid() && summary.Kind() == reflect.String {
 		if s := summary.String(); s != "" {
@@ -2080,7 +2147,7 @@ func formatAnalysisResponseForStream(resp interface{}) string {
 			result.WriteString("\n\n")
 		}
 	}
-	
+
 	if analysis := rv.FieldByName("Analysis"); analysis.IsValid() && analysis.Kind() == reflect.String {
 		if s := analysis.String(); s != "" {
 			result.WriteString("## 详细分析\n\n")
@@ -2088,7 +2155,7 @@ func formatAnalysisResponseForStream(resp interface{}) string {
 			result.WriteString("\n\n")
 		}
 	}
-	
+
 	if recs := rv.FieldByName("Recommendations"); recs.IsValid() && recs.Kind() == reflect.Slice {
 		if recs.Len() > 0 {
 			result.WriteString("## 建议\n\n")
@@ -2101,7 +2168,7 @@ func formatAnalysisResponseForStream(resp interface{}) string {
 			result.WriteString("\n")
 		}
 	}
-	
+
 	if costOpt := rv.FieldByName("CostOptimization"); costOpt.IsValid() && costOpt.Kind() == reflect.String {
 		if s := costOpt.String(); s != "" {
 			result.WriteString("## 成本优化建议\n\n")
@@ -2109,7 +2176,7 @@ func formatAnalysisResponseForStream(resp interface{}) string {
 			result.WriteString("\n\n")
 		}
 	}
-	
+
 	if risks := rv.FieldByName("Risks"); risks.IsValid() && risks.Kind() == reflect.Slice {
 		if risks.Len() > 0 {
 			result.WriteString("## 风险提示\n\n")
@@ -2121,7 +2188,7 @@ func formatAnalysisResponseForStream(resp interface{}) string {
 			}
 		}
 	}
-	
+
 	return result.String()
 }
 
@@ -2156,7 +2223,7 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 			log.Printf("Failed to get prediction data for %s/%s: %v", hostID, resourceType, err)
 			continue
 		}
-		
+
 		if len(dataPoints) < 2 {
 			log.Printf("Insufficient data points for %s/%s: %d", hostID, resourceType, len(dataPoints))
 			continue
@@ -2213,7 +2280,7 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 	type ClientGetter interface {
 		GetClient() interface{} // 返回 *LLMClient
 	}
-	
+
 	var actualClient interface{}
 	if getter, ok := llmClient.(ClientGetter); ok {
 		actualClient = getter.GetClient()
@@ -2223,7 +2290,7 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 		if llmClientValue.Kind() == reflect.Ptr {
 			llmClientValue = llmClientValue.Elem()
 		}
-		
+
 		// 尝试调用 GetClient 方法
 		getClientMethod := reflect.ValueOf(llmClient).MethodByName("GetClient")
 		if getClientMethod.IsValid() {
@@ -2233,7 +2300,7 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	// 如果无法获取实际的 client，回退到普通调用
 	if actualClient == nil {
 		log.Printf("[API] 无法获取LLM客户端实例，使用普通调用")
@@ -2259,7 +2326,7 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 		c.Writer.Flush()
 		return
 	}
-	
+
 	// 通过反射调用 StreamCostOptimization 方法
 	streamMethod := reflect.ValueOf(actualClient).MethodByName("StreamCostOptimization")
 	if !streamMethod.IsValid() {
@@ -2287,7 +2354,7 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 		c.Writer.Flush()
 		return
 	}
-	
+
 	// StreamCostOptimization 方法签名: func (c *LLMClient) StreamCostOptimization(hostID, hostname string, predictions map[string]interface{}, writer io.Writer) error
 	// 调用流式方法
 	log.Printf("[API] 使用流式成本优化分析")
@@ -2297,7 +2364,7 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 		reflect.ValueOf(predictions),
 		reflect.ValueOf(c.Writer),
 	})
-	
+
 	if len(results) > 0 && !results[0].IsNil() {
 		// 有错误
 		if err, ok := results[0].Interface().(error); ok {
@@ -2317,22 +2384,22 @@ func (s *APIServer) streamCostOptimization(c *gin.Context) {
 // generateSimpleCostOptimization 生成简单的成本优化建议（当LLM不可用时）
 func generateSimpleCostOptimization(predictions map[string]interface{}, hostname string) string {
 	var recommendations []string
-	
+
 	for resourceType, predData := range predictions {
 		if predMap, ok := predData.(map[string]interface{}); ok {
 			currentValue, _ := predMap["current_value"].(float64)
 			predictedValue, _ := predMap["predicted_value"].(float64)
 			daysToThreshold, _ := predMap["days_to_threshold"].(float64)
 			trend, _ := predMap["trend"].(string)
-			
+
 			resourceName := map[string]string{
 				"cpu":    "CPU",
 				"memory": "内存",
 				"disk":   "磁盘",
 			}[resourceType]
-			
+
 			if daysToThreshold > 0 && daysToThreshold < 30 {
-				recommendations = append(recommendations, 
+				recommendations = append(recommendations,
 					fmt.Sprintf("%s使用率预计在%.0f天内达到阈值，建议提前规划扩容。", resourceName, daysToThreshold))
 			} else if trend == "increasing" && predictedValue > currentValue {
 				recommendations = append(recommendations,
@@ -2343,12 +2410,12 @@ func generateSimpleCostOptimization(predictions map[string]interface{}, hostname
 			}
 		}
 	}
-	
+
 	if len(recommendations) == 0 {
 		return fmt.Sprintf("主机 %s 的资源使用情况良好，暂无紧急优化建议。建议定期监控资源使用趋势。", hostname)
 	}
-	
-	return fmt.Sprintf("基于 %s 的资源使用预测分析，建议如下：\n\n%s\n\n建议定期监控资源使用情况，并根据实际业务需求进行优化。", 
+
+	return fmt.Sprintf("基于 %s 的资源使用预测分析，建议如下：\n\n%s\n\n建议定期监控资源使用情况，并根据实际业务需求进行优化。",
 		hostname, strings.Join(recommendations, "\n"))
 }
 
@@ -2588,14 +2655,14 @@ func (s *APIServer) testLLMModelConfig(c *gin.Context) {
 	// 使用LLM管理器创建临时客户端进行测试
 	// 通过反射或接口调用，避免直接导入llm包造成循环依赖
 	// 这里我们创建一个临时的测试配置并调用测试方法
-	
+
 	// 由于存在循环导入问题，我们需要通过其他方式测试
 	// 最简单的方式是创建一个临时的LLM配置并保存到数据库，然后使用管理器测试
 	// 或者直接在handler中实现测试逻辑
-	
+
 	// 临时方案：通过HTTP客户端直接测试API
 	testResult := s.testLLMConnection(config)
-	
+
 	if !testResult.Success {
 		c.JSON(http.StatusOK, Response{
 			Code:    500,
@@ -2644,18 +2711,20 @@ func (s *APIServer) testLLMConnection(config LLMModelConfigInfo) testResult {
 
 	// 构建测试请求
 	testPrompt := "这是一个连接测试。请回复'测试成功'以确认连接正常。"
-	
+
 	// 根据不同的提供商构建不同的请求
 	var url string
 	var requestBody map[string]interface{}
 	var headers map[string]string
 
 	switch config.Provider {
-	case "openai", "deepseek":
+	case "openai", "deepseek", "minimax":
 		if config.BaseURL != "" {
 			url = config.BaseURL
 		} else if config.Provider == "deepseek" {
 			url = "https://api.deepseek.com/v1/chat/completions"
+		} else if config.Provider == "minimax" {
+			url = "https://api.minimax.chat/v1/text/chatcompletion_v2"
 		} else {
 			url = "https://api.openai.com/v1/chat/completions"
 		}
@@ -2681,7 +2750,7 @@ func (s *APIServer) testLLMConnection(config LLMModelConfigInfo) testResult {
 			url = "https://api.anthropic.com/v1/messages"
 		}
 		requestBody = map[string]interface{}{
-			"model": config.Model,
+			"model":      config.Model,
 			"max_tokens": maxTokens,
 			"messages": []map[string]interface{}{
 				{
@@ -2713,7 +2782,7 @@ func (s *APIServer) testLLMConnection(config LLMModelConfigInfo) testResult {
 			},
 			"parameters": map[string]interface{}{
 				"temperature": temperature,
-				"max_tokens":   maxTokens,
+				"max_tokens":  maxTokens,
 			},
 		}
 		headers = map[string]string{
@@ -2762,30 +2831,30 @@ func (s *APIServer) testLLMConnection(config LLMModelConfigInfo) testResult {
 			"Content-Type":  "application/json",
 			"Authorization": "Bearer " + config.APIKey,
 		}
-	case "custom":
-		log.Printf("[LLM Test] ========== 开始测试自定义模型 ==========")
+	case "openai_compatible":
+		log.Printf("[LLM Test] ========== 开始测试OpenAI兼容模型 ==========")
 		log.Printf("[LLM Test] Provider: %s", config.Provider)
 		log.Printf("[LLM Test] BaseURL: %s", config.BaseURL)
 		log.Printf("[LLM Test] Model: %s", config.Model)
 		log.Printf("[LLM Test] API Key长度: %d", len(config.APIKey))
 		log.Printf("[LLM Test] Temperature: %f", temperature)
 		log.Printf("[LLM Test] Max Tokens: %d", maxTokens)
-		
+
 		if config.BaseURL == "" {
 			log.Printf("[LLM Test] 错误: BaseURL为空")
 			return testResult{
 				Success: false,
-				Error:   "自定义API需要提供base_url",
+				Error:   "OpenAI兼容API需要提供base_url",
 			}
 		}
 		url = strings.TrimSpace(config.BaseURL)
 		log.Printf("[LLM Test] 清理后的URL: %s", url)
-		
+
 		// 判断是否使用OpenAI兼容格式
 		useOpenAIFormat := strings.Contains(url, "chat/completions") || config.Model != ""
-		log.Printf("[LLM Test] 格式检测: useOpenAIFormat=%v (URL包含chat/completions: %v, 有model: %v)", 
+		log.Printf("[LLM Test] 格式检测: useOpenAIFormat=%v (URL包含chat/completions: %v, 有model: %v)",
 			useOpenAIFormat, strings.Contains(url, "chat/completions"), config.Model != "")
-		
+
 		if useOpenAIFormat {
 			// 使用OpenAI兼容格式
 			model := config.Model
@@ -2813,7 +2882,7 @@ func (s *APIServer) testLLMConnection(config LLMModelConfigInfo) testResult {
 				"max_tokens":  maxTokens,
 			}
 		}
-		
+
 		headers = map[string]string{
 			"Content-Type": "application/json",
 		}
@@ -2926,7 +2995,7 @@ func (s *APIServer) testLLMConnection(config LLMModelConfigInfo) testResult {
 	// 提取响应文本（根据不同提供商的响应格式）
 	var responseText string
 	switch config.Provider {
-	case "openai", "deepseek", "doubao", "zhipu":
+	case "openai", "deepseek", "doubao", "zhipu", "minimax", "openai_compatible":
 		if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {
 				if message, ok := choice["message"].(map[string]interface{}); ok {
@@ -2952,19 +3021,6 @@ func (s *APIServer) testLLMConnection(config LLMModelConfigInfo) testResult {
 						if content, ok := message["content"].(string); ok {
 							responseText = content
 						}
-					}
-				}
-			}
-		}
-	case "custom":
-		// 自定义API可能返回OpenAI兼容格式或简单格式
-		// 优先尝试OpenAI兼容格式（choices[0].message.content）
-		if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]interface{}); ok {
-				if message, ok := choice["message"].(map[string]interface{}); ok {
-					if content, ok := message["content"].(string); ok {
-						responseText = content
-						log.Printf("[LLM Test] 从OpenAI兼容格式提取内容: %s", responseText)
 					}
 				}
 			}
@@ -3022,7 +3078,7 @@ func (s *APIServer) testLLMModelConfigByID(c *gin.Context) {
 
 	// 测试连接
 	testResult := s.testLLMConnection(*config)
-	
+
 	if !testResult.Success {
 		c.JSON(http.StatusOK, Response{
 			Code:    500,

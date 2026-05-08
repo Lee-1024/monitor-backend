@@ -93,6 +93,9 @@ func NewStorage(config *Config) *Storage {
 	// 启动Agent状态监控
 	storage.StartAgentMonitor()
 
+	// 启动日志清理任务
+	storage.StartLogCleanup()
+
 	log.Println("Storage initialized successfully")
 	return storage
 }
@@ -938,3 +941,59 @@ func (s *Storage) GetStats() map[string]interface{} {
 
 	return stats
 }
+
+// 日志保留天数（默认7天）
+var logRetentionDays = 7
+
+// StartLogCleanup 启动日志清理任务
+func (s *Storage) StartLogCleanup() {
+	// 立即执行一次清理
+	go s.cleanupOldLogs()
+
+	// 每天凌晨3点执行一次清理
+	go func() {
+		for {
+			now := time.Now()
+			// 计算下一个凌晨3点
+			next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
+			if next.Before(now) {
+				next = next.Add(24 * time.Hour)
+			}
+			duration := next.Sub(now)
+
+			log.Printf("[LogCleanup] Next cleanup scheduled at: %s (in %v)", next.Format("2006-01-02 15:04:05"), duration)
+
+			timer := time.NewTimer(duration)
+			<-timer.C
+
+			s.cleanupOldLogs()
+		}
+	}()
+}
+
+// cleanupOldLogs 清理过期日志
+func (s *Storage) cleanupOldLogs() {
+	cutoff := time.Now().AddDate(0, 0, -logRetentionDays)
+
+	// 清理过期日志
+	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&LogEntry{})
+	if result.Error != nil {
+		log.Printf("[LogCleanup] Failed to cleanup old logs: %v", result.Error)
+	} else if result.RowsAffected > 0 {
+		log.Printf("[LogCleanup] Cleaned up %d old log entries (older than %d days)", result.RowsAffected, logRetentionDays)
+	}
+
+	// 记录日志总数和大小
+	var totalCount int64
+	s.postgres.Model(&LogEntry{}).Count(&totalCount)
+	log.Printf("[LogCleanup] Total logs in database: %d", totalCount)
+}
+
+// SetLogRetentionDays 设置日志保留天数
+func SetLogRetentionDays(days int) {
+	if days > 0 && days <= 365 {
+		logRetentionDays = days
+		log.Printf("[LogCleanup] Log retention set to %d days", days)
+	}
+}
+

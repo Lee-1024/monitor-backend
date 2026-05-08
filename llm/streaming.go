@@ -35,6 +35,30 @@ type StreamChunk struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// writeChunks 分块发送内容到writer
+func writeChunks(writer io.Writer, content string) error {
+	chunkSize := 1000 // 每块1000字符
+	for i := 0; i < len(content); i += chunkSize {
+		end := i + chunkSize
+		if end > len(content) {
+			end = len(content)
+		}
+		chunk := StreamChunk{
+			Content: content[i:end],
+			Done:    false,
+		}
+		if err := writeStreamChunk(writer, chunk); err != nil {
+			return err
+		}
+	}
+	// 发送完成信号
+	finalChunk := StreamChunk{
+		Content: "",
+		Done:    true,
+	}
+	return writeStreamChunk(writer, finalChunk)
+}
+
 // StreamCapacityAnalysis 流式分析容量规划
 func (c *LLMClient) StreamCapacityAnalysis(req AnalysisRequest, writer io.Writer) error {
 	if !c.config.Enabled {
@@ -46,7 +70,7 @@ func (c *LLMClient) StreamCapacityAnalysis(req AnalysisRequest, writer io.Writer
 	log.Printf("[LLM Stream] 提示词长度: %d 字符", len(prompt))
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek, ProviderCustom:
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
 		return c.streamOpenAICompatible(prompt, writer)
 	case ProviderClaude:
 		return c.streamClaude(prompt, writer)
@@ -59,12 +83,31 @@ func (c *LLMClient) StreamCapacityAnalysis(req AnalysisRequest, writer io.Writer
 		if err != nil {
 			return err
 		}
-		// 将完整响应作为单个块发送
-		chunk := StreamChunk{
-			Content: formatAnalysisResponse(response),
+		// 使用流式方式发送内容，而不是一次性发送完整内容
+		content := formatAnalysisResponse(response)
+
+		// 分块发送内容
+		chunkSize := 1000 // 每块1000字符
+		for i := 0; i < len(content); i += chunkSize {
+			end := i + chunkSize
+			if end > len(content) {
+				end = len(content)
+			}
+			chunk := StreamChunk{
+				Content: content[i:end],
+				Done:    false,
+			}
+			if err := writeStreamChunk(writer, chunk); err != nil {
+				return err
+			}
+		}
+
+		// 最后发送完成信号
+		finalChunk := StreamChunk{
+			Content: "",
 			Done:    true,
 		}
-		return writeStreamChunk(writer, chunk)
+		return writeStreamChunk(writer, finalChunk)
 	}
 }
 
@@ -79,7 +122,7 @@ func (c *LLMClient) StreamCostOptimization(hostID, hostname string, predictions 
 	log.Printf("[LLM Stream] 提示词长度: %d 字符", len(prompt))
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek, ProviderCustom:
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
 		return c.streamOpenAICompatible(prompt, writer)
 	case ProviderClaude:
 		return c.streamClaude(prompt, writer)
@@ -92,12 +135,8 @@ func (c *LLMClient) StreamCostOptimization(hostID, hostname string, predictions 
 		if err != nil {
 			return err
 		}
-		// 将完整响应作为单个块发送
-		chunk := StreamChunk{
-			Content: response,
-			Done:    true,
-		}
-		return writeStreamChunk(writer, chunk)
+		// 分块发送内容
+		return writeChunks(writer, response)
 	}
 }
 
@@ -151,7 +190,7 @@ func (c *LLMClient) StreamAnomalyAnalysis(hostID, hostname string, anomalies []i
 	log.Printf("[LLM Stream] 提示词长度: %d 字符", len(prompt))
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek, ProviderCustom:
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
 		return c.streamOpenAICompatible(prompt, writer)
 	case ProviderClaude:
 		return c.streamClaude(prompt, writer)
@@ -164,12 +203,8 @@ func (c *LLMClient) StreamAnomalyAnalysis(hostID, hostname string, anomalies []i
 		if err != nil {
 			return err
 		}
-		// 将完整响应作为单个块发送
-		chunk := StreamChunk{
-			Content: response,
-			Done:    true,
-		}
-		return writeStreamChunk(writer, chunk)
+		// 分块发送内容
+		return writeChunks(writer, response)
 	}
 }
 
@@ -307,7 +342,7 @@ func (c *LLMClient) StreamPerformanceAnalysis(hostID, hostname string, performan
 	log.Printf("[LLM Stream] 提示词长度: %d 字符", len(prompt))
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek, ProviderCustom:
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
 		return c.streamOpenAICompatible(prompt, writer)
 	case ProviderClaude:
 		return c.streamClaude(prompt, writer)
@@ -320,12 +355,8 @@ func (c *LLMClient) StreamPerformanceAnalysis(hostID, hostname string, performan
 		if err != nil {
 			return err
 		}
-		// 将完整响应作为单个块发送
-		chunk := StreamChunk{
-			Content: response,
-			Done:    true,
-		}
-		return writeStreamChunk(writer, chunk)
+		// 分块发送内容
+		return writeChunks(writer, response)
 	}
 }
 
@@ -553,7 +584,7 @@ func (c *LLMClient) StreamKnowledgeSearch(query, category string, writer io.Writ
 	log.Printf("[LLM Stream] 提示词长度: %d 字符", len(prompt))
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek, ProviderCustom:
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
 		return c.streamOpenAICompatible(prompt, writer)
 	case ProviderClaude:
 		return c.streamClaude(prompt, writer)
@@ -566,12 +597,8 @@ func (c *LLMClient) StreamKnowledgeSearch(query, category string, writer io.Writ
 		if err != nil {
 			return err
 		}
-		// 将完整响应作为单个块发送
-		chunk := StreamChunk{
-			Content: response,
-			Done:    true,
-		}
-		return writeStreamChunk(writer, chunk)
+		// 分块发送内容
+		return writeChunks(writer, response)
 	}
 }
 
@@ -649,7 +676,7 @@ func (c *LLMClient) StreamInspectionReport(inspectionData map[string]interface{}
 	log.Printf("[LLM Stream] 提示词长度: %d 字符", len(prompt))
 
 	switch c.config.Provider {
-	case ProviderOpenAI, ProviderDeepSeek, ProviderCustom:
+	case ProviderOpenAI, ProviderDeepSeek, ProviderMiniMax, ProviderCustom:
 		return c.streamOpenAICompatible(prompt, writer)
 	case ProviderClaude:
 		return c.streamClaude(prompt, writer)
@@ -662,13 +689,9 @@ func (c *LLMClient) StreamInspectionReport(inspectionData map[string]interface{}
 		if err != nil {
 			return err
 		}
-		// 将完整响应作为单个块发送
+		// 分块发送内容
 		content := fmt.Sprintf("%s\n\n## 总结\n%s\n\n## 关键发现\n%s\n\n## 建议\n%s", reportContent, summary, keyFindings, recommendations)
-		chunk := StreamChunk{
-			Content: content,
-			Done:    true,
-		}
-		return writeStreamChunk(writer, chunk)
+		return writeChunks(writer, content)
 	}
 }
 
@@ -677,12 +700,13 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 	report, _ := inspectionData["report"].(map[string]interface{})
 	records, _ := inspectionData["records"].([]map[string]interface{})
 
-	// 提取报告统计信息
+	// 提取报告统计信息和巡检日期
 	totalHosts := 0
 	onlineHosts := 0
 	offlineHosts := 0
 	warningHosts := 0
 	criticalHosts := 0
+	inspectionDate := time.Now()
 
 	if report != nil {
 		if v, ok := report["total_hosts"].(float64); ok {
@@ -700,7 +724,20 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 		if v, ok := report["critical_hosts"].(float64); ok {
 			criticalHosts = int(v)
 		}
+		// 提取巡检日期
+		if dateVal, ok := report["date"].(time.Time); ok {
+			inspectionDate = dateVal
+		} else if dateStr, ok := report["date"].(string); ok && dateStr != "" {
+			if parsed, err := time.Parse("2006-01-02", dateStr); err == nil {
+				inspectionDate = parsed
+			} else if parsed, err := time.Parse(time.RFC3339, dateStr); err == nil {
+				inspectionDate = parsed
+			}
+		}
 	}
+
+	// 格式化巡检日期
+	inspectionDateStr := inspectionDate.Format("2006年01月02日 15:04")
 
 	// 格式化主机记录信息
 	recordsText := ""
@@ -779,7 +816,7 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 # 系统巡检日报
 
 ## 一、巡检概览
-（简要概述本次巡检的整体情况，包括巡检时间、主机数量、整体健康状况等）
+（本次巡检时间：%s）
 
 ## 二、主机状态统计
 （详细列出在线、离线、告警、严重告警的主机数量和占比）
@@ -813,7 +850,7 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 （列出需要立即处理的问题和后续跟进事项）
 
 请用中文撰写，内容要专业、详细、可操作。`,
-		totalHosts, onlineHosts, offlineHosts, warningHosts, criticalHosts, recordsText)
+		totalHosts, onlineHosts, offlineHosts, warningHosts, criticalHosts, recordsText, inspectionDateStr)
 }
 
 // GenerateInspectionReport 非流式生成巡检日报（用于不支持流式的提供商）
@@ -836,9 +873,9 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 		url = "https://api.deepseek.com/v1/chat/completions"
 	}
 	if c.config.Provider == ProviderCustom {
-		// 自定义模型必须提供BaseURL
+		// OpenAI兼容模型必须提供BaseURL
 		if c.config.BaseURL == "" {
-			return fmt.Errorf("custom API base_url is required for streaming")
+			return fmt.Errorf("openai_compatible API base_url is required for streaming")
 		}
 		url = strings.TrimSpace(c.config.BaseURL)
 		log.Printf("[LLM Stream] 使用自定义API地址: %s", url)
@@ -850,9 +887,9 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 	model := c.config.Model
 	if model == "" {
 		if c.config.Provider == ProviderCustom {
-			// 自定义模型如果没有指定model，尝试从URL推断或使用默认值
+			// OpenAI兼容模型如果没有指定model，尝试从URL推断或使用默认值
 			model = "gpt-3.5-turbo" // 默认值
-			log.Printf("[LLM Stream] 自定义模型未指定model，使用默认值: %s", model)
+			log.Printf("[LLM Stream] OpenAI兼容模型未指定model，使用默认值: %s", model)
 		} else {
 			model = "gpt-3.5-turbo"
 		}
@@ -959,18 +996,12 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 		}
 
 		if dataStr == "[DONE]" || dataStr == `"[DONE]"` {
-			// 发送完成信号
-			finalContent := accumulatedContent.String()
-			log.Printf("[LLM Stream] 收到[DONE]信号，共处理 %d 个数据块，最终内容长度: %d", chunkCount, len(finalContent))
+			// 发送完成信号（不发送完整内容，避免重复）
+			log.Printf("[LLM Stream] 收到[DONE]信号，共处理 %d 个数据块", chunkCount)
 
-			// 检查最终内容是否完整
-			hasSix := strings.Contains(finalContent, "六")
-			hasSeven := strings.Contains(finalContent, "七")
-			hasEight := strings.Contains(finalContent, "八")
-			log.Printf("[LLM Stream] [DONE]时内容检查: 包含'六'=%v, 包含'七'=%v, 包含'八'=%v", hasSix, hasSeven, hasEight)
-
+			// 只发送完成信号，不发送完整内容
 			chunk := StreamChunk{
-				Content: finalContent,
+				Content: "", // 不发送内容，避免重复
 				Done:    true,
 			}
 			if err := writeStreamChunk(writer, chunk); err != nil {
@@ -981,7 +1012,7 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 				}
 				return err
 			}
-			log.Printf("[LLM Stream] 成功发送[DONE]信号和完整内容，长度: %d", len(finalContent))
+			log.Printf("[LLM Stream] 成功发送[DONE]信号")
 			break
 		}
 
@@ -1005,14 +1036,12 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 		}
 
 		var content string
-		// 优先从delta.content获取
+		// 只从delta.content获取，不使用message.content避免重复
 		if len(streamData.Choices) > 0 {
 			if streamData.Choices[0].Delta.Content != "" {
 				content = streamData.Choices[0].Delta.Content
-			} else if streamData.Choices[0].Message.Content != "" {
-				// 有些API可能在message中返回完整内容
-				content = streamData.Choices[0].Message.Content
 			}
+			// 跳过message.content，因为它可能包含完整内容导致重复
 		}
 		// 如果choices中没有内容，尝试从顶层字段获取
 		if content == "" {
@@ -1024,6 +1053,16 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 		}
 
 		if content != "" {
+			// 检查是否包含完整内容（可能是完整日报），避免重复累积
+			// 如果新的内容包含了之前累积内容的开头，可能是重复的完整内容，跳过
+			existingContent := accumulatedContent.String()
+			if len(existingContent) > 0 && len(content) > len(existingContent) && strings.Contains(content, existingContent[:min(100, len(existingContent))]) {
+				// 新的内容包含了之前累积内容的一部分，可能是重复的完整内容
+				// 跳过这个chunk，因为它可能导致内容翻倍
+				log.Printf("[LLM Stream] 检测到可能的重复内容，新内容长度=%d，累积内容长度=%d，跳过以避免重复", len(content), len(existingContent))
+				continue
+			}
+
 			accumulatedContent.WriteString(content)
 			chunkCount++
 
@@ -1062,10 +1101,10 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[LLM Stream] 读取流式响应错误: %v", err)
-		// 即使有错误，也尝试发送已累积的内容
+		// 发送完成信号（不发送完整内容）
 		if accumulatedContent.Len() > 0 {
 			chunk := StreamChunk{
-				Content: accumulatedContent.String(),
+				Content: "",
 				Done:    true,
 			}
 			writeStreamChunk(writer, chunk)
@@ -1073,32 +1112,18 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 		return err
 	}
 
-	finalContent := accumulatedContent.String()
-	log.Printf("[LLM Stream] 流式输出完成，共处理 %d 个数据块，总长度: %d 字符", chunkCount, len(finalContent))
+	log.Printf("[LLM Stream] 流式输出完成，共处理 %d 个数据块", chunkCount)
 
-	// 检查最终内容是否完整
-	hasSix := strings.Contains(finalContent, "六")
-	hasSeven := strings.Contains(finalContent, "七")
-	hasEight := strings.Contains(finalContent, "八")
-	log.Printf("[LLM Stream] 最终内容检查: 包含'六'=%v, 包含'七'=%v, 包含'八'=%v", hasSix, hasSeven, hasEight)
-
-	// 记录最后200个字符，用于调试
-	if len(finalContent) > 200 {
-		log.Printf("[LLM Stream] 最终内容最后200字符: %s", finalContent[len(finalContent)-200:])
-	} else {
-		log.Printf("[LLM Stream] 最终内容: %s", finalContent)
-	}
-
-	// 如果没有收到[DONE]信号但扫描结束了，发送完成信号
-	if !strings.Contains(finalContent, "[DONE]") && len(finalContent) > 0 {
+	// 如果没有收到[DONE]信号但扫描结束了，发送完成信号（不发送完整内容）
+	if accumulatedContent.Len() > 0 {
 		chunk := StreamChunk{
-			Content: finalContent,
+			Content: "", // 不发送内容，避免重复
 			Done:    true,
 		}
 		if err := writeStreamChunk(writer, chunk); err != nil {
 			log.Printf("[LLM Stream] 发送最终数据块失败: %v", err)
 		} else {
-			log.Printf("[LLM Stream] 成功发送最终数据块（done=true），长度: %d", len(finalContent))
+			log.Printf("[LLM Stream] 成功发送最终数据块（done=true）")
 		}
 	}
 
@@ -1115,11 +1140,31 @@ func (c *LLMClient) streamClaude(prompt string, writer io.Writer) error {
 	if err != nil {
 		return err
 	}
-	chunk := StreamChunk{
-		Content: formatAnalysisResponse(response),
+	// 使用流式方式发送内容，而不是一次性发送
+	content := formatAnalysisResponse(response)
+
+	// 分块发送内容
+	chunkSize := 1000 // 每块1000字符
+	for i := 0; i < len(content); i += chunkSize {
+		end := i + chunkSize
+		if end > len(content) {
+			end = len(content)
+		}
+		chunk := StreamChunk{
+			Content: content[i:end],
+			Done:    false,
+		}
+		if err := writeStreamChunk(writer, chunk); err != nil {
+			return err
+		}
+	}
+
+	// 最后发送完成信号
+	finalChunk := StreamChunk{
+		Content: "",
 		Done:    true,
 	}
-	return writeStreamChunk(writer, chunk)
+	return writeStreamChunk(writer, finalChunk)
 }
 
 // streamZhipu 流式调用智普API
@@ -1238,16 +1283,16 @@ func (c *LLMClient) streamZhipu(prompt string, writer io.Writer) error {
 		}
 
 		if dataStr == "[DONE]" || dataStr == `"[DONE]"` {
-			// 发送完成信号
+			// 发送完成信号（不发送完整内容，避免重复）
 			log.Printf("[LLM Stream] Zhipu 收到[DONE]信号，共处理 %d 个数据块", chunkCount)
 			chunk := StreamChunk{
-				Content: accumulatedContent.String(),
+				Content: "", // 不发送内容，避免重复
 				Done:    true,
 			}
 			if err := writeStreamChunk(writer, chunk); err != nil {
 				// 如果是连接关闭错误，优雅退出
 				if isConnectionClosed(err) {
-					log.Printf("[LLM Stream] 客户端连接已关闭，停止流式输出")
+					log.Printf("[LLM Stream] Zhipu 客户端连接已关闭，停止流式输出")
 					return nil
 				}
 				return err
@@ -1366,28 +1411,24 @@ func (c *LLMClient) streamZhipu(prompt string, writer io.Writer) error {
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[LLM Stream] Zhipu 读取流式响应错误: %v", err)
-		// 即使有错误，也尝试发送已累积的内容
-		if accumulatedContent.Len() > 0 {
-			chunk := StreamChunk{
-				Content: accumulatedContent.String(),
-				Done:    true,
-			}
-			writeStreamChunk(writer, chunk)
+		// 发送完成信号（不发送完整内容）
+		chunk := StreamChunk{
+			Content: "",
+			Done:    true,
 		}
+		writeStreamChunk(writer, chunk)
 		return err
 	}
 
-	log.Printf("[LLM Stream] Zhipu 流式输出完成，共处理 %d 个数据块，总长度: %d 字符", chunkCount, accumulatedContent.Len())
+	log.Printf("[LLM Stream] Zhipu 流式输出完成，共处理 %d 个数据块", chunkCount)
 
-	// 如果没有收到[DONE]信号但扫描结束了，发送完成信号
-	if accumulatedContent.Len() > 0 {
-		chunk := StreamChunk{
-			Content: accumulatedContent.String(),
-			Done:    true,
-		}
-		if err := writeStreamChunk(writer, chunk); err != nil {
-			log.Printf("[LLM Stream] Zhipu 发送最终数据块失败: %v", err)
-		}
+	// 发送完成信号（不发送完整内容）
+	chunk := StreamChunk{
+		Content: "",
+		Done:    true,
+	}
+	if err := writeStreamChunk(writer, chunk); err != nil {
+		log.Printf("[LLM Stream] Zhipu 发送最终数据块失败: %v", err)
 	}
 
 	return nil

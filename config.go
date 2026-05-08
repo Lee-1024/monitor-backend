@@ -56,7 +56,7 @@ type LLMConfig struct {
 func LoadConfig() *Config {
 	config := &Config{
 		GRPCAddr:     ":50051",
-		HTTPAddr:     ":8080",
+		HTTPAddr:     ":8083",
 		JWTSecret:    "your-secret-key-change-in-production",
 		AuthRequired: true, // 默认需要认证
 		InfluxDB: InfluxDBConfig{

@@ -28,7 +28,8 @@ func main() {
 	// 初始化存储
 	storage := NewStorage(config)
 	defer storage.Close()
-
+	// 设置日志保留天数（默认7天）
+	SetLogRetentionDays(7)
 	// 创建收集服务
 	collectorService := NewCollectorService(storage)
 
@@ -87,9 +88,9 @@ func main() {
 		apiConfig := &api.APIConfig{
 			Port: config.HTTPAddr,
 			AllowOrigins: []string{
-				"http://localhost:3000",
-				"http://localhost:8080",
-				"http://localhost:5173", // Vite默认端口
+				"http://10.54.56.88:3000",
+				"http://10.54.56.88:8083",
+				"http://10.54.56.88:5173", // Vite默认端口
 			},
 			AuthRequired: config.AuthRequired,
 		}

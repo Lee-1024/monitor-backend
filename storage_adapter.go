@@ -1343,6 +1343,77 @@ func (s *StorageAdapter) getProcessesAlternative(hostID string, limit int) ([]ap
 	return result, nil
 }
 
+// GetProcessesWithPagination 获取进程列表（支持分页）
+func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSize int) ([]api.ProcessInfo, int64, error) {
+	// 先获取总数（符合条件的活跃进程数）
+	var total int64
+	recentTime := time.Now().Add(-10 * time.Second)
+	
+	countSql := "SELECT COUNT(*) FROM (SELECT DISTINCT host_id, pid FROM process_snapshots WHERE timestamp >= ?"
+	countArgs := []interface{}{recentTime}
+	if hostID != "" {
+		countSql += " AND host_id = ?"
+		countArgs = append(countArgs, hostID)
+	}
+	countSql += ") as distinct_processes"
+	
+	if err := s.storage.postgres.Raw(countSql, countArgs...).Scan(&total).Error; err != nil {
+		log.Printf("Error counting processes: %v", err)
+		return nil, 0, err
+	}
+	
+	// 获取去重后的进程列表（分页）
+	offset := (page - 1) * pageSize
+	
+	sql := `
+		SELECT id, created_at, host_id, timestamp, pid, name, "user", cpu_percent, memory_percent, memory_bytes, status, command
+		FROM (
+			SELECT id, created_at, host_id, timestamp, pid, name, "user", cpu_percent, memory_percent, memory_bytes, status, command,
+				ROW_NUMBER() OVER (PARTITION BY host_id, pid ORDER BY timestamp DESC) as rn
+			FROM process_snapshots
+			WHERE timestamp >= ?`
+	
+	args := []interface{}{recentTime}
+	if hostID != "" {
+		sql += " AND host_id = ?"
+		args = append(args, hostID)
+	}
+	
+	sql += `
+		) as ranked
+		WHERE rn = 1
+		ORDER BY cpu_percent DESC, memory_percent DESC, timestamp DESC
+		LIMIT ? OFFSET ?`
+	
+	args = append(args, pageSize, offset)
+	
+	var processes []ProcessSnapshot
+	if err := s.storage.postgres.Raw(sql, args...).Scan(&processes).Error; err != nil {
+		log.Printf("Error executing pagaged process query: %v", err)
+		return nil, 0, err
+	}
+	
+	// 转换为结果
+	result := make([]api.ProcessInfo, 0, len(processes))
+	for _, p := range processes {
+		result = append(result, api.ProcessInfo{
+			ID:            p.ID,
+			HostID:        p.HostID,
+			Timestamp:     p.Timestamp,
+			PID:           p.PID,
+			Name:          p.Name,
+			User:          p.User,
+			CPUPercent:    p.CPUPercent,
+			MemoryPercent: p.MemoryPercent,
+			MemoryBytes:   p.MemoryBytes,
+			Status:        p.Status,
+			Command:       p.Command,
+		})
+	}
+	
+	return result, total, nil
+}
+
 // GetTopProcessNamesByHistory 从历史数据中获取CPU/内存占用最高的前N个进程名
 func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error) {
 	if topN <= 0 {
