@@ -521,8 +521,8 @@ require (
 
 ## 📄 许可证
 
-[添加许可证信息]
+MIT license
 
 ## 📞 联系方式
 
-[添加联系方式]
+WX:Li1024_REBOOT
