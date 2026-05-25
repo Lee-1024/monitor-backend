@@ -78,6 +78,8 @@ func NewStorage(config *Config) *Storage {
 		&CaseStudy{},
 		&InspectionReport{},
 		&InspectionRecord{},
+		&OpsAssistantSession{},
+		&OpsAssistantMessage{},
 	)
 
 	// 初始化默认管理员用户
@@ -717,7 +719,7 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 	// 解析磁盘数据（支持新格式：partitions数组，也兼容旧格式：单个分区）
 	if diskData, ok := cacheData["disk"].(map[string]interface{}); ok {
 		var partitions []PartitionMetrics
-		
+
 		// 检查是否是新格式（partitions数组）
 		if partitionsData, ok := diskData["partitions"].([]interface{}); ok {
 			// 新格式：包含所有分区的数组
@@ -748,7 +750,7 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 				},
 			}
 		}
-		
+
 		metrics.Disk = DiskMetrics{
 			Partitions: partitions,
 		}
@@ -996,4 +998,3 @@ func SetLogRetentionDays(days int) {
 		log.Printf("[LogCleanup] Log retention set to %d days", days)
 	}
 }
-

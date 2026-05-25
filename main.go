@@ -55,10 +55,10 @@ func main() {
 
 	// 从数据库加载通知渠道配置
 	storageAdapter := NewStorageAdapter(storage)
-	
+
 	// 设置存储接口，用于在发送通知时检查渠道是否启用
 	notificationManager.SetStorage(storageAdapter)
-	
+
 	if err := notifier.LoadNotifiersFromStorage(storageAdapter, notificationManager); err != nil {
 		log.Printf("Warning: Failed to load notification channels: %v", err)
 		// 如果加载失败，注册一个默认的邮件通知器（可选）
@@ -91,6 +91,8 @@ func main() {
 				"http://10.54.56.88:3000",
 				"http://10.54.56.88:8083",
 				"http://10.54.56.88:5173", // Vite默认端口
+				"http://localhost:5173",
+				"http://127.0.0.1:5173",
 			},
 			AuthRequired: config.AuthRequired,
 		}
