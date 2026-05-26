@@ -2064,6 +2064,17 @@ func applyAgentStatusToServiceInfos(services []api.ServiceInfo, agentStatuses ma
 	return result
 }
 
+func (s *StorageAdapter) DeleteServiceStatus(hostID string) (int64, error) {
+	query := s.storage.postgres
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	} else {
+		query = query.Session(&gorm.Session{AllowGlobalUpdate: true})
+	}
+	result := query.Delete(&ServiceStatus{})
+	return result.RowsAffected, result.Error
+}
+
 // calculateCrashFrequency 计算宕机频率
 func (s *StorageAdapter) calculateCrashFrequency(events []api.CrashEvent) string {
 	if len(events) == 0 {

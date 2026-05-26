@@ -213,16 +213,16 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 
 	for _, proc := range req.Processes {
 		snapshot := &ProcessSnapshot{
-			HostID:       req.HostId,
-			Timestamp:    timestamp,
-			PID:          proc.Pid,
-			Name:         proc.Name,
-			User:         proc.User,
-			CPUPercent:   proc.CpuPercent,
+			HostID:        req.HostId,
+			Timestamp:     timestamp,
+			PID:           proc.Pid,
+			Name:          proc.Name,
+			User:          proc.User,
+			CPUPercent:    proc.CpuPercent,
 			MemoryPercent: proc.MemoryPercent,
-			MemoryBytes:  proc.MemoryBytes,
-			Status:       proc.Status,
-			Command:      proc.Command,
+			MemoryBytes:   proc.MemoryBytes,
+			Status:        proc.Status,
+			Command:       proc.Command,
 		}
 		if err := s.storage.postgres.Create(snapshot).Error; err != nil {
 			log.Printf("Failed to save process snapshot (PID=%d, Name=%s): %v", proc.Pid, proc.Name, err)
@@ -304,21 +304,28 @@ func (s *CollectorService) ReportScriptResult(ctx context.Context, req *pb.Scrip
 // ReportServiceStatus 接收服务状态数据
 func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.ServiceStatusRequest) (*pb.MetricsResponse, error) {
 	log.Printf("Received service status from: %s (%d services)", req.HostId, len(req.Services))
+	if len(req.Services) == 0 {
+		return &pb.MetricsResponse{
+			Success: true,
+			Message: "No service status to save",
+		}, nil
+	}
 
 	// 更新Agent最后上报时间
 	s.storage.UpdateAgentLastSeen(req.HostId)
 
 	// 保存服务状态
 	timestamp := time.Unix(req.Timestamp, 0)
+	savedCount := 0
 	for _, svc := range req.Services {
 		status := &ServiceStatus{
-			HostID:        req.HostId,
-			Timestamp:     timestamp,
-			Name:          svc.Name,
-			Status:        svc.Status,
-			Enabled:       svc.Enabled,
-			Description:   svc.Description,
-			Uptime:        svc.UptimeSeconds,
+			HostID:      req.HostId,
+			Timestamp:   timestamp,
+			Name:        svc.Name,
+			Status:      svc.Status,
+			Enabled:     svc.Enabled,
+			Description: svc.Description,
+			Uptime:      svc.UptimeSeconds,
 		}
 		// 如果有端口信息，保存端口和端口检查结果
 		if svc.Port > 0 {
@@ -327,11 +334,16 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 		}
 		if err := s.storage.postgres.Create(status).Error; err != nil {
 			log.Printf("Failed to save service status: %v", err)
+			return &pb.MetricsResponse{
+				Success: false,
+				Message: "Failed to save service status",
+			}, err
 		}
+		savedCount++
 	}
 
 	return &pb.MetricsResponse{
 		Success: true,
-		Message: "Service status saved successfully",
+		Message: fmt.Sprintf("Service status saved: %d", savedCount),
 	}, nil
 }

@@ -827,6 +827,27 @@ func (s *APIServer) getServiceStatus(c *gin.Context) {
 	})
 }
 
+func (s *APIServer) deleteServiceStatus(c *gin.Context) {
+	hostID := c.Query("host_id")
+
+	deleted, err := s.storage.DeleteServiceStatus(hostID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{
+			Code:    500,
+			Message: "Failed to delete service status: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Service status deleted successfully",
+		Data: map[string]interface{}{
+			"deleted_count": deleted,
+		},
+	})
+}
+
 // ============================================
 // 告警规则相关处理函数
 // ============================================

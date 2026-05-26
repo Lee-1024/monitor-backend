@@ -64,6 +64,7 @@ type StorageInterface interface {
 
 	// 服务状态相关
 	GetServiceStatus(hostID string) ([]ServiceInfo, error)
+	DeleteServiceStatus(hostID string) (int64, error)
 
 	// 告警规则相关
 	CreateAlertRule(rule *AlertRuleInfo) (*AlertRuleInfo, error)

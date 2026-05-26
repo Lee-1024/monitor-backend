@@ -298,7 +298,8 @@ type LastMetrics struct {
 
 // GetLastMetricsBeforeTime 获取指定时间前最后一次指标
 func (s *Storage) GetLastMetricsBeforeTime(hostID string, beforeTime time.Time) (*LastMetrics, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	// 查询离线前5分钟的数据
 	startTime := beforeTime.Add(-5 * time.Minute).Format(time.RFC3339)
@@ -509,7 +510,9 @@ func (s *Storage) GetAgentStatus(hostID string) (string, error) {
 
 // SaveMetrics 保存指标数据到InfluxDB（完整版）
 func (s *Storage) SaveMetrics(metrics *Metrics) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
 	var points []*write.Point
 
 	// CPU指标
@@ -594,6 +597,9 @@ func (s *Storage) SaveMetrics(metrics *Metrics) error {
 			log.Printf("Failed to write point: %v", err)
 			return err
 		}
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		log.Printf("Saved %d metric points for %s in %v", len(points), metrics.HostID, elapsed)
 	}
 
 	return nil

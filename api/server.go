@@ -255,6 +255,7 @@ func (s *APIServer) setupRoutes() {
 		services := v1.Group("/services")
 		{
 			services.GET("", s.getServiceStatus) // 获取服务状态
+			services.DELETE("", s.deleteServiceStatus)
 		}
 
 		// 告警规则路由
