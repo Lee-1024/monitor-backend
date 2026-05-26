@@ -97,6 +97,7 @@ func NewStorage(config *Config) *Storage {
 
 	// 启动日志清理任务
 	storage.StartLogCleanup()
+	storage.StartProcessSnapshotCleanup()
 
 	log.Println("Storage initialized successfully")
 	return storage
@@ -184,6 +185,9 @@ func (s *Storage) MarkAgentOffline(timeout time.Duration) error {
 
 		// 为每个离线的Agent创建宕机事件记录
 		for _, agent := range agents {
+			if err := s.MarkServicesOffline(agent.HostID, time.Now()); err != nil {
+				log.Printf("Failed to mark services offline for %s: %v", agent.HostID, err)
+			}
 			go s.CreateCrashEvent(agent.HostID, agent.Hostname, agent.LastSeen)
 
 			// 推送WebSocket通知
@@ -194,6 +198,58 @@ func (s *Storage) MarkAgentOffline(timeout time.Duration) error {
 	}
 
 	return nil
+}
+
+func (s *Storage) MarkServicesOffline(hostID string, timestamp time.Time) error {
+	latest, err := s.latestServiceStatuses(hostID)
+	if err != nil {
+		return err
+	}
+	for _, svc := range latest {
+		offline := ServiceStatus{
+			HostID:         hostID,
+			Timestamp:      timestamp,
+			Name:           svc.Name,
+			Status:         "offline",
+			Enabled:        svc.Enabled,
+			Description:    svc.Description,
+			Uptime:         0,
+			Port:           svc.Port,
+			PortAccessible: false,
+		}
+		if err := s.postgres.Create(&offline).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Storage) latestServiceStatuses(hostID string) ([]ServiceStatus, error) {
+	var services []ServiceStatus
+	subQuery := s.postgres.Table("service_statuses").
+		Select("MAX(id) as id").
+		Where("host_id = ?", hostID).
+		Group("name")
+
+	var maxIDs []uint
+	rows, err := subQuery.Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id uint
+		if err := rows.Scan(&id); err == nil {
+			maxIDs = append(maxIDs, id)
+		}
+	}
+	if len(maxIDs) == 0 {
+		return services, nil
+	}
+
+	err = s.postgres.Where("id IN ?", maxIDs).Find(&services).Error
+	return services, err
 }
 
 // CreateCrashEvent 创建宕机事件记录
@@ -996,5 +1052,48 @@ func SetLogRetentionDays(days int) {
 	if days > 0 && days <= 365 {
 		logRetentionDays = days
 		log.Printf("[LogCleanup] Log retention set to %d days", days)
+	}
+}
+
+var processSnapshotRetentionDays = 30
+
+func SetProcessSnapshotRetentionDays(days int) {
+	if days > 0 && days <= 365 {
+		processSnapshotRetentionDays = days
+		log.Printf("[ProcessCleanup] Process snapshot retention set to %d days", days)
+	}
+}
+
+func processSnapshotCutoff(now time.Time) time.Time {
+	return now.AddDate(0, 0, -processSnapshotRetentionDays)
+}
+
+func (s *Storage) StartProcessSnapshotCleanup() {
+	go s.cleanupOldProcessSnapshots()
+
+	go func() {
+		for {
+			now := time.Now()
+			next := time.Date(now.Year(), now.Month(), now.Day(), 3, 30, 0, 0, now.Location())
+			if next.Before(now) {
+				next = next.Add(24 * time.Hour)
+			}
+
+			timer := time.NewTimer(next.Sub(now))
+			<-timer.C
+			s.cleanupOldProcessSnapshots()
+		}
+	}()
+}
+
+func (s *Storage) cleanupOldProcessSnapshots() {
+	cutoff := processSnapshotCutoff(time.Now())
+	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&ProcessSnapshot{})
+	if result.Error != nil {
+		log.Printf("[ProcessCleanup] Failed to cleanup old process snapshots: %v", result.Error)
+		return
+	}
+	if result.RowsAffected > 0 {
+		log.Printf("[ProcessCleanup] Cleaned up %d process snapshots older than %d days", result.RowsAffected, processSnapshotRetentionDays)
 	}
 }
