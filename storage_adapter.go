@@ -1348,7 +1348,7 @@ func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSiz
 	// 先获取总数（符合条件的活跃进程数）
 	var total int64
 	recentTime := time.Now().Add(-10 * time.Second)
-	
+
 	countSql := "SELECT COUNT(*) FROM (SELECT DISTINCT host_id, pid FROM process_snapshots WHERE timestamp >= ?"
 	countArgs := []interface{}{recentTime}
 	if hostID != "" {
@@ -1356,15 +1356,15 @@ func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSiz
 		countArgs = append(countArgs, hostID)
 	}
 	countSql += ") as distinct_processes"
-	
+
 	if err := s.storage.postgres.Raw(countSql, countArgs...).Scan(&total).Error; err != nil {
 		log.Printf("Error counting processes: %v", err)
 		return nil, 0, err
 	}
-	
+
 	// 获取去重后的进程列表（分页）
 	offset := (page - 1) * pageSize
-	
+
 	sql := `
 		SELECT id, created_at, host_id, timestamp, pid, name, "user", cpu_percent, memory_percent, memory_bytes, status, command
 		FROM (
@@ -1372,27 +1372,27 @@ func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSiz
 				ROW_NUMBER() OVER (PARTITION BY host_id, pid ORDER BY timestamp DESC) as rn
 			FROM process_snapshots
 			WHERE timestamp >= ?`
-	
+
 	args := []interface{}{recentTime}
 	if hostID != "" {
 		sql += " AND host_id = ?"
 		args = append(args, hostID)
 	}
-	
+
 	sql += `
 		) as ranked
 		WHERE rn = 1
 		ORDER BY cpu_percent DESC, memory_percent DESC, timestamp DESC
 		LIMIT ? OFFSET ?`
-	
+
 	args = append(args, pageSize, offset)
-	
+
 	var processes []ProcessSnapshot
 	if err := s.storage.postgres.Raw(sql, args...).Scan(&processes).Error; err != nil {
 		log.Printf("Error executing pagaged process query: %v", err)
 		return nil, 0, err
 	}
-	
+
 	// 转换为结果
 	result := make([]api.ProcessInfo, 0, len(processes))
 	for _, p := range processes {
@@ -1410,7 +1410,7 @@ func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSiz
 			Command:       p.Command,
 		})
 	}
-	
+
 	return result, total, nil
 }
 
@@ -2001,7 +2001,46 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 		}
 	}
 
-	return result, nil
+	agentStatuses, err := s.getAgentStatusesForServices(result)
+	if err != nil {
+		return nil, err
+	}
+
+	return applyAgentStatusToServiceInfos(result, agentStatuses), nil
+}
+
+func (s *StorageAdapter) getAgentStatusesForServices(services []api.ServiceInfo) (map[string]string, error) {
+	hostSet := make(map[string]struct{})
+	for _, svc := range services {
+		if svc.HostID != "" {
+			hostSet[svc.HostID] = struct{}{}
+		}
+	}
+
+	statuses := make(map[string]string, len(hostSet))
+	for hostID := range hostSet {
+		status, err := s.storage.GetAgentStatus(hostID)
+		if err != nil {
+			statuses[hostID] = "unknown"
+			continue
+		}
+		statuses[hostID] = status
+	}
+	return statuses, nil
+}
+
+func applyAgentStatusToServiceInfos(services []api.ServiceInfo, agentStatuses map[string]string) []api.ServiceInfo {
+	result := make([]api.ServiceInfo, len(services))
+	copy(result, services)
+
+	for i := range result {
+		if agentStatuses[result[i].HostID] == "offline" {
+			result[i].Status = "offline"
+			result[i].Uptime = 0
+			result[i].PortAccessible = false
+		}
+	}
+	return result
 }
 
 // calculateCrashFrequency 计算宕机频率
