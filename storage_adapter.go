@@ -976,8 +976,9 @@ func (s *StorageAdapter) GetTopMetrics(metricType string, limit int, order strin
 		|> range(start: -5m)
 		|> filter(fn: (r) => r["_measurement"] == "%s")
 		|> filter(fn: (r) => r["_field"] == "%s")
-		|> mean()
 		|> group(columns: ["host_id"])
+		|> mean()
+		|> group()
 		|> %s(n: %d)
 	`, s.storage.config.InfluxDB.Bucket, metricType, field, sortFunc, limit)
 
@@ -1016,7 +1017,27 @@ func (s *StorageAdapter) GetTopMetrics(metricType string, limit int, order strin
 		})
 	}
 
-	return metrics, nil
+	return limitTopMetrics(metrics, limit), nil
+}
+
+func limitTopMetrics(metrics []api.TopMetric, limit int) []api.TopMetric {
+	if limit <= 0 {
+		return metrics
+	}
+
+	result := make([]api.TopMetric, 0, limit)
+	seen := make(map[string]struct{})
+	for _, metric := range metrics {
+		if _, exists := seen[metric.HostID]; exists {
+			continue
+		}
+		seen[metric.HostID] = struct{}{}
+		result = append(result, metric)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
 }
 
 // ============================================
