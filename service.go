@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -208,11 +209,10 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 
 	// 保存进程快照
 	timestamp := time.Unix(req.Timestamp, 0)
-	savedCount := 0
-	failedCount := 0
+	snapshots := make([]ProcessSnapshot, 0, len(req.Processes))
 
 	for _, proc := range req.Processes {
-		snapshot := &ProcessSnapshot{
+		snapshots = append(snapshots, ProcessSnapshot{
 			HostID:        req.HostId,
 			Timestamp:     timestamp,
 			PID:           proc.Pid,
@@ -223,20 +223,22 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 			MemoryBytes:   proc.MemoryBytes,
 			Status:        proc.Status,
 			Command:       proc.Command,
-		}
-		if err := s.storage.postgres.Create(snapshot).Error; err != nil {
-			log.Printf("Failed to save process snapshot (PID=%d, Name=%s): %v", proc.Pid, proc.Name, err)
-			failedCount++
-		} else {
-			savedCount++
-		}
+		})
 	}
 
-	log.Printf("Saved %d processes, %d failed for host %s", savedCount, failedCount, req.HostId)
+	if err := s.storage.postgres.CreateInBatches(snapshots, 100).Error; err != nil {
+		log.Printf("Failed to save process snapshots for host %s: %v", req.HostId, err)
+		return &pb.MetricsResponse{
+			Success: false,
+			Message: "Failed to save process snapshots",
+		}, err
+	}
+
+	log.Printf("Saved %d processes for host %s", len(snapshots), req.HostId)
 
 	return &pb.MetricsResponse{
 		Success: true,
-		Message: fmt.Sprintf("Processes saved: %d success, %d failed", savedCount, failedCount),
+		Message: fmt.Sprintf("Processes saved: %d", len(snapshots)),
 	}, nil
 }
 
@@ -248,23 +250,31 @@ func (s *CollectorService) ReportLogs(ctx context.Context, req *pb.LogReportRequ
 	s.storage.UpdateAgentLastSeen(req.HostId)
 
 	// 保存日志条目
+	entries := make([]LogEntry, 0, len(req.Logs))
 	for _, logEntry := range req.Logs {
-		entry := &LogEntry{
+		entries = append(entries, LogEntry{
 			HostID:    req.HostId,
 			Timestamp: time.Unix(logEntry.Timestamp, 0),
 			Source:    logEntry.Source,
 			Level:     logEntry.Level,
 			Message:   logEntry.Message,
 			Tags:      logEntry.Tags,
-		}
-		if err := s.storage.postgres.Create(entry).Error; err != nil {
-			log.Printf("Failed to save log entry: %v", err)
+		})
+	}
+
+	if len(entries) > 0 {
+		if err := s.storage.postgres.CreateInBatches(entries, 200).Error; err != nil {
+			log.Printf("Failed to save log entries for host %s: %v", req.HostId, err)
+			return &pb.MetricsResponse{
+				Success: false,
+				Message: "Failed to save log entries",
+			}, err
 		}
 	}
 
 	return &pb.MetricsResponse{
 		Success: true,
-		Message: "Logs saved successfully",
+		Message: fmt.Sprintf("Logs saved: %d", len(entries)),
 	}, nil
 }
 
@@ -345,5 +355,42 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 	return &pb.MetricsResponse{
 		Success: true,
 		Message: fmt.Sprintf("Service status saved: %d", savedCount),
+	}, nil
+}
+
+func (s *CollectorService) ReportDockerContainers(ctx context.Context, req *pb.LogReportRequest) (*pb.MetricsResponse, error) {
+	log.Printf("Received docker container data from: %s (%d containers)", req.HostId, len(req.Logs))
+	if len(req.Logs) == 0 {
+		return &pb.MetricsResponse{Success: true, Message: "No docker containers to save"}, nil
+	}
+
+	s.storage.UpdateAgentLastSeen(req.HostId)
+
+	snapshots := make([]DockerContainerSnapshot, 0, len(req.Logs))
+	for _, entry := range req.Logs {
+		var snapshot DockerContainerSnapshot
+		if err := json.Unmarshal([]byte(entry.Message), &snapshot); err != nil {
+			log.Printf("Failed to decode docker snapshot for host %s: %v", req.HostId, err)
+			continue
+		}
+		snapshot.HostID = req.HostId
+		if snapshot.Timestamp.IsZero() {
+			snapshot.Timestamp = time.Unix(req.Timestamp, 0)
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+
+	if len(snapshots) == 0 {
+		return &pb.MetricsResponse{Success: true, Message: "No valid docker containers to save"}, nil
+	}
+
+	if err := s.storage.postgres.CreateInBatches(snapshots, 100).Error; err != nil {
+		log.Printf("Failed to save docker snapshots for host %s: %v", req.HostId, err)
+		return &pb.MetricsResponse{Success: false, Message: "Failed to save docker snapshots"}, err
+	}
+
+	return &pb.MetricsResponse{
+		Success: true,
+		Message: fmt.Sprintf("Docker containers saved: %d", len(snapshots)),
 	}, nil
 }

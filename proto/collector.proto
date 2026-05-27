@@ -26,6 +26,9 @@ service Collector {
   
   // 上报服务状态
   rpc ReportServiceStatus(ServiceStatusRequest) returns (MetricsResponse);
+
+  // 上报 Docker 容器监控数据
+  rpc ReportDockerContainers(LogReportRequest) returns (MetricsResponse);
 }
 
 // 注册请求

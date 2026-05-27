@@ -36,6 +36,7 @@ type CollectorClient interface {
 	ReportScriptResult(ctx context.Context, in *ScriptResultRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
 	// 上报服务状态
 	ReportServiceStatus(ctx context.Context, in *ServiceStatusRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
+	ReportDockerContainers(ctx context.Context, in *LogReportRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
 }
 
 type collectorClient struct {
@@ -109,6 +110,15 @@ func (c *collectorClient) ReportServiceStatus(ctx context.Context, in *ServiceSt
 	return out, nil
 }
 
+func (c *collectorClient) ReportDockerContainers(ctx context.Context, in *LogReportRequest, opts ...grpc.CallOption) (*MetricsResponse, error) {
+	out := new(MetricsResponse)
+	err := c.cc.Invoke(ctx, "/collector.Collector/ReportDockerContainers", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CollectorServer is the server API for Collector service.
 // All implementations must embed UnimplementedCollectorServer
 // for forward compatibility
@@ -127,6 +137,7 @@ type CollectorServer interface {
 	ReportScriptResult(context.Context, *ScriptResultRequest) (*MetricsResponse, error)
 	// 上报服务状态
 	ReportServiceStatus(context.Context, *ServiceStatusRequest) (*MetricsResponse, error)
+	ReportDockerContainers(context.Context, *LogReportRequest) (*MetricsResponse, error)
 	mustEmbedUnimplementedCollectorServer()
 }
 
@@ -154,6 +165,9 @@ func (UnimplementedCollectorServer) ReportScriptResult(context.Context, *ScriptR
 }
 func (UnimplementedCollectorServer) ReportServiceStatus(context.Context, *ServiceStatusRequest) (*MetricsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReportServiceStatus not implemented")
+}
+func (UnimplementedCollectorServer) ReportDockerContainers(context.Context, *LogReportRequest) (*MetricsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportDockerContainers not implemented")
 }
 func (UnimplementedCollectorServer) mustEmbedUnimplementedCollectorServer() {}
 
@@ -294,6 +308,24 @@ func _Collector_ReportServiceStatus_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Collector_ReportDockerContainers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CollectorServer).ReportDockerContainers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/collector.Collector/ReportDockerContainers",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CollectorServer).ReportDockerContainers(ctx, req.(*LogReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Collector_ServiceDesc is the grpc.ServiceDesc for Collector service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -328,6 +360,10 @@ var Collector_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportServiceStatus",
 			Handler:    _Collector_ReportServiceStatus_Handler,
+		},
+		{
+			MethodName: "ReportDockerContainers",
+			Handler:    _Collector_ReportDockerContainers_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

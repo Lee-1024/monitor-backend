@@ -11,14 +11,14 @@ import (
 )
 
 type Config struct {
-	GRPCAddr      string           `yaml:"grpc_addr"`
-	HTTPAddr      string           `yaml:"http_addr"`
-	JWTSecret     string           `yaml:"jwt_secret"`
-	AuthRequired  bool             `yaml:"auth_required"` // 是否要求认证，默认true
-	InfluxDB      InfluxDBConfig   `yaml:"influxdb"`
-	PostgreSQL    PostgreSQLConfig `yaml:"postgresql"`
-	Redis         RedisConfig      `yaml:"redis"`
-	LLM           LLMConfig        `yaml:"llm"`
+	GRPCAddr     string           `yaml:"grpc_addr"`
+	HTTPAddr     string           `yaml:"http_addr"`
+	JWTSecret    string           `yaml:"jwt_secret"`
+	AuthRequired bool             `yaml:"auth_required"` // 是否要求认证，默认true
+	InfluxDB     InfluxDBConfig   `yaml:"influxdb"`
+	PostgreSQL   PostgreSQLConfig `yaml:"postgresql"`
+	Redis        RedisConfig      `yaml:"redis"`
+	LLM          LLMConfig        `yaml:"llm"`
 }
 
 type InfluxDBConfig struct {
@@ -29,11 +29,35 @@ type InfluxDBConfig struct {
 }
 
 type PostgreSQLConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
+	Host                   string `yaml:"host"`
+	Port                   int    `yaml:"port"`
+	User                   string `yaml:"user"`
+	Password               string `yaml:"password"`
+	Database               string `yaml:"database"`
+	MaxOpenConns           int    `yaml:"max_open_conns"`
+	MaxIdleConns           int    `yaml:"max_idle_conns"`
+	ConnMaxLifetimeMinutes int    `yaml:"conn_max_lifetime_minutes"`
+}
+
+func (c PostgreSQLConfig) EffectiveMaxOpenConns() int {
+	if c.MaxOpenConns > 0 {
+		return c.MaxOpenConns
+	}
+	return 25
+}
+
+func (c PostgreSQLConfig) EffectiveMaxIdleConns() int {
+	if c.MaxIdleConns > 0 {
+		return c.MaxIdleConns
+	}
+	return 5
+}
+
+func (c PostgreSQLConfig) EffectiveConnMaxLifetimeMinutes() int {
+	if c.ConnMaxLifetimeMinutes > 0 {
+		return c.ConnMaxLifetimeMinutes
+	}
+	return 30
 }
 
 type RedisConfig struct {
@@ -43,14 +67,14 @@ type RedisConfig struct {
 }
 
 type LLMConfig struct {
-	Provider    string  `yaml:"provider"`     // openai, claude, custom
+	Provider    string  `yaml:"provider"` // openai, claude, custom
 	APIKey      string  `yaml:"api_key"`
-	BaseURL     string  `yaml:"base_url"`     // 自定义API地址
-	Model       string  `yaml:"model"`        // 模型名称
-	Temperature float64 `yaml:"temperature"`  // 温度参数
-	MaxTokens   int     `yaml:"max_tokens"`   // 最大token数
-	Timeout     int     `yaml:"timeout"`      // 超时时间（秒）
-	Enabled     bool    `yaml:"enabled"`      // 是否启用
+	BaseURL     string  `yaml:"base_url"`    // 自定义API地址
+	Model       string  `yaml:"model"`       // 模型名称
+	Temperature float64 `yaml:"temperature"` // 温度参数
+	MaxTokens   int     `yaml:"max_tokens"`  // 最大token数
+	Timeout     int     `yaml:"timeout"`     // 超时时间（秒）
+	Enabled     bool    `yaml:"enabled"`     // 是否启用
 }
 
 func LoadConfig() *Config {

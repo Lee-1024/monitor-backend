@@ -1539,6 +1539,157 @@ func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string,
 // ============================================
 
 // GetLogs 获取日志列表
+func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, pageSize int) ([]api.DockerContainerInfo, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	query := s.storage.postgres.Model(&DockerContainerSnapshot{})
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	var total int64
+	if err := query.Distinct("host_id", "container_id").Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	type latestID struct {
+		MaxID uint
+	}
+	var ids []latestID
+	subQuery := s.storage.postgres.Model(&DockerContainerSnapshot{}).Select("MAX(id) as max_id")
+	if hostID != "" {
+		subQuery = subQuery.Where("host_id = ?", hostID)
+	}
+	if err := subQuery.Group("host_id, container_id").Scan(&ids).Error; err != nil {
+		return nil, 0, err
+	}
+	if len(ids) == 0 {
+		return []api.DockerContainerInfo{}, 0, nil
+	}
+
+	maxIDs := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		maxIDs = append(maxIDs, id.MaxID)
+	}
+
+	var snapshots []DockerContainerSnapshot
+	offset := (page - 1) * pageSize
+	if err := s.storage.postgres.Where("id IN ?", maxIDs).
+		Order("cpu_percent DESC, memory_percent DESC, timestamp DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&snapshots).Error; err != nil {
+		return nil, 0, err
+	}
+
+	result := make([]api.DockerContainerInfo, len(snapshots))
+	for i, snapshot := range snapshots {
+		result[i] = dockerSnapshotToAPI(snapshot)
+	}
+	return result, total, nil
+}
+
+func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error) {
+	if topN <= 0 {
+		topN = 10
+	}
+	orderBy := "cpu_percent"
+	if metricType == "memory" {
+		orderBy = "memory_percent"
+	}
+
+	query := s.storage.postgres.Model(&DockerContainerSnapshot{}).
+		Select(fmt.Sprintf("name, MAX(%s) as max_usage", orderBy)).
+		Where("timestamp >= ? AND timestamp <= ?", start, end)
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+
+	type row struct {
+		Name string
+	}
+	var rows []row
+	if err := query.Group("name").Order("max_usage DESC").Limit(topN).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Name != "" {
+			names = append(names, row.Name)
+		}
+	}
+	return names, nil
+}
+
+func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames []string, start, end time.Time, limit int) ([]api.DockerContainerHistoryPoint, error) {
+	var snapshots []DockerContainerSnapshot
+	query := s.storage.postgres.Order("timestamp ASC")
+	if hostID != "" {
+		query = query.Where("host_id = ?", hostID)
+	}
+	if !start.IsZero() {
+		query = query.Where("timestamp >= ?", start)
+	}
+	if !end.IsZero() {
+		query = query.Where("timestamp <= ?", end)
+	}
+	if len(containerNames) > 0 {
+		query = query.Where("name IN ?", containerNames)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if err := query.Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]api.DockerContainerHistoryPoint, len(snapshots))
+	for i, snapshot := range snapshots {
+		result[i] = api.DockerContainerHistoryPoint{
+			Timestamp:     snapshot.Timestamp,
+			ContainerName: snapshot.Name,
+			CPUPercent:    snapshot.CPUPercent,
+			MemoryPercent: snapshot.MemoryPercent,
+			MemoryUsage:   snapshot.MemoryUsage,
+		}
+	}
+	return result, nil
+}
+
+func dockerSnapshotToAPI(snapshot DockerContainerSnapshot) api.DockerContainerInfo {
+	return api.DockerContainerInfo{
+		ID:            snapshot.ID,
+		HostID:        snapshot.HostID,
+		Timestamp:     snapshot.Timestamp,
+		ContainerID:   snapshot.ContainerID,
+		Name:          snapshot.Name,
+		Image:         snapshot.Image,
+		State:         snapshot.State,
+		Status:        snapshot.Status,
+		CreatedUnix:   snapshot.CreatedUnix,
+		StartedAt:     snapshot.StartedAt,
+		RestartCount:  snapshot.RestartCount,
+		Ports:         snapshot.Ports,
+		CPUPercent:    snapshot.CPUPercent,
+		MemoryUsage:   snapshot.MemoryUsage,
+		MemoryLimit:   snapshot.MemoryLimit,
+		MemoryPercent: snapshot.MemoryPercent,
+		NetworkRx:     snapshot.NetworkRx,
+		NetworkTx:     snapshot.NetworkTx,
+		BlockRead:     snapshot.BlockRead,
+		BlockWrite:    snapshot.BlockWrite,
+	}
+}
+
 func (s *StorageAdapter) GetLogs(hostID, level string, start, end time.Time, limit int) ([]api.LogInfo, error) {
 	var logs []LogEntry
 	query := s.storage.postgres.Order("timestamp DESC")

@@ -699,6 +699,92 @@ func (s *APIServer) getProcessHistory(c *gin.Context) {
 // ============================================
 
 // getLogs 获取日志列表（支持分页）
+func (s *APIServer) getDockerContainers(c *gin.Context) {
+	hostID := c.Query("host_id")
+	page := 1
+	pageSize := 10
+	if pageStr := c.Query("page"); pageStr != "" {
+		fmt.Sscanf(pageStr, "%d", &page)
+	}
+	if pageSizeStr := c.Query("page_size"); pageSizeStr != "" {
+		fmt.Sscanf(pageSizeStr, "%d", &pageSize)
+	}
+
+	containers, total, err := s.storage.GetDockerContainersWithPagination(hostID, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{Code: 500, Message: "Failed to get docker containers: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{
+		Code:    200,
+		Message: "Success",
+		Data: map[string]interface{}{
+			"containers": containers,
+			"total":      total,
+			"page":       page,
+			"page_size":  pageSize,
+		},
+	})
+}
+
+func (s *APIServer) getDockerContainerHistory(c *gin.Context) {
+	hostID := c.Query("host_id")
+	containerNamesStr := c.Query("container_names")
+	metricType := c.DefaultQuery("metric_type", "cpu")
+	topN := 10
+	if topNStr := c.Query("top_n"); topNStr != "" {
+		fmt.Sscanf(topNStr, "%d", &topN)
+	}
+	limit := 5000
+	if limitStr := c.Query("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &limit)
+	}
+
+	start := time.Now().Add(-1 * time.Hour)
+	if startStr := c.Query("start"); startStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, startStr); err == nil {
+			start = parsed
+		}
+	}
+	end := time.Now()
+	if endStr := c.Query("end"); endStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, endStr); err == nil {
+			end = parsed
+		}
+	}
+
+	var containerNames []string
+	if containerNamesStr != "" {
+		for _, name := range strings.Split(containerNamesStr, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				containerNames = append(containerNames, name)
+			}
+		}
+	} else {
+		topNames, err := s.storage.GetTopDockerContainerNamesByHistory(hostID, start, end, metricType, topN)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, Response{Code: 500, Message: "Failed to get top docker containers: " + err.Error()})
+			return
+		}
+		containerNames = topNames
+	}
+
+	if len(containerNames) == 0 {
+		c.JSON(http.StatusOK, Response{Code: 200, Message: "Success", Data: []DockerContainerHistoryPoint{}})
+		return
+	}
+
+	history, err := s.storage.GetDockerContainerHistory(hostID, containerNames, start, end, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Response{Code: 500, Message: "Failed to get docker history: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, Response{Code: 200, Message: "Success", Data: history})
+}
+
 func (s *APIServer) getLogs(c *gin.Context) {
 	hostID := c.Query("host_id")
 	level := c.Query("level")

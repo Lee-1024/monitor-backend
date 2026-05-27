@@ -56,6 +56,19 @@ func NewStorage(config *Config) *Storage {
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
+	if sqlDB, err := storage.postgres.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(config.PostgreSQL.EffectiveMaxOpenConns())
+		sqlDB.SetMaxIdleConns(config.PostgreSQL.EffectiveMaxIdleConns())
+		sqlDB.SetConnMaxLifetime(time.Duration(config.PostgreSQL.EffectiveConnMaxLifetimeMinutes()) * time.Minute)
+		log.Printf(
+			"PostgreSQL pool configured: max_open=%d max_idle=%d conn_max_lifetime=%dm",
+			config.PostgreSQL.EffectiveMaxOpenConns(),
+			config.PostgreSQL.EffectiveMaxIdleConns(),
+			config.PostgreSQL.EffectiveConnMaxLifetimeMinutes(),
+		)
+	} else {
+		log.Fatalf("Failed to configure PostgreSQL pool: %v", err)
+	}
 
 	// 自动迁移数据库表
 	storage.postgres.AutoMigrate(
@@ -63,6 +76,7 @@ func NewStorage(config *Config) *Storage {
 		&CrashEvent{},
 		&User{},
 		&ProcessSnapshot{},
+		&DockerContainerSnapshot{},
 		&LogEntry{},
 		&ScriptExecution{},
 		&ServiceStatus{},
@@ -98,6 +112,8 @@ func NewStorage(config *Config) *Storage {
 	// 启动日志清理任务
 	storage.StartLogCleanup()
 	storage.StartProcessSnapshotCleanup()
+	storage.StartDockerSnapshotCleanup()
+	storage.StartServiceStatusCleanup()
 
 	log.Println("Storage initialized successfully")
 	return storage
@@ -126,14 +142,22 @@ func (s *Storage) SaveAgent(agent *Agent) error {
 func (s *Storage) UpdateAgentLastSeen(hostID string) error {
 	// 先检查Agent当前状态
 	var agent Agent
-	err := s.postgres.Where("host_id = ?", hostID).First(&agent).Error
+	err := s.postgres.Select("status").Where("host_id = ? AND status = ?", hostID, "offline").First(&agent).Error
+	if err == gorm.ErrRecordNotFound {
+		return s.postgres.Model(&Agent{}).
+			Where("host_id = ?", hostID).
+			Updates(map[string]interface{}{
+				"last_seen": time.Now(),
+				"status":    "online",
+			}).Error
+	}
 	if err != nil {
 		// Agent不存在，直接返回
 		return err
 	}
 
 	// 检查是否从offline变为online（恢复）
-	wasOffline := agent.Status == "offline"
+	wasOffline := true
 
 	// 更新Agent状态
 	err = s.postgres.Model(&Agent{}).
@@ -1101,5 +1125,77 @@ func (s *Storage) cleanupOldProcessSnapshots() {
 	}
 	if result.RowsAffected > 0 {
 		log.Printf("[ProcessCleanup] Cleaned up %d process snapshots older than %d days", result.RowsAffected, processSnapshotRetentionDays)
+	}
+}
+
+var serviceStatusRetentionDays = 30
+
+var dockerSnapshotRetentionDays = 30
+
+func dockerSnapshotCutoff(now time.Time) time.Time {
+	return now.AddDate(0, 0, -dockerSnapshotRetentionDays)
+}
+
+func (s *Storage) StartDockerSnapshotCleanup() {
+	go s.cleanupOldDockerSnapshots()
+
+	go func() {
+		for {
+			now := time.Now()
+			next := time.Date(now.Year(), now.Month(), now.Day(), 3, 45, 0, 0, now.Location())
+			if next.Before(now) {
+				next = next.Add(24 * time.Hour)
+			}
+
+			timer := time.NewTimer(next.Sub(now))
+			<-timer.C
+			s.cleanupOldDockerSnapshots()
+		}
+	}()
+}
+
+func (s *Storage) cleanupOldDockerSnapshots() {
+	cutoff := dockerSnapshotCutoff(time.Now())
+	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&DockerContainerSnapshot{})
+	if result.Error != nil {
+		log.Printf("[DockerCleanup] Failed to cleanup old docker snapshots: %v", result.Error)
+		return
+	}
+	if result.RowsAffected > 0 {
+		log.Printf("[DockerCleanup] Cleaned up %d docker snapshots older than %d days", result.RowsAffected, dockerSnapshotRetentionDays)
+	}
+}
+
+func serviceStatusCutoff(now time.Time) time.Time {
+	return now.AddDate(0, 0, -serviceStatusRetentionDays)
+}
+
+func (s *Storage) StartServiceStatusCleanup() {
+	go s.cleanupOldServiceStatuses()
+
+	go func() {
+		for {
+			now := time.Now()
+			next := time.Date(now.Year(), now.Month(), now.Day(), 4, 0, 0, 0, now.Location())
+			if next.Before(now) {
+				next = next.Add(24 * time.Hour)
+			}
+
+			timer := time.NewTimer(next.Sub(now))
+			<-timer.C
+			s.cleanupOldServiceStatuses()
+		}
+	}()
+}
+
+func (s *Storage) cleanupOldServiceStatuses() {
+	cutoff := serviceStatusCutoff(time.Now())
+	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&ServiceStatus{})
+	if result.Error != nil {
+		log.Printf("[ServiceCleanup] Failed to cleanup old service statuses: %v", result.Error)
+		return
+	}
+	if result.RowsAffected > 0 {
+		log.Printf("[ServiceCleanup] Cleaned up %d service statuses older than %d days", result.RowsAffected, serviceStatusRetentionDays)
 	}
 }

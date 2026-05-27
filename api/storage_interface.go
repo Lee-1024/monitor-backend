@@ -55,6 +55,11 @@ type StorageInterface interface {
 	GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]ProcessHistoryPoint, error)
 	GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error)
 
+	// Docker鐩戞帶鐩稿叧
+	GetDockerContainersWithPagination(hostID string, page, pageSize int) ([]DockerContainerInfo, int64, error)
+	GetDockerContainerHistory(hostID string, containerNames []string, start, end time.Time, limit int) ([]DockerContainerHistoryPoint, error)
+	GetTopDockerContainerNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error)
+
 	// 日志相关
 	GetLogs(hostID, level string, start, end time.Time, limit int) ([]LogInfo, error)
 	GetLogsWithPagination(hostID, level string, start, end time.Time, page, pageSize int) ([]LogInfo, int64, error) // 分页获取日志
@@ -142,6 +147,37 @@ type ProcessInfo struct {
 	MemoryBytes   uint64    `json:"memory_bytes"`
 	Status        string    `json:"status"`
 	Command       string    `json:"command"`
+}
+
+type DockerContainerHistoryPoint struct {
+	Timestamp     time.Time `json:"timestamp"`
+	ContainerName string    `json:"container_name"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemoryPercent float64   `json:"memory_percent"`
+	MemoryUsage   uint64    `json:"memory_usage"`
+}
+
+type DockerContainerInfo struct {
+	ID            uint      `json:"id"`
+	HostID        string    `json:"host_id"`
+	Timestamp     time.Time `json:"timestamp"`
+	ContainerID   string    `json:"container_id"`
+	Name          string    `json:"name"`
+	Image         string    `json:"image"`
+	State         string    `json:"state"`
+	Status        string    `json:"status"`
+	CreatedUnix   int64     `json:"created_unix"`
+	StartedAt     time.Time `json:"started_at"`
+	RestartCount  int       `json:"restart_count"`
+	Ports         string    `json:"ports"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemoryUsage   uint64    `json:"memory_usage"`
+	MemoryLimit   uint64    `json:"memory_limit"`
+	MemoryPercent float64   `json:"memory_percent"`
+	NetworkRx     uint64    `json:"network_rx"`
+	NetworkTx     uint64    `json:"network_tx"`
+	BlockRead     uint64    `json:"block_read"`
+	BlockWrite    uint64    `json:"block_write"`
 }
 
 // LogInfo 日志信息

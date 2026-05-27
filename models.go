@@ -235,6 +235,41 @@ type ServiceStatus struct {
 }
 
 // AlertRule 告警规则
+// DockerContainerSnapshot Docker container snapshot.
+type DockerContainerSnapshot struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	HostID    string    `gorm:"index;size:64" json:"host_id"`
+	Timestamp time.Time `gorm:"index" json:"timestamp"`
+
+	ContainerID   string    `gorm:"index;size:64" json:"container_id"`
+	Name          string    `gorm:"index;size:255" json:"name"`
+	Image         string    `gorm:"size:512" json:"image"`
+	State         string    `gorm:"size:64;index" json:"state"`
+	Status        string    `gorm:"size:255" json:"status"`
+	CreatedUnix   int64     `json:"created_unix"`
+	StartedAt     time.Time `json:"started_at"`
+	RestartCount  int       `json:"restart_count"`
+	Ports         string    `gorm:"type:text" json:"ports"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemoryUsage   uint64    `json:"memory_usage"`
+	MemoryLimit   uint64    `json:"memory_limit"`
+	MemoryPercent float64   `json:"memory_percent"`
+	NetworkRx     uint64    `json:"network_rx"`
+	NetworkTx     uint64    `json:"network_tx"`
+	BlockRead     uint64    `json:"block_read"`
+	BlockWrite    uint64    `json:"block_write"`
+}
+
+func (s DockerContainerSnapshot) ContainerKey() string {
+	id := s.ContainerID
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	return s.HostID + ":" + id
+}
+
 type AlertRule struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
 	CreatedAt time.Time `json:"created_at"`

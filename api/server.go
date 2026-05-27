@@ -239,6 +239,12 @@ func (s *APIServer) setupRoutes() {
 			processes.GET("/history", s.getProcessHistory) // 获取进程历史数据
 		}
 
+		docker := v1.Group("/docker")
+		{
+			docker.GET("/containers", s.getDockerContainers)
+			docker.GET("/history", s.getDockerContainerHistory)
+		}
+
 		// 日志路由
 		logs := v1.Group("/logs")
 		{
