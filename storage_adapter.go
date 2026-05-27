@@ -103,7 +103,7 @@ func (s *StorageAdapter) GetAgentStatus(hostID string) (string, error) {
 
 // DeleteAgent 删除Agent
 func (s *StorageAdapter) DeleteAgent(hostID string) error {
-	return s.storage.postgres.Where("host_id = ?", hostID).Delete(&Agent{}).Error
+	return s.storage.DeleteAgent(hostID)
 }
 
 // GetMetrics 获取指标数据

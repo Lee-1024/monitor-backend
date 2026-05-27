@@ -11,6 +11,8 @@ import (
 	"time"
 
 	pb "monitor-backend/proto"
+
+	"gorm.io/gorm"
 )
 
 type CollectorService struct {
@@ -28,14 +30,16 @@ func NewCollectorService(storage *Storage) *CollectorService {
 func (s *CollectorService) RegisterAgent(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
 	log.Printf("Agent registering: %s (%s)", req.HostId, req.Hostname)
 
-	// 先尝试查找已存在的Agent
+	// 先尝试查找已存在的Agent。这里必须包含软删除记录：
+	// 删除主机是软删除，host_id 唯一索引仍然存在，重新注册时应恢复旧记录而不是创建新记录。
 	var existingAgent Agent
-	result := s.storage.postgres.Where("host_id = ?", req.HostId).First(&existingAgent)
+	result := s.storage.postgres.Unscoped().Where("host_id = ?", req.HostId).First(&existingAgent)
 
 	now := time.Now()
 
 	if result.Error == nil {
 		// Agent已存在，更新信息
+		existingAgent.DeletedAt = gorm.DeletedAt{}
 		existingAgent.Hostname = req.Hostname
 		existingAgent.IP = req.Ip
 		existingAgent.OS = req.Os
@@ -44,7 +48,7 @@ func (s *CollectorService) RegisterAgent(ctx context.Context, req *pb.RegisterRe
 		existingAgent.Status = "online"
 		existingAgent.LastSeen = now
 
-		if err := s.storage.postgres.Save(&existingAgent).Error; err != nil {
+		if err := s.storage.postgres.Unscoped().Save(&existingAgent).Error; err != nil {
 			log.Printf("Failed to update agent: %v", err)
 			return &pb.RegisterResponse{
 				Success: false,
@@ -53,7 +57,7 @@ func (s *CollectorService) RegisterAgent(ctx context.Context, req *pb.RegisterRe
 		}
 
 		log.Printf("Agent updated: %s (%s)", req.HostId, req.Hostname)
-	} else {
+	} else if result.Error == gorm.ErrRecordNotFound {
 		// Agent不存在，创建新记录
 		agent := &Agent{
 			HostID:   req.HostId,
@@ -75,6 +79,12 @@ func (s *CollectorService) RegisterAgent(ctx context.Context, req *pb.RegisterRe
 		}
 
 		log.Printf("Agent registered: %s (%s)", req.HostId, req.Hostname)
+	} else {
+		log.Printf("Failed to query agent: %v", result.Error)
+		return &pb.RegisterResponse{
+			Success: false,
+			Message: "Failed to query agent",
+		}, result.Error
 	}
 
 	return &pb.RegisterResponse{
