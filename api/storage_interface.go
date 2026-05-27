@@ -246,6 +246,7 @@ type LatestMetrics struct {
 	Memory    map[string]interface{} `json:"memory"`
 	Disk      map[string]interface{} `json:"disk"`
 	Network   map[string]interface{} `json:"network"`
+	GPU       map[string]interface{} `json:"gpu"`
 }
 
 // AggregateMetric 聚合指标
@@ -261,6 +262,8 @@ type Overview struct {
 	OfflineAgents int64   `json:"offline_agents"`
 	AvgCPU        float64 `json:"avg_cpu"`
 	AvgMemory     float64 `json:"avg_memory"`
+	AvgGPU        float64 `json:"avg_gpu"`
+	GPUDevices    int64   `json:"gpu_devices"`
 	TotalMetrics  int64   `json:"total_metrics"`
 }
 
@@ -269,6 +272,9 @@ type TopMetric struct {
 	HostID   string  `json:"host_id"`
 	Hostname string  `json:"hostname"`
 	Value    float64 `json:"value"`
+	Device   string  `json:"device,omitempty"`
+	Vendor   string  `json:"vendor,omitempty"`
+	UUID     string  `json:"uuid,omitempty"`
 }
 
 // CrashEvent 宕机事件

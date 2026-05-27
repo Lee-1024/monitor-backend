@@ -519,6 +519,136 @@ require (
 - 检查API密钥是否有效
 - 检查网络连接
 
+
+## GPU 厂商适配说明
+
+GPU 厂商解析逻辑不放在后端。后端只接收已经归一化后的 GPU 指标，并按统一结构写入 InfluxDB、Redis 和 API 响应。这样新增厂商时不需要改后端存储和查询逻辑，只需要在 `monitor-agent` 中增加 parser。
+
+### 后端接收的通用 GPU 字段
+
+Agent 上报到后端的每块 GPU 都应归一化为以下字段：
+
+```json
+{
+  "index": 0,
+  "name": "GPU name",
+  "vendor": "nvidia|amd|intel|custom",
+  "model": "GPU model",
+  "uuid": "device unique id",
+  "driver_version": "driver version",
+  "utilization_percent": 0,
+  "memory_total": 0,
+  "memory_used": 0,
+  "memory_used_percent": 0,
+  "temperature": 0,
+  "power_watts": 0,
+  "fan_speed_percent": 0
+}
+```
+
+字段要求：
+
+- 百分比字段使用 `0-100` 的数值。
+- 显存字段使用字节数。
+- 厂商工具不支持的字段填 `0` 或空字符串。
+- `vendor` 建议使用稳定小写值，例如 `nvidia`、`amd`、`intel`、`huawei`、`custom`。
+- `uuid` 如果厂商工具无法提供，可以用 `index` 或 `bus_id` 等稳定标识代替，但同一台机器上应尽量保持不变。
+
+### 新增厂商 parser 的推荐方式
+
+在 `monitor-agent/collector_gpu.go` 中新增 provider 分支，例如：
+
+```go
+case "vendor-smi":
+    output, err := c.runCommand("vendor-smi", []string{"--json"})
+    if err != nil {
+        return nil, err
+    }
+    return parseVendorSMIOutput(output)
+```
+
+然后新增解析函数，把厂商命令输出转换成 `GPUMetrics`：
+
+```go
+func parseVendorSMIOutput(output string) (*GPUMetrics, error) {
+    metrics := &GPUMetrics{Devices: []GPUDeviceMetrics{}}
+    // 解析厂商 JSON/CSV/文本输出
+    metrics.Devices = append(metrics.Devices, GPUDeviceMetrics{
+        Index:              0,
+        Name:               "Vendor GPU",
+        Vendor:             "vendor",
+        Model:              "Vendor GPU",
+        UUID:               "stable-device-id",
+        UtilizationPercent: 70,
+        MemoryTotal:        16 * 1024 * 1024 * 1024,
+        MemoryUsed:         8 * 1024 * 1024 * 1024,
+        MemoryUsedPercent:  50,
+        Temperature:        65,
+        PowerWatts:         180,
+    })
+    return metrics, nil
+}
+```
+
+同时添加对应测试文件或测试用例，至少覆盖：
+
+- 正常输出能解析出设备数量和关键字段。
+- 缺失字段时不会报错。
+- 单位转换正确，例如 MiB/MB/GB 转成字节。
+- 多卡输出能稳定生成多条 `GPUDeviceMetrics`。
+
+### 无需改后端的场景
+
+只要新增 parser 输出仍然符合 `GPUDeviceMetrics`，通常不需要修改后端：
+
+- 新增 NVIDIA 之外的厂商。
+- 厂商命令字段名称不同。
+- 厂商只支持部分指标。
+- 使用自定义脚本输出统一 JSON。
+
+### 需要改后端的场景
+
+只有当要新增通用字段或改变 API 语义时才需要改后端，例如：
+
+- 新增所有厂商都需要展示的字段，如 `pcie_rx_bytes`、`encoder_utilization_percent`。
+- 改变 InfluxDB measurement 或 tag 设计。
+- 新增专门的 GPU API，而不是复用 `/api/v1/metrics/latest`、`/api/v1/metrics/history` 和 `/api/v1/stats/top`。
+
+### 自定义命令方式
+
+如果不想改 Go 代码，可以在 agent 配置中使用 `custom_command`，让脚本直接输出后端可识别的统一 JSON：
+
+```yaml
+gpu:
+  enabled: true
+  provider: "custom_command"
+  command: "/opt/monitor-scripts/gpu-metrics.sh"
+  args: []
+  timeout: 5
+```
+
+脚本输出示例：
+
+```json
+{
+  "devices": [
+    {
+      "index": 0,
+      "name": "Custom GPU",
+      "vendor": "custom",
+      "uuid": "gpu-0",
+      "utilization_percent": 45.5,
+      "memory_total": 17179869184,
+      "memory_used": 8589934592,
+      "memory_used_percent": 50,
+      "temperature": 60,
+      "power_watts": 120
+    }
+  ]
+}
+```
+
+
 ## 📄 许可证
 
 MIT license
@@ -526,3 +656,4 @@ MIT license
 ## 📞 联系方式
 
 WX:Li1024_REBOOT
+

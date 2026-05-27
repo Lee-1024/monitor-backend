@@ -615,6 +615,32 @@ func (s *Storage) SaveMetrics(metrics *Metrics) error {
 		}
 	}
 
+	if len(metrics.GPU.Devices) > 0 {
+		for _, device := range metrics.GPU.Devices {
+			gpuPoint := influxdb2.NewPoint(
+				"gpu",
+				map[string]string{
+					"host_id": metrics.HostID,
+					"index":   fmt.Sprintf("%d", device.Index),
+					"vendor":  device.Vendor,
+					"name":    device.Name,
+					"uuid":    device.UUID,
+				},
+				map[string]interface{}{
+					"utilization_percent": device.UtilizationPercent,
+					"memory_total":        device.MemoryTotal,
+					"memory_used":         device.MemoryUsed,
+					"memory_used_percent":  device.MemoryUsedPercent,
+					"temperature":          device.Temperature,
+					"power_watts":          device.PowerWatts,
+					"fan_speed_percent":    device.FanSpeedPercent,
+				},
+				metrics.Timestamp,
+			)
+			points = append(points, gpuPoint)
+		}
+	}
+
 	// 批量写入所有数据点
 	for _, point := range points {
 		if err := s.influxWrite.WritePoint(ctx, point); err != nil {
@@ -742,6 +768,30 @@ func (s *Storage) CacheLatestMetrics(hostID string, metrics *Metrics) error {
 		}
 	}
 
+	if len(metrics.GPU.Devices) > 0 {
+		devices := make([]map[string]interface{}, 0, len(metrics.GPU.Devices))
+		for _, device := range metrics.GPU.Devices {
+			devices = append(devices, map[string]interface{}{
+				"index":               device.Index,
+				"name":                device.Name,
+				"vendor":              device.Vendor,
+				"model":               device.Model,
+				"uuid":                device.UUID,
+				"driver_version":      device.DriverVersion,
+				"utilization_percent": device.UtilizationPercent,
+				"memory_total":        device.MemoryTotal,
+				"memory_used":         device.MemoryUsed,
+				"memory_used_percent":  device.MemoryUsedPercent,
+				"temperature":         device.Temperature,
+				"power_watts":         device.PowerWatts,
+				"fan_speed_percent":   device.FanSpeedPercent,
+			})
+		}
+		cacheData["gpu"] = map[string]interface{}{
+			"devices": devices,
+		}
+	}
+
 	// 序列化为JSON并缓存5分钟
 	jsonData, err := json.Marshal(cacheData)
 	if err != nil {
@@ -854,6 +904,32 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 					PacketsRecv: getUint64(netData["packets_recv"]),
 				},
 			},
+		}
+	}
+
+	if gpuData, ok := cacheData["gpu"].(map[string]interface{}); ok {
+		if devicesData, ok := gpuData["devices"].([]interface{}); ok {
+			devices := make([]GPUDeviceMetrics, 0, len(devicesData))
+			for _, item := range devicesData {
+				if deviceMap, ok := item.(map[string]interface{}); ok {
+					devices = append(devices, GPUDeviceMetrics{
+						Index:              getInt(deviceMap["index"]),
+						Name:               getString(deviceMap["name"]),
+						Vendor:             getString(deviceMap["vendor"]),
+						Model:              getString(deviceMap["model"]),
+						UUID:               getString(deviceMap["uuid"]),
+						DriverVersion:      getString(deviceMap["driver_version"]),
+						UtilizationPercent: getFloat64(deviceMap["utilization_percent"]),
+						MemoryTotal:        getUint64(deviceMap["memory_total"]),
+						MemoryUsed:         getUint64(deviceMap["memory_used"]),
+						MemoryUsedPercent:  getFloat64(deviceMap["memory_used_percent"]),
+						Temperature:        getFloat64(deviceMap["temperature"]),
+						PowerWatts:         getFloat64(deviceMap["power_watts"]),
+						FanSpeedPercent:    getFloat64(deviceMap["fan_speed_percent"]),
+					})
+				}
+			}
+			metrics.GPU = GPUMetrics{Devices: devices}
 		}
 	}
 

@@ -29,3 +29,14 @@ func TestDockerSnapshotContainerKey(t *testing.T) {
 		t.Fatalf("ContainerKey() = %q, want %q", got, "host-1:abcdef123456")
 	}
 }
+
+func TestDockerContainerTotalUsesLatestDistinctIDs(t *testing.T) {
+	ids := []dockerLatestContainerID{
+		{MaxID: 10},
+		{MaxID: 12},
+	}
+
+	if got := dockerContainerTotalFromLatestIDs(ids); got != 2 {
+		t.Fatalf("dockerContainerTotalFromLatestIDs() = %d, want 2", got)
+	}
+}

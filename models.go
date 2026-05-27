@@ -81,6 +81,7 @@ type Metrics struct {
 	Memory    MemoryMetrics
 	Disk      DiskMetrics
 	Network   NetworkMetrics
+	GPU       GPUMetrics
 }
 
 type CPUMetrics struct {
@@ -125,6 +126,26 @@ type InterfaceMetrics struct {
 	PacketsRecv uint64
 	Errin       uint64
 	Errout      uint64
+}
+
+type GPUMetrics struct {
+	Devices []GPUDeviceMetrics
+}
+
+type GPUDeviceMetrics struct {
+	Index              int
+	Name               string
+	Vendor             string
+	Model              string
+	UUID               string
+	DriverVersion      string
+	UtilizationPercent float64
+	MemoryTotal        uint64
+	MemoryUsed         uint64
+	MemoryUsedPercent  float64
+	Temperature        float64
+	PowerWatts         float64
+	FanSpeedPercent    float64
 }
 
 // User 用户模型

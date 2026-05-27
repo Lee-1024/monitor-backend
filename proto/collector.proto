@@ -57,6 +57,7 @@ message MetricsRequest {
   MemoryMetrics memory = 4;
   DiskMetrics disk = 5;
   NetworkMetrics network = 6;
+  GPUMetrics gpu = 7;
 }
 
 // CPU指标
@@ -107,6 +108,26 @@ message InterfaceMetrics {
   uint64 packets_recv = 5;
   uint64 errin = 6;
   uint64 errout = 7;
+}
+
+message GPUMetrics {
+  repeated GPUDeviceMetrics devices = 1;
+}
+
+message GPUDeviceMetrics {
+  int32 index = 1;
+  string name = 2;
+  string vendor = 3;
+  string model = 4;
+  string uuid = 5;
+  string driver_version = 6;
+  double utilization_percent = 7;
+  uint64 memory_total = 8;
+  uint64 memory_used = 9;
+  double memory_used_percent = 10;
+  double temperature = 11;
+  double power_watts = 12;
+  double fan_speed_percent = 13;
 }
 
 // 指标上报响应

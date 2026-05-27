@@ -157,21 +157,43 @@ func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsReq
 		log.Printf("  Network: %d interfaces", len(metrics.Network.Interfaces))
 	}
 
-	// 保存到InfluxDB
+	if req.Gpu != nil && len(req.Gpu.Devices) > 0 {
+		metrics.GPU = GPUMetrics{
+			Devices: make([]GPUDeviceMetrics, 0, len(req.Gpu.Devices)),
+		}
+		for _, device := range req.Gpu.Devices {
+			metrics.GPU.Devices = append(metrics.GPU.Devices, GPUDeviceMetrics{
+				Index:              int(device.Index),
+				Name:               device.Name,
+				Vendor:             device.Vendor,
+				Model:              device.Model,
+				UUID:               device.Uuid,
+				DriverVersion:      device.DriverVersion,
+				UtilizationPercent: device.UtilizationPercent,
+				MemoryTotal:        device.MemoryTotal,
+				MemoryUsed:         device.MemoryUsed,
+				MemoryUsedPercent:  device.MemoryUsedPercent,
+				Temperature:        device.Temperature,
+				PowerWatts:         device.PowerWatts,
+				FanSpeedPercent:    device.FanSpeedPercent,
+			})
+		}
+		log.Printf("  GPU: %d devices", len(metrics.GPU.Devices))
+	}
+
+	// 先缓存最新指标。即使 InfluxDB 暂时不可用，前端最新数据页面也能展示刚上报的数据。
+	if err := s.storage.CacheLatestMetrics(req.HostId, metrics); err != nil {
+		log.Printf("Failed to cache metrics for %s: %v", req.HostId, err)
+	}
+
+	// 保存到InfluxDB。时序库写入失败不再让 gRPC 上报失败，避免 agent 误判为未连上后端。
 	if err := s.storage.SaveMetrics(metrics); err != nil {
 		log.Printf("Failed to save metrics: %v", err)
 		return &pb.MetricsResponse{
-			Success: false,
-			Message: "Failed to save metrics",
-		}, err
+			Success: true,
+			Message: "Metrics accepted, but time-series storage write failed",
+		}, nil
 	}
-
-	// 缓存最新指标到Redis（异步，不阻塞主流程）
-	go func() {
-		if err := s.storage.CacheLatestMetrics(req.HostId, metrics); err != nil {
-			log.Printf("Failed to cache metrics for %s: %v", req.HostId, err)
-		}
-	}()
 
 	return &pb.MetricsResponse{
 		Success: true,

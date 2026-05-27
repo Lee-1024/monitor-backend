@@ -183,6 +183,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			},
 			Disk:    make(map[string]interface{}),
 			Network: make(map[string]interface{}),
+			GPU:     make(map[string]interface{}),
 		}
 
 		// 添加磁盘数据 - 返回所有分区数组
@@ -243,6 +244,14 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			}
 		}
 
+		if len(cachedMetrics.GPU.Devices) > 0 {
+			devices := make([]map[string]interface{}, 0, len(cachedMetrics.GPU.Devices))
+			for _, device := range cachedMetrics.GPU.Devices {
+				devices = append(devices, gpuDeviceToMap(device))
+			}
+			latest.GPU = map[string]interface{}{"devices": devices}
+		}
+
 		return latest, nil
 	}
 
@@ -255,9 +264,10 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 		Memory:  make(map[string]interface{}),
 		Disk:    make(map[string]interface{}),
 		Network: make(map[string]interface{}),
+		GPU:     make(map[string]interface{}),
 	}
 
-	measurements := []string{"cpu", "memory", "disk", "network"}
+	measurements := []string{"cpu", "memory", "disk", "network", "gpu"}
 
 	for _, measurement := range measurements {
 		var query string
@@ -505,6 +515,33 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 				}
 			}
 			result.Close()
+		} else if measurement == "gpu" {
+			devicesByKey := make(map[string]map[string]interface{})
+			for result.Next() {
+				record := result.Record()
+				timestamp = record.Time()
+				key := gpuRecordKey(record.ValueByKey("index"), record.ValueByKey("uuid"))
+				if devicesByKey[key] == nil {
+					devicesByKey[key] = map[string]interface{}{
+						"index":  getInt(record.ValueByKey("index")),
+						"uuid":   getValueString(record.ValueByKey("uuid")),
+						"name":   getValueString(record.ValueByKey("name")),
+						"vendor": getValueString(record.ValueByKey("vendor")),
+					}
+				}
+				if record.Field() != "" {
+					devicesByKey[key][record.Field()] = record.Value()
+				}
+			}
+			result.Close()
+			devices := make([]map[string]interface{}, 0, len(devicesByKey))
+			for _, device := range devicesByKey {
+				devices = append(devices, device)
+			}
+			sort.Slice(devices, func(i, j int) bool {
+				return getInt(devices[i]["index"]) < getInt(devices[j]["index"])
+			})
+			values = map[string]interface{}{"devices": devices}
 		} else {
 			// CPU和内存：正常处理
 			for result.Next() {
@@ -528,6 +565,8 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			latest.Disk = values
 		case "network":
 			latest.Network = values
+		case "gpu":
+			latest.GPU = values
 		}
 	}
 
@@ -948,6 +987,35 @@ func (s *StorageAdapter) GetOverview() (*api.Overview, error) {
 	}
 
 	// 指标数量估算
+	gpuQuery := fmt.Sprintf(`
+		from(bucket: "%s")
+		|> range(start: -5m)
+		|> filter(fn: (r) => r["_measurement"] == "gpu")
+		|> filter(fn: (r) => r["_field"] == "utilization_percent")
+		|> group(columns: ["host_id", "uuid", "index"])
+		|> last()
+		|> group()
+	`, s.storage.config.InfluxDB.Bucket)
+
+	result, err = queryAPI.Query(ctx, gpuQuery)
+	if err == nil {
+		var total float64
+		var count int64
+		for result.Next() {
+			if val, ok := result.Record().Value().(float64); ok {
+				total += val
+				count++
+			}
+		}
+		if count > 0 {
+			overview.AvgGPU = total / float64(count)
+			overview.GPUDevices = count
+		}
+		result.Close()
+	} else {
+		log.Printf("Failed to query GPU metrics: %v", err)
+	}
+
 	overview.TotalMetrics = overview.OnlineAgents * 100
 
 	return overview, nil
@@ -963,6 +1031,8 @@ func (s *StorageAdapter) GetTopMetrics(metricType string, limit int, order strin
 		field = "used_percent"
 	} else if metricType == "disk" {
 		field = "used_percent"
+	} else if metricType == "gpu" {
+		field = "utilization_percent"
 	}
 
 	// 排序方式
@@ -971,16 +1041,21 @@ func (s *StorageAdapter) GetTopMetrics(metricType string, limit int, order strin
 		sortFunc = "bottom"
 	}
 
+	groupColumns := `["host_id"]`
+	if metricType == "gpu" {
+		groupColumns = `["host_id", "index", "uuid", "name", "vendor"]`
+	}
+
 	query := fmt.Sprintf(`
 		from(bucket: "%s")
 		|> range(start: -5m)
 		|> filter(fn: (r) => r["_measurement"] == "%s")
 		|> filter(fn: (r) => r["_field"] == "%s")
-		|> group(columns: ["host_id"])
+		|> group(columns: %s)
 		|> mean()
 		|> group()
 		|> %s(n: %d)
-	`, s.storage.config.InfluxDB.Bucket, metricType, field, sortFunc, limit)
+	`, s.storage.config.InfluxDB.Bucket, metricType, field, groupColumns, sortFunc, limit)
 
 	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 	result, err := queryAPI.Query(ctx, query)
@@ -1014,9 +1089,15 @@ func (s *StorageAdapter) GetTopMetrics(metricType string, limit int, order strin
 			HostID:   hostID,
 			Hostname: hostname,
 			Value:    value,
+			Device:   getValueString(record.ValueByKey("name")),
+			Vendor:   getValueString(record.ValueByKey("vendor")),
+			UUID:     getValueString(record.ValueByKey("uuid")),
 		})
 	}
 
+	if metricType == "gpu" {
+		return limitTopMetricsByDevice(metrics, limit), nil
+	}
 	return limitTopMetrics(metrics, limit), nil
 }
 
@@ -1038,6 +1119,65 @@ func limitTopMetrics(metrics []api.TopMetric, limit int) []api.TopMetric {
 		}
 	}
 	return result
+}
+
+func limitTopMetricsByDevice(metrics []api.TopMetric, limit int) []api.TopMetric {
+	if limit <= 0 {
+		return metrics
+	}
+	result := make([]api.TopMetric, 0, limit)
+	seen := make(map[string]struct{})
+	for _, metric := range metrics {
+		key := metric.HostID + ":" + metric.UUID
+		if metric.UUID == "" {
+			key = metric.HostID + ":" + metric.Device
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, metric)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
+}
+
+func gpuDeviceToMap(device GPUDeviceMetrics) map[string]interface{} {
+	return map[string]interface{}{
+		"index":               device.Index,
+		"name":                device.Name,
+		"vendor":              device.Vendor,
+		"model":               device.Model,
+		"uuid":                device.UUID,
+		"driver_version":      device.DriverVersion,
+		"utilization_percent": device.UtilizationPercent,
+		"memory_total":        device.MemoryTotal,
+		"memory_used":         device.MemoryUsed,
+		"memory_used_percent":  device.MemoryUsedPercent,
+		"temperature":         device.Temperature,
+		"power_watts":         device.PowerWatts,
+		"fan_speed_percent":   device.FanSpeedPercent,
+	}
+}
+
+func gpuRecordKey(index interface{}, uuid interface{}) string {
+	key := getValueString(uuid)
+	if key != "" {
+		return key
+	}
+	return fmt.Sprintf("%v", index)
+}
+
+func getValueString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // ============================================
@@ -1550,20 +1690,7 @@ func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, 
 		pageSize = 100
 	}
 
-	query := s.storage.postgres.Model(&DockerContainerSnapshot{})
-	if hostID != "" {
-		query = query.Where("host_id = ?", hostID)
-	}
-
-	var total int64
-	if err := query.Distinct("host_id", "container_id").Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	type latestID struct {
-		MaxID uint
-	}
-	var ids []latestID
+	var ids []dockerLatestContainerID
 	subQuery := s.storage.postgres.Model(&DockerContainerSnapshot{}).Select("MAX(id) as max_id")
 	if hostID != "" {
 		subQuery = subQuery.Where("host_id = ?", hostID)
@@ -1571,6 +1698,7 @@ func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, 
 	if err := subQuery.Group("host_id, container_id").Scan(&ids).Error; err != nil {
 		return nil, 0, err
 	}
+	total := dockerContainerTotalFromLatestIDs(ids)
 	if len(ids) == 0 {
 		return []api.DockerContainerInfo{}, 0, nil
 	}
@@ -1595,6 +1723,14 @@ func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, 
 		result[i] = dockerSnapshotToAPI(snapshot)
 	}
 	return result, total, nil
+}
+
+type dockerLatestContainerID struct {
+	MaxID uint
+}
+
+func dockerContainerTotalFromLatestIDs(ids []dockerLatestContainerID) int64 {
+	return int64(len(ids))
 }
 
 func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error) {
