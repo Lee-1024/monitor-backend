@@ -133,6 +133,65 @@ go run .
 - HTTP API: `http://localhost:8080`
 - gRPC: `localhost:50051`
 
+## 当前架构补充
+
+### 数据流
+
+1. Agent 通过 gRPC 注册主机并上报指标、进程、服务、Docker、日志和 GPU 数据。
+2. Backend 将时序指标写入 InfluxDB，将主机、规则、历史、用户、巡检、知识库等元数据写入 PostgreSQL。
+3. Redis 用于缓存最新指标和部分运行态数据；没有 Redis 时核心查询仍以数据库和 InfluxDB 为准。
+4. HTTP API 为前端提供主机、指标、告警、分析、巡检、知识库、LLM 配置等能力。
+5. 告警引擎定时读取启用规则，按规则类型检查目标主机，生成告警历史并通过通知渠道发送消息。
+
+### 在线状态口径
+
+系统当前默认使用 `30s` 作为前端展示和后端状态查询的在线判定窗口：
+
+- `last_seen` 在 Agent 上报指标、心跳、进程、日志、服务、Docker 等数据时更新。
+- `last_seen` 超过 30 秒未更新时，主机列表、概览统计和 `GetAgentStatus` 会视为离线。
+- 后台离线标记任务也使用相同的 30 秒阈值，避免页面在线主机数和告警判断不一致。
+
+### 告警规则类型
+
+当前支持以下规则类型：
+
+- `cpu`：CPU 使用率阈值告警。
+- `memory`：内存使用率阈值告警。
+- `disk`：磁盘使用率阈值告警，支持指定挂载点。
+- `network`：网络相关阈值告警。
+- `host_down`：主机宕机告警，按规则持续时间检查 `last_seen`，不再等待固定 2 分钟离线状态。
+- `service_port`：服务端口不可访问告警，按规则持续时间进入 firing。
+- `gpu_unavailable`：GPU 不可用告警，当最新 GPU 指标中没有可用设备并持续达到规则时间后触发。
+
+普通阈值类规则使用 `pending -> firing -> resolved` 状态机。`host_down`、`service_port`、`gpu_unavailable` 是特殊规则，也复用持续时间和抑制通知逻辑，避免瞬时异常立即通知。
+
+### 多主机关联
+
+告警规则支持关联多个主机：
+
+- API 字段为 `host_ids`，空数组表示全部主机。
+- 数据库存储使用 `alert_rule_hosts` 关联表，不再把多个主机拼接进 `alert_rules.host_id`。
+- `alert_rules.host_id` 仍保留，用于兼容旧版单主机规则。
+- 告警引擎优先使用 `host_ids`，没有 `host_ids` 时回退到旧 `host_id`。
+
+### 通知模板
+
+通知渠道包括邮件、钉钉、企业微信和飞书。通知内容已统一补充：
+
+- `通知时间`：发送通知时的服务器时间，格式为 `YYYY-MM-DD HH:mm:ss`。
+- `指标类型`：中文显示，例如 `CPU使用率`、`主机宕机`、`服务端口`、`GPU不可用`。
+- 告警恢复通知沿用同一通知通道。
+
+### GPU 数据
+
+Backend 接收 Agent 归一化后的 GPU 指标，写入 InfluxDB 和最新指标缓存。GPU 设备数据结构包含：
+
+- index、name、vendor、model、uuid、driver_version
+- utilization_percent、memory_total、memory_used、memory_used_percent
+- temperature、power_watts、fan_speed_percent
+
+GPU 厂商适配逻辑在 Agent 侧完成，Backend 只处理统一结构。
+
 ### 6. 测试
 
 ```bash
