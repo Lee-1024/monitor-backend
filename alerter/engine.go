@@ -8,6 +8,7 @@ import (
 	"log"
 	"monitor-backend/api"
 	"monitor-backend/notifier"
+	"strings"
 	"sync"
 	"time"
 )
@@ -463,13 +464,24 @@ func gpuAvailable(metrics *api.LatestMetrics) bool {
 // getHostsToCheck 获取需要检查的主机列表
 func (e *AlertEngine) getHostsToCheck(rule api.AlertRuleInfo, agents []api.AgentInfo) []api.AgentInfo {
 	if rule.HostID != "" {
-		// 指定了主机ID，只检查该主机
-		for _, agent := range agents {
-			if agent.HostID == rule.HostID {
-				return []api.AgentInfo{agent}
+		hostIDs := make(map[string]struct{})
+		for _, hostID := range strings.Split(rule.HostID, ",") {
+			hostID = strings.TrimSpace(hostID)
+			if hostID != "" {
+				hostIDs[hostID] = struct{}{}
 			}
 		}
-		return []api.AgentInfo{}
+		if len(hostIDs) == 0 {
+			return agents
+		}
+
+		hosts := make([]api.AgentInfo, 0, len(hostIDs))
+		for _, agent := range agents {
+			if _, exists := hostIDs[agent.HostID]; exists {
+				hosts = append(hosts, agent)
+			}
+		}
+		return hosts
 	}
 	// 未指定主机ID，检查所有主机
 	return agents

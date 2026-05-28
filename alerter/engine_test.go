@@ -59,3 +59,22 @@ func TestGPUAvailableRequiresAtLeastOneDevice(t *testing.T) {
 		})
 	}
 }
+
+func TestGetHostsToCheckSupportsCommaSeparatedHostIDs(t *testing.T) {
+	engine := NewAlertEngine(nil, nil, time.Second)
+	rule := api.AlertRuleInfo{ID: 1, HostID: "host-a,host-c"}
+	agents := []api.AgentInfo{
+		{HostID: "host-a"},
+		{HostID: "host-b"},
+		{HostID: "host-c"},
+	}
+
+	hosts := engine.getHostsToCheck(rule, agents)
+
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d", len(hosts))
+	}
+	if hosts[0].HostID != "host-a" || hosts[1].HostID != "host-c" {
+		t.Fatalf("unexpected hosts: %#v", hosts)
+	}
+}
