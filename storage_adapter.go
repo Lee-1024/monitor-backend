@@ -2664,7 +2664,7 @@ func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRul
 		Enabled:         rule.Enabled,
 		Severity:        rule.Severity,
 		MetricType:      rule.MetricType,
-		HostID:          rule.HostID,
+		HostID:          singleHostIDForLegacy(rule),
 		Mountpoint:      rule.Mountpoint,
 		ServicePort:     rule.ServicePort,
 		Condition:       rule.Condition,
@@ -2682,6 +2682,10 @@ func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRul
 
 	if err := s.storage.postgres.Create(alertRule).Error; err != nil {
 		log.Printf("[CreateAlertRule] Failed to save to database: %v", err)
+		return nil, err
+	}
+
+	if err := s.replaceAlertRuleHosts(alertRule.ID, rule.HostIDs); err != nil {
 		return nil, err
 	}
 
@@ -2737,7 +2741,7 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 	hasOtherFields := rule.Name != "" || rule.Description != "" || rule.Severity != "" ||
 		rule.MetricType != "" || rule.Mountpoint != "" || rule.Condition != "" || rule.Threshold != 0 ||
 		rule.Duration != 0 || rule.InhibitDuration != 0 || rule.NotifyChannels != nil ||
-		rule.Receivers != nil || rule.SilenceStart != nil || rule.SilenceEnd != nil
+		rule.Receivers != nil || rule.SilenceStart != nil || rule.SilenceEnd != nil || rule.HostIDs != nil
 
 	log.Printf("[UpdateAlertRule] Rule ID=%d: hasOtherFields=%v", id, hasOtherFields)
 
@@ -2816,6 +2820,9 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 		if rule.HostID != "" || hasOtherFields {
 			updates["host_id"] = rule.HostID
 		}
+	}
+	if rule.HostIDs != nil {
+		updates["host_id"] = singleHostIDForLegacy(rule)
 	}
 	if rule.Condition != "" {
 		updates["condition"] = rule.Condition
@@ -2921,6 +2928,11 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 		return err
 	}
 	log.Printf("[UpdateAlertRule] Rule ID=%d: Update successful", id)
+	if rule.HostIDs != nil {
+		if err := s.replaceAlertRuleHosts(id, rule.HostIDs); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -3154,6 +3166,11 @@ func (s *StorageAdapter) validateAndFixAlertRuleJSON(rule *AlertRule) error {
 
 // alertRuleToAPI 转换为API格式
 func (s *StorageAdapter) alertRuleToAPI(rule *AlertRule) *api.AlertRuleInfo {
+	hostIDs := s.getAlertRuleHostIDs(rule.ID)
+	if len(hostIDs) == 0 && rule.HostID != "" {
+		hostIDs = []string{rule.HostID}
+	}
+
 	return &api.AlertRuleInfo{
 		ID:              rule.ID,
 		CreatedAt:       rule.CreatedAt,
@@ -3164,6 +3181,7 @@ func (s *StorageAdapter) alertRuleToAPI(rule *AlertRule) *api.AlertRuleInfo {
 		Severity:        rule.Severity,
 		MetricType:      rule.MetricType,
 		HostID:          rule.HostID,
+		HostIDs:         hostIDs,
 		Mountpoint:      rule.Mountpoint,
 		ServicePort:     rule.ServicePort,
 		Condition:       rule.Condition,
@@ -3175,6 +3193,61 @@ func (s *StorageAdapter) alertRuleToAPI(rule *AlertRule) *api.AlertRuleInfo {
 		SilenceEnd:      rule.SilenceEnd,
 		InhibitDuration: rule.InhibitDuration,
 	}
+}
+
+func singleHostIDForLegacy(rule *api.AlertRuleInfo) string {
+	if len(rule.HostIDs) == 1 {
+		return rule.HostIDs[0]
+	}
+	if len(rule.HostIDs) > 1 {
+		return ""
+	}
+	return rule.HostID
+}
+
+func sanitizeHostIDs(hostIDs []string) []string {
+	result := make([]string, 0, len(hostIDs))
+	seen := make(map[string]struct{})
+	for _, hostID := range hostIDs {
+		hostID = strings.TrimSpace(hostID)
+		if hostID == "" {
+			continue
+		}
+		if _, exists := seen[hostID]; exists {
+			continue
+		}
+		seen[hostID] = struct{}{}
+		result = append(result, hostID)
+	}
+	return result
+}
+
+func (s *StorageAdapter) replaceAlertRuleHosts(ruleID uint, hostIDs []string) error {
+	if err := s.storage.postgres.Where("rule_id = ?", ruleID).Delete(&AlertRuleHost{}).Error; err != nil {
+		return fmt.Errorf("failed to clear alert rule hosts: %w", err)
+	}
+
+	hostIDs = sanitizeHostIDs(hostIDs)
+	for _, hostID := range hostIDs {
+		if err := s.storage.postgres.Create(&AlertRuleHost{RuleID: ruleID, HostID: hostID}).Error; err != nil {
+			return fmt.Errorf("failed to save alert rule host %s: %w", hostID, err)
+		}
+	}
+	return nil
+}
+
+func (s *StorageAdapter) getAlertRuleHostIDs(ruleID uint) []string {
+	var rows []AlertRuleHost
+	if err := s.storage.postgres.Where("rule_id = ?", ruleID).Order("id ASC").Find(&rows).Error; err != nil {
+		log.Printf("Failed to load alert rule hosts for rule %d: %v", ruleID, err)
+		return nil
+	}
+
+	hostIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		hostIDs = append(hostIDs, row.HostID)
+	}
+	return hostIDs
 }
 
 // ============================================

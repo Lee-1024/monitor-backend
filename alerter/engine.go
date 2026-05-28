@@ -463,6 +463,17 @@ func gpuAvailable(metrics *api.LatestMetrics) bool {
 
 // getHostsToCheck 获取需要检查的主机列表
 func (e *AlertEngine) getHostsToCheck(rule api.AlertRuleInfo, agents []api.AgentInfo) []api.AgentInfo {
+	if len(rule.HostIDs) > 0 {
+		hostIDs := make(map[string]struct{})
+		for _, hostID := range rule.HostIDs {
+			hostID = strings.TrimSpace(hostID)
+			if hostID != "" {
+				hostIDs[hostID] = struct{}{}
+			}
+		}
+		return filterAgentsByHostIDs(agents, hostIDs)
+	}
+
 	if rule.HostID != "" {
 		hostIDs := make(map[string]struct{})
 		for _, hostID := range strings.Split(rule.HostID, ",") {
@@ -475,16 +486,20 @@ func (e *AlertEngine) getHostsToCheck(rule api.AlertRuleInfo, agents []api.Agent
 			return agents
 		}
 
-		hosts := make([]api.AgentInfo, 0, len(hostIDs))
-		for _, agent := range agents {
-			if _, exists := hostIDs[agent.HostID]; exists {
-				hosts = append(hosts, agent)
-			}
-		}
-		return hosts
+		return filterAgentsByHostIDs(agents, hostIDs)
 	}
 	// 未指定主机ID，检查所有主机
 	return agents
+}
+
+func filterAgentsByHostIDs(agents []api.AgentInfo, hostIDs map[string]struct{}) []api.AgentInfo {
+	hosts := make([]api.AgentInfo, 0, len(hostIDs))
+	for _, agent := range agents {
+		if _, exists := hostIDs[agent.HostID]; exists {
+			hosts = append(hosts, agent)
+		}
+	}
+	return hosts
 }
 
 // checkRuleForHost 检查单个规则对单个主机

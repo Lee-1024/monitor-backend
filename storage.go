@@ -81,6 +81,7 @@ func NewStorage(config *Config) *Storage {
 		&ScriptExecution{},
 		&ServiceStatus{},
 		&AlertRule{},
+		&AlertRuleHost{},
 		&AlertHistory{},
 		&AlertSilence{},
 		&NotificationChannel{},

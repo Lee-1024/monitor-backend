@@ -323,6 +323,7 @@ type AlertRuleInfo struct {
 	Severity        string     `json:"severity"`
 	MetricType      string     `json:"metric_type"`
 	HostID          string     `json:"host_id"`
+	HostIDs         []string   `json:"host_ids,omitempty"`
 	Mountpoint      string     `json:"mountpoint,omitempty"`   // 挂载点（仅用于 disk 指标）
 	ServicePort     int        `json:"service_port,omitempty"` // 服务端口（仅用于 service_port 指标）
 	Condition       string     `json:"condition"`

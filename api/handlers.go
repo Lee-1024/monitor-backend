@@ -1078,6 +1078,16 @@ func (s *APIServer) updateAlertRule(c *gin.Context) {
 	if hostID, ok := updateData["host_id"].(string); ok {
 		rule.HostID = hostID
 	}
+	if hostIDsRaw, exists := updateData["host_ids"]; exists {
+		if hostIDs, ok := hostIDsRaw.([]interface{}); ok {
+			rule.HostIDs = make([]string, 0, len(hostIDs))
+			for _, hostID := range hostIDs {
+				if hostIDStr, ok := hostID.(string); ok {
+					rule.HostIDs = append(rule.HostIDs, hostIDStr)
+				}
+			}
+		}
+	}
 	if mountpoint, ok := updateData["mountpoint"].(string); ok {
 		// mountpoint 可以为空字符串（表示不指定挂载点），所以不需要检查是否为空
 		rule.Mountpoint = mountpoint

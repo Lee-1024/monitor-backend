@@ -320,6 +320,14 @@ type AlertRule struct {
 	InhibitDuration int        `gorm:"default:300" json:"inhibit_duration"` // 抑制持续时间（秒），默认5分钟，相同告警在此时间内只发送一次通知
 }
 
+// AlertRuleHost 告警规则关联主机
+type AlertRuleHost struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	RuleID    uint      `gorm:"index:idx_alert_rule_host,unique;not null" json:"rule_id"`
+	HostID    string    `gorm:"index:idx_alert_rule_host,unique;size:64;not null" json:"host_id"`
+}
+
 // AlertHistory 告警历史记录
 type AlertHistory struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
