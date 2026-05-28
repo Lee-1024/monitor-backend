@@ -173,15 +173,10 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 			continue
 		}
 
-		// 检查主机状态
-		status, err := e.storage.GetAgentStatus(host.HostID)
-		if err != nil {
-			log.Printf("Failed to get agent status for %s: %v", host.HostID, err)
-			continue
-		}
+		isHostDown := hostDownExceededDuration(rule, host.LastSeen, time.Now())
 
 		// 如果主机离线，触发告警
-		if status == "offline" {
+		if isHostDown {
 			// 检查是否已有未恢复的告警
 			historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
 			if err != nil {
@@ -323,7 +318,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 					log.Printf("Failed to update alert history: %v", err)
 				}
 			}
-		} else if status == "online" {
+		} else {
 			// 主机在线，检查是否有未恢复的告警，如果有则恢复所有未恢复的告警
 			historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 100) // 获取所有未恢复的告警
 			if err != nil {
@@ -385,6 +380,56 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 				}
 			}
 		}
+	}
+}
+
+func hostDownExceededDuration(rule api.AlertRuleInfo, lastSeen time.Time, now time.Time) bool {
+	if lastSeen.IsZero() {
+		return false
+	}
+
+	duration := time.Duration(rule.Duration) * time.Second
+	return !now.Before(lastSeen.Add(duration))
+}
+
+func (e *AlertEngine) updateSpecialAlertState(stateKey string, rule api.AlertRuleInfo, hostID string, now time.Time) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	state, exists := e.alertStates[stateKey]
+	if !exists || state.Status == "resolved" {
+		e.alertStates[stateKey] = &AlertState{
+			RuleID:    rule.ID,
+			HostID:    hostID,
+			Status:    "pending",
+			StartTime: now,
+			LastCheck: now,
+		}
+		return time.Duration(rule.Duration)*time.Second <= 0
+	}
+
+	state.LastCheck = now
+	if state.Status == "firing" {
+		return true
+	}
+
+	if now.Sub(state.StartTime) >= time.Duration(rule.Duration)*time.Second {
+		state.Status = "firing"
+		triggerTime := now
+		state.TriggerTime = &triggerTime
+		return true
+	}
+
+	return false
+}
+
+func (e *AlertEngine) resetSpecialAlertState(stateKey string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if state, exists := e.alertStates[stateKey]; exists {
+		state.Status = "resolved"
+		state.LastCheck = time.Now()
 	}
 }
 
@@ -1001,7 +1046,7 @@ func (e *AlertEngine) triggerAlert(rule api.AlertRuleInfo, host api.AgentInfo, m
 		Labels:       make(map[string]string),
 		NotifyStatus: "pending",
 	}
-	
+
 	// 对于磁盘告警，填充挂载点信息
 	if rule.MetricType == "disk" && rule.Mountpoint != "" {
 		history.Labels["mountpoint"] = rule.Mountpoint
@@ -1265,6 +1310,12 @@ func (e *AlertEngine) checkServicePortRule(rule api.AlertRuleInfo, agents []api.
 					}
 				}()
 			} else {
+				alertKey := fmt.Sprintf("%d:%s:%d", rule.ID, host.HostID, rule.ServicePort)
+				if !e.updateSpecialAlertState(alertKey, rule, host.HostID, time.Now()) {
+					log.Printf("[checkServicePortRule] Port %d for host %s is pending, duration %ds not reached", rule.ServicePort, host.HostID, rule.Duration)
+					continue
+				}
+
 				// 没有未恢复的告警，触发新告警
 				serviceName := "未知服务"
 				if targetService != nil {
@@ -1288,6 +1339,8 @@ func (e *AlertEngine) checkServicePortRule(rule api.AlertRuleInfo, agents []api.
 					e.handleServicePortResolved(rule, host, rule.ServicePort)
 				}
 			}
+			alertKey := fmt.Sprintf("%d:%s:%d", rule.ID, host.HostID, rule.ServicePort)
+			e.resetSpecialAlertState(alertKey)
 		}
 	}
 }
