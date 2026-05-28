@@ -88,6 +88,12 @@ func (s *APIServer) setupRoutes() {
 
 	// API v1
 	v1 := s.router.Group("/api/v1")
+	agentIngest := v1.Group("/agent")
+	{
+		agentIngest.POST("/register", s.agentHTTPRegister)
+		agentIngest.POST("/heartbeat", s.agentHTTPHeartbeat)
+		agentIngest.POST("/metrics", s.agentHTTPMetrics)
+	}
 	// 根据配置决定是否需要认证
 	if s.config.AuthRequired {
 		v1.Use(AuthMiddleware()) // 所有v1路由都需要认证

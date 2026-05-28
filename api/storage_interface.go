@@ -3,7 +3,12 @@
 // ============================================
 package api
 
-import "time"
+import (
+	"context"
+	"time"
+
+	pb "monitor-backend/proto"
+)
 
 // StorageInterface 存储接口
 type StorageInterface interface {
@@ -12,6 +17,9 @@ type StorageInterface interface {
 	GetAgent(hostID string) (*AgentInfo, error)
 	GetAgentStatus(hostID string) (string, error)
 	DeleteAgent(hostID string) error
+	RegisterAgent(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error)
+	Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error)
+	ReportMetrics(ctx context.Context, req *pb.MetricsRequest) (*pb.MetricsResponse, error)
 
 	// 指标相关
 	GetMetrics(hostID, metricType, start, end string) ([]MetricPoint, error)

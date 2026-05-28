@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 
 	"monitor-backend/api"
+	pb "monitor-backend/proto"
 )
 
 // StorageAdapter 适配器，实现API的StorageInterface
@@ -104,6 +105,18 @@ func (s *StorageAdapter) GetAgentStatus(hostID string) (string, error) {
 // DeleteAgent 删除Agent
 func (s *StorageAdapter) DeleteAgent(hostID string) error {
 	return s.storage.DeleteAgent(hostID)
+}
+
+func (s *StorageAdapter) RegisterAgent(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
+	return NewCollectorService(s.storage).RegisterAgent(ctx, req)
+}
+
+func (s *StorageAdapter) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	return NewCollectorService(s.storage).Heartbeat(ctx, req)
+}
+
+func (s *StorageAdapter) ReportMetrics(ctx context.Context, req *pb.MetricsRequest) (*pb.MetricsResponse, error) {
+	return NewCollectorService(s.storage).ReportMetrics(ctx, req)
 }
 
 // GetMetrics 获取指标数据
@@ -1155,7 +1168,7 @@ func gpuDeviceToMap(device GPUDeviceMetrics) map[string]interface{} {
 		"utilization_percent": device.UtilizationPercent,
 		"memory_total":        device.MemoryTotal,
 		"memory_used":         device.MemoryUsed,
-		"memory_used_percent":  device.MemoryUsedPercent,
+		"memory_used_percent": device.MemoryUsedPercent,
 		"temperature":         device.Temperature,
 		"power_watts":         device.PowerWatts,
 		"fan_speed_percent":   device.FanSpeedPercent,
