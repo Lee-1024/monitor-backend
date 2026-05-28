@@ -37,3 +37,25 @@ func TestSpecialAlertStateRequiresDurationBeforeFiring(t *testing.T) {
 		t.Fatal("special alert should fire after duration is reached")
 	}
 }
+
+func TestGPUAvailableRequiresAtLeastOneDevice(t *testing.T) {
+	cases := []struct {
+		name      string
+		gpu       map[string]interface{}
+		available bool
+	}{
+		{name: "missing devices", gpu: map[string]interface{}{}, available: false},
+		{name: "empty devices", gpu: map[string]interface{}{"devices": []interface{}{}}, available: false},
+		{name: "device list", gpu: map[string]interface{}{"devices": []interface{}{map[string]interface{}{"index": 0}}}, available: true},
+		{name: "typed device list", gpu: map[string]interface{}{"devices": []map[string]interface{}{{"index": 0}}}, available: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics := &api.LatestMetrics{GPU: tc.gpu}
+			if got := gpuAvailable(metrics); got != tc.available {
+				t.Fatalf("expected GPU availability %v, got %v", tc.available, got)
+			}
+		})
+	}
+}

@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"monitor-backend/api"
 	"net/http"
 	"time"
-	"monitor-backend/api"
 )
 
 // WeChatNotifier 企业微信通知器
@@ -92,7 +92,7 @@ func (w *WeChatNotifier) buildMessage(history *api.AlertHistoryInfo) string {
 > **指标值:** %.2f  
 > **阈值:** %.2f  
 > **触发时间:** %s  
+> **通知时间:** %s  
 > **消息:** %s
-`, severityEmoji, history.RuleName, history.Hostname, history.HostID, severityEmoji, statusEmoji, history.MetricType, history.MetricValue, history.Threshold, history.FiredAt.Format("2006-01-02 15:04:05"), history.Message)
+`, severityEmoji, history.RuleName, history.Hostname, history.HostID, severityEmoji, statusEmoji, metricTypeDisplayName(history.MetricType), history.MetricValue, history.Threshold, history.FiredAt.Format("2006-01-02 15:04:05"), formatNotificationTime(time.Now()), history.Message)
 }
-

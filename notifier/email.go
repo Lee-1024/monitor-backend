@@ -5,9 +5,10 @@ package notifier
 
 import (
 	"fmt"
+	"monitor-backend/api"
 	"net/smtp"
 	"strings"
-	"monitor-backend/api"
+	"time"
 )
 
 // EmailNotifier 邮件通知器
@@ -129,14 +130,16 @@ func (e *EmailNotifier) buildEmailBody(history *api.AlertHistoryInfo) string {
                 <span class="detail-label">触发时间:</span> %s
             </div>
             <div class="detail">
+                <span class="detail-label">通知时间:</span> %s
+            </div>
+            <div class="detail">
                 <span class="detail-label">消息:</span> %s
             </div>
         </div>
     </div>
 </body>
 </html>
-`, statusBadge, history.RuleName, history.RuleName, history.Hostname, history.HostID, severityBadge, statusBadge, history.MetricType, history.MetricValue, history.Threshold, history.FiredAt.Format("2006-01-02 15:04:05"), history.Message)
+`, statusBadge, history.RuleName, history.RuleName, history.Hostname, history.HostID, severityBadge, statusBadge, metricTypeDisplayName(history.MetricType), history.MetricValue, history.Threshold, history.FiredAt.Format("2006-01-02 15:04:05"), formatNotificationTime(time.Now()), history.Message)
 
 	return html
 }
-

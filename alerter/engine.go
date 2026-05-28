@@ -149,6 +149,13 @@ func (e *AlertEngine) checkRules() {
 			continue
 		}
 
+		// GPU不可用告警特殊处理
+		if rule.MetricType == "gpu_unavailable" {
+			log.Printf("[AlertEngine] Processing gpu_unavailable rule: %s", rule.Name)
+			e.checkGPUUnavailableRule(rule, onlineAgents)
+			continue
+		}
+
 		// 常规指标检查（只检查在线主机）
 		hostsToCheck := e.getHostsToCheck(rule, onlineAgents)
 		log.Printf("[AlertEngine] Rule %s: checking %d hosts", rule.Name, len(hostsToCheck))
@@ -430,6 +437,26 @@ func (e *AlertEngine) resetSpecialAlertState(stateKey string) {
 	if state, exists := e.alertStates[stateKey]; exists {
 		state.Status = "resolved"
 		state.LastCheck = time.Now()
+	}
+}
+
+func gpuAvailable(metrics *api.LatestMetrics) bool {
+	if metrics == nil || metrics.GPU == nil {
+		return false
+	}
+
+	devicesRaw, exists := metrics.GPU["devices"]
+	if !exists || devicesRaw == nil {
+		return false
+	}
+
+	switch devices := devicesRaw.(type) {
+	case []interface{}:
+		return len(devices) > 0
+	case []map[string]interface{}:
+		return len(devices) > 0
+	default:
+		return false
 	}
 }
 
@@ -1343,6 +1370,165 @@ func (e *AlertEngine) checkServicePortRule(rule api.AlertRuleInfo, agents []api.
 			e.resetSpecialAlertState(alertKey)
 		}
 	}
+}
+
+// checkGPUUnavailableRule 检查GPU不可用告警规则
+func (e *AlertEngine) checkGPUUnavailableRule(rule api.AlertRuleInfo, agents []api.AgentInfo) {
+	hostsToCheck := e.getHostsToCheck(rule, agents)
+
+	for _, host := range hostsToCheck {
+		if e.storage.IsRuleSilenced(rule.ID, host.HostID) {
+			continue
+		}
+
+		metrics, err := e.storage.GetLatestMetrics(host.HostID)
+		if err != nil {
+			log.Printf("[checkGPUUnavailableRule] Failed to get latest metrics for %s: %v", host.HostID, err)
+			continue
+		}
+
+		alertKey := fmt.Sprintf("%d:%s:gpu_unavailable", rule.ID, host.HostID)
+		if gpuAvailable(metrics) {
+			e.handleGPUUnavailableResolved(rule, host, alertKey)
+			continue
+		}
+
+		historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
+		if err != nil {
+			log.Printf("[checkGPUUnavailableRule] Failed to list alert history for Rule=%s, Host=%s: %v", rule.Name, host.HostID, err)
+			continue
+		}
+
+		if len(historyList) > 0 {
+			e.sendRepeatedSpecialNotification(rule, host, &historyList[0], alertKey, "GPU unavailable")
+			continue
+		}
+
+		if !e.updateSpecialAlertState(alertKey, rule, host.HostID, time.Now()) {
+			log.Printf("[checkGPUUnavailableRule] GPU unavailable for host %s is pending, duration %ds not reached", host.HostID, rule.Duration)
+			continue
+		}
+
+		message := fmt.Sprintf("主机 %s (%s) GPU不可用：未检测到可用显卡设备", host.Hostname, host.HostID)
+		history := &api.AlertHistoryInfo{
+			RuleID:       rule.ID,
+			RuleName:     rule.Name,
+			HostID:       host.HostID,
+			Hostname:     host.Hostname,
+			Severity:     rule.Severity,
+			Status:       "firing",
+			FiredAt:      time.Now(),
+			MetricType:   "gpu_unavailable",
+			MetricValue:  0,
+			Threshold:    1,
+			Message:      message,
+			Labels:       map[string]string{"resource": "gpu"},
+			NotifyStatus: "pending",
+		}
+
+		createdHistory, err := e.storage.CreateAlertHistory(history)
+		if err != nil {
+			log.Printf("[checkGPUUnavailableRule] Failed to create alert history: %v", err)
+			continue
+		}
+
+		e.notifySpecialAlert(rule, host, createdHistory, alertKey)
+	}
+}
+
+func (e *AlertEngine) sendRepeatedSpecialNotification(rule api.AlertRuleInfo, host api.AgentInfo, history *api.AlertHistoryInfo, inhibitKey string, label string) {
+	if history.Status != "firing" {
+		return
+	}
+
+	e.notifyMu.RLock()
+	lastNotify, exists := e.lastNotifyTime[inhibitKey]
+	e.notifyMu.RUnlock()
+
+	inhibitDuration := time.Duration(rule.InhibitDuration) * time.Second
+	if inhibitDuration > 0 && exists && time.Since(lastNotify) < inhibitDuration {
+		log.Printf("[%s] Alert notification inhibited for Rule=%s, Host=%s", label, rule.Name, host.HostID)
+		return
+	}
+
+	e.notifyMu.Lock()
+	e.lastNotifyTime[inhibitKey] = time.Now()
+	e.notifyMu.Unlock()
+
+	go func() {
+		err := e.notifier.Send(rule.NotifyChannels, history, rule.Receivers)
+		notifyStatus := "success"
+		notifyError := ""
+		if err != nil {
+			notifyStatus = "failed"
+			notifyError = err.Error()
+			log.Printf("[%s] Failed to send repeated notification: %v", label, err)
+		}
+		if updateErr := e.updateAlertHistoryNotifyStatus(history.ID, notifyStatus, notifyError); updateErr != nil {
+			log.Printf("[%s] Failed to update alert history notify status: %v", label, updateErr)
+		}
+	}()
+}
+
+func (e *AlertEngine) notifySpecialAlert(rule api.AlertRuleInfo, host api.AgentInfo, history *api.AlertHistoryInfo, inhibitKey string) {
+	e.notifyMu.RLock()
+	lastNotify, exists := e.lastNotifyTime[inhibitKey]
+	e.notifyMu.RUnlock()
+
+	inhibitDuration := time.Duration(rule.InhibitDuration) * time.Second
+	if inhibitDuration > 0 && exists && time.Since(lastNotify) < inhibitDuration {
+		return
+	}
+
+	e.notifyMu.Lock()
+	e.lastNotifyTime[inhibitKey] = time.Now()
+	e.notifyMu.Unlock()
+
+	go func() {
+		err := e.notifier.Send(rule.NotifyChannels, history, rule.Receivers)
+		notifyStatus := "success"
+		notifyError := ""
+		if err != nil {
+			notifyStatus = "failed"
+			notifyError = err.Error()
+			log.Printf("Failed to send notification: %v", err)
+		}
+
+		if updateErr := e.updateAlertHistoryNotifyStatus(history.ID, notifyStatus, notifyError); updateErr != nil {
+			log.Printf("Failed to update alert history notify status: %v", updateErr)
+		}
+	}()
+}
+
+func (e *AlertEngine) handleGPUUnavailableResolved(rule api.AlertRuleInfo, host api.AgentInfo, alertKey string) {
+	e.resetSpecialAlertState(alertKey)
+
+	historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
+	if err != nil || len(historyList) == 0 {
+		return
+	}
+
+	history := &historyList[0]
+	now := time.Now()
+	if err := e.storage.UpdateAlertHistory(history.ID, "resolved", &now); err != nil {
+		log.Printf("[handleGPUUnavailableResolved] Failed to update alert history: %v", err)
+		return
+	}
+
+	e.notifyMu.Lock()
+	delete(e.lastNotifyTime, alertKey)
+	e.notifyMu.Unlock()
+
+	message := "GPU设备已恢复可用"
+	if updateErr := e.storage.UpdateAlertHistoryMetricValue(history.ID, 1, message); updateErr != nil {
+		log.Printf("[handleGPUUnavailableResolved] Failed to update alert history message: %v", updateErr)
+	}
+
+	history.Status = "resolved"
+	history.ResolvedAt = &now
+	history.MetricValue = 1
+	history.Message = message
+	go e.notifier.Send(rule.NotifyChannels, history, rule.Receivers)
 }
 
 // triggerServicePortAlert 触发服务端口告警

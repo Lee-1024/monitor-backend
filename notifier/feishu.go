@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"monitor-backend/api"
 	"net/http"
 	"time"
-	"monitor-backend/api"
 )
 
 // FeishuNotifier 飞书通知器
@@ -33,14 +33,14 @@ func (f *FeishuNotifier) Type() string {
 
 // Send 发送飞书通知
 func (f *FeishuNotifier) Send(history *api.AlertHistoryInfo, receivers []string) error {
-	log.Printf("[FeishuNotifier] Send called: AlertID=%d, Rule=%s, Host=%s, WebhookURL=%s", 
+	log.Printf("[FeishuNotifier] Send called: AlertID=%d, Rule=%s, Host=%s, WebhookURL=%s",
 		history.ID, history.RuleName, history.HostID, f.WebhookURL)
-	
+
 	if f.WebhookURL == "" {
 		log.Printf("[FeishuNotifier] Error: WebhookURL is empty")
 		return fmt.Errorf("feishu webhook URL is empty")
 	}
-	
+
 	payload := map[string]interface{}{
 		"msg_type": "interactive",
 		"card": map[string]interface{}{
@@ -49,7 +49,7 @@ func (f *FeishuNotifier) Send(history *api.AlertHistoryInfo, receivers []string)
 			},
 			"header": map[string]interface{}{
 				"title": map[string]string{
-					"tag": "plain_text",
+					"tag":     "plain_text",
 					"content": fmt.Sprintf("[%s] %s", f.getSeverityEmoji(history.Severity), history.RuleName),
 				},
 				"template": f.getSeverityColor(history.Severity),
@@ -61,14 +61,16 @@ func (f *FeishuNotifier) Send(history *api.AlertHistoryInfo, receivers []string)
 						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**主机:**\n%s (%s)", history.Hostname, history.HostID)}},
 						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**状态:**\n%s", f.getStatusEmoji(history.Status))}},
 						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**严重程度:**\n%s", f.getSeverityEmoji(history.Severity))}},
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**指标类型:**\n%s", history.MetricType)}},
+						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**指标类型:**\n%s", metricTypeDisplayName(history.MetricType))}},
 						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**指标值:**\n%.2f", history.MetricValue)}},
+						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**触发时间:**\n%s", history.FiredAt.Format("2006-01-02 15:04:05"))}},
+						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**通知时间:**\n%s", formatNotificationTime(time.Now()))}},
 					},
 				},
 				{
 					"tag": "div",
 					"text": map[string]string{
-						"tag": "lark_md",
+						"tag":     "lark_md",
 						"content": fmt.Sprintf("**消息:**\n%s", history.Message),
 					},
 				},
@@ -151,4 +153,3 @@ func (f *FeishuNotifier) getSeverityColor(severity string) string {
 		return "blue"
 	}
 }
-
