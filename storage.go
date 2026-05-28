@@ -504,8 +504,8 @@ func (s *Storage) StartAgentMonitor() {
 		defer ticker.Stop()
 
 		for range ticker.C {
-			// 2分钟未上报视为离线
-			if err := s.MarkAgentOffline(2 * time.Minute); err != nil {
+			// 30秒未上报视为离线，与前端展示和告警规则的默认响应速度保持一致。
+			if err := s.MarkAgentOffline(agentOnlineTimeout); err != nil {
 				log.Printf("Failed to mark agents offline: %v", err)
 			}
 		}
@@ -525,7 +525,7 @@ func (s *Storage) GetAgentStatus(hostID string) (string, error) {
 	}
 
 	// 双重检查：即使数据库status是online，也要检查时间
-	if agent.Status == "online" && time.Since(agent.LastSeen) > 2*time.Minute {
+	if agent.Status == "online" && time.Since(agent.LastSeen) > agentOnlineTimeout {
 		return "offline", nil
 	}
 
@@ -630,10 +630,10 @@ func (s *Storage) SaveMetrics(metrics *Metrics) error {
 					"utilization_percent": device.UtilizationPercent,
 					"memory_total":        device.MemoryTotal,
 					"memory_used":         device.MemoryUsed,
-					"memory_used_percent":  device.MemoryUsedPercent,
-					"temperature":          device.Temperature,
-					"power_watts":          device.PowerWatts,
-					"fan_speed_percent":    device.FanSpeedPercent,
+					"memory_used_percent": device.MemoryUsedPercent,
+					"temperature":         device.Temperature,
+					"power_watts":         device.PowerWatts,
+					"fan_speed_percent":   device.FanSpeedPercent,
 				},
 				metrics.Timestamp,
 			)
@@ -659,7 +659,7 @@ func (s *Storage) SaveMetrics(metrics *Metrics) error {
 func (s *Storage) GetOnlineAgentCount() (int64, error) {
 	var count int64
 	err := s.postgres.Model(&Agent{}).
-		Where("status = ? AND last_seen > ?", "online", time.Now().Add(-2*time.Minute)).
+		Where("status = ? AND last_seen > ?", "online", time.Now().Add(-agentOnlineTimeout)).
 		Count(&count).Error
 	return count, err
 }
@@ -781,7 +781,7 @@ func (s *Storage) CacheLatestMetrics(hostID string, metrics *Metrics) error {
 				"utilization_percent": device.UtilizationPercent,
 				"memory_total":        device.MemoryTotal,
 				"memory_used":         device.MemoryUsed,
-				"memory_used_percent":  device.MemoryUsedPercent,
+				"memory_used_percent": device.MemoryUsedPercent,
 				"temperature":         device.Temperature,
 				"power_watts":         device.PowerWatts,
 				"fan_speed_percent":   device.FanSpeedPercent,

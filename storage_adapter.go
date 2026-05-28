@@ -24,6 +24,15 @@ type StorageAdapter struct {
 	storage *Storage
 }
 
+const agentOnlineTimeout = 30 * time.Second
+
+func agentDisplayStatus(agent Agent, now time.Time) string {
+	if agent.Status == "online" && !agent.LastSeen.IsZero() && now.Sub(agent.LastSeen) > agentOnlineTimeout {
+		return "offline"
+	}
+	return agent.Status
+}
+
 func NewStorageAdapter(storage *Storage) *StorageAdapter {
 	return &StorageAdapter{
 		storage: storage,
@@ -43,7 +52,11 @@ func (s *StorageAdapter) ListAgents(status string, page, pageSize int) ([]api.Ag
 	query := s.storage.postgres.Model(&Agent{})
 
 	// 过滤状态
-	if status != "" {
+	if status == "online" {
+		query = query.Where("status = ? AND last_seen > ?", "online", time.Now().Add(-agentOnlineTimeout))
+	} else if status == "offline" {
+		query = query.Where("status = ? OR last_seen <= ?", "offline", time.Now().Add(-agentOnlineTimeout))
+	} else if status != "" {
 		query = query.Where("status = ?", status)
 	}
 
@@ -59,6 +72,7 @@ func (s *StorageAdapter) ListAgents(status string, page, pageSize int) ([]api.Ag
 
 	// 转换为API格式
 	result := make([]api.AgentInfo, len(agents))
+	now := time.Now()
 	for i, agent := range agents {
 		result[i] = api.AgentInfo{
 			HostID:    agent.HostID,
@@ -67,7 +81,7 @@ func (s *StorageAdapter) ListAgents(status string, page, pageSize int) ([]api.Ag
 			OS:        agent.OS,
 			Arch:      agent.Arch,
 			Tags:      agent.Tags,
-			Status:    agent.Status,
+			Status:    agentDisplayStatus(agent, now),
 			LastSeen:  agent.LastSeen,
 			CreatedAt: agent.CreatedAt,
 		}
@@ -91,7 +105,7 @@ func (s *StorageAdapter) GetAgent(hostID string) (*api.AgentInfo, error) {
 		OS:        agent.OS,
 		Arch:      agent.Arch,
 		Tags:      agent.Tags,
-		Status:    agent.Status,
+		Status:    agentDisplayStatus(agent, time.Now()),
 		LastSeen:  agent.LastSeen,
 		CreatedAt: agent.CreatedAt,
 	}, nil
@@ -918,7 +932,9 @@ func (s *StorageAdapter) GetOverview() (*api.Overview, error) {
 
 	// 统计Agent数量
 	s.storage.postgres.Model(&Agent{}).Count(&overview.TotalAgents)
-	s.storage.postgres.Model(&Agent{}).Where("status = ?", "online").Count(&overview.OnlineAgents)
+	s.storage.postgres.Model(&Agent{}).
+		Where("status = ? AND last_seen > ?", "online", time.Now().Add(-agentOnlineTimeout)).
+		Count(&overview.OnlineAgents)
 	overview.OfflineAgents = overview.TotalAgents - overview.OnlineAgents
 
 	// 获取平均CPU和内存（最近5分钟）
