@@ -754,18 +754,22 @@ func (s *Storage) CacheLatestMetrics(hostID string, metrics *Metrics) error {
 
 	// 添加网络数据（聚合所有接口）
 	if len(metrics.Network.Interfaces) > 0 {
-		var totalBytesSent, totalBytesRecv, totalPacketsSent, totalPacketsRecv uint64
+		var totalBytesSent, totalBytesRecv, totalPacketsSent, totalPacketsRecv, totalErrin, totalErrout uint64
 		for _, iface := range metrics.Network.Interfaces {
 			totalBytesSent += iface.BytesSent
 			totalBytesRecv += iface.BytesRecv
 			totalPacketsSent += iface.PacketsSent
 			totalPacketsRecv += iface.PacketsRecv
+			totalErrin += iface.Errin
+			totalErrout += iface.Errout
 		}
 		cacheData["network"] = map[string]interface{}{
 			"bytes_sent":   totalBytesSent,
 			"bytes_recv":   totalBytesRecv,
 			"packets_sent": totalPacketsSent,
 			"packets_recv": totalPacketsRecv,
+			"errin":        totalErrin,
+			"errout":       totalErrout,
 		}
 	}
 
@@ -903,6 +907,8 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 					BytesRecv:   getUint64(netData["bytes_recv"]),
 					PacketsSent: getUint64(netData["packets_sent"]),
 					PacketsRecv: getUint64(netData["packets_recv"]),
+					Errin:       getUint64(netData["errin"]),
+					Errout:      getUint64(netData["errout"]),
 				},
 			},
 		}

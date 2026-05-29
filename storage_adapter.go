@@ -268,6 +268,8 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 				"bytes_recv":   iface.BytesRecv,
 				"packets_sent": iface.PacketsSent,
 				"packets_recv": iface.PacketsRecv,
+				"errin":        iface.Errin,
+				"errout":       iface.Errout,
 			}
 		}
 
