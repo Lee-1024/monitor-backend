@@ -213,9 +213,10 @@ func (s *APIServer) performInspection(reportID uint, date time.Time) {
 		return
 	}
 
-	// 获取所有主机
+	// 获取当前未删除主机。这里使用 Table 查询会绕过 GORM 软删除模型过滤，必须显式排除 deleted_at。
 	var agents []map[string]interface{}
-	db.Table("agents").Find(&agents)
+	db.Table("agents").Where("deleted_at IS NULL").Find(&agents)
+	agents = activeInspectionAgents(agents)
 
 	log.Printf("[Inspection] Found %d agents to inspect", len(agents))
 	totalHosts := len(agents)
@@ -328,6 +329,17 @@ func (s *APIServer) performInspection(reportID uint, date time.Time) {
 
 	log.Printf("[Inspection] 巡检完成，ReportID: %d, 最终统计: total=%d, online=%d, offline=%d, warning=%d, critical=%d",
 		reportID, totalHosts, onlineHosts, offlineHosts, warningHosts, criticalHosts)
+}
+
+func activeInspectionAgents(agents []map[string]interface{}) []map[string]interface{} {
+	active := make([]map[string]interface{}, 0, len(agents))
+	for _, agent := range agents {
+		deletedAt, exists := agent["deleted_at"]
+		if !exists || deletedAt == nil {
+			active = append(active, agent)
+		}
+	}
+	return active
 }
 
 // 巡检单个主机
@@ -684,7 +696,7 @@ func (s *APIServer) listInspectionReports(c *gin.Context) {
 
 	// 使用子查询获取去重后的报告列表
 	subQuery := db.Table("inspection_reports").Select("DISTINCT ON (date) *").Order("date DESC, created_at DESC")
-	
+
 	// 先获取总数
 	var total int64
 	db.Table("(?) as unique_reports", subQuery).Count(&total)
@@ -714,7 +726,7 @@ func (s *APIServer) listInspectionReports(c *gin.Context) {
 		"page":      page,
 		"page_size": pageSize,
 	}
-	
+
 	// 打印实际发送的JSON数据（用于调试）
 	if jsonBytes, err := json.Marshal(responseData); err == nil {
 		log.Printf("[Inspection] API响应JSON: %s", string(jsonBytes))
@@ -872,12 +884,12 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 
 	// 创建缓冲Writer，用于收集完整内容并在完成后保存到数据库
 	bufferWriter := &bufferedStreamWriter{
-		writer:      c.Writer,
-		contentBuf:  &strings.Builder{},
-		sseBuffer:   &strings.Builder{},
-		reportID:    uint(reportID),
-		db:          db,
-		chunkCount:  0,
+		writer:       c.Writer,
+		contentBuf:   &strings.Builder{},
+		sseBuffer:    &strings.Builder{},
+		reportID:     uint(reportID),
+		db:           db,
+		chunkCount:   0,
 		totalContent: 0,
 	}
 
@@ -889,7 +901,7 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 
 	// 标记是否已经保存过，避免重复保存
 	saved := false
-	
+
 	if len(results) > 0 && !results[0].IsNil() {
 		if err, ok := results[0].Interface().(error); ok && err != nil {
 			log.Printf("[API] 流式生成巡检日报失败: %v", err)
@@ -941,10 +953,10 @@ func (b *bufferedStreamWriter) Write(p []byte) (n int, err error) {
 	if n > 0 {
 		// 累积SSE数据
 		b.sseBuffer.Write(p[:n])
-		
+
 		// 尝试解析完整的SSE消息（格式：data: {...}\n\n）
 		bufferStr := b.sseBuffer.String()
-		
+
 		// 查找所有完整的SSE消息（以\n\n分隔）
 		processedCount := 0
 		for {
@@ -953,12 +965,12 @@ func (b *bufferedStreamWriter) Write(p []byte) (n int, err error) {
 				// 没有找到完整消息，保留在缓冲区
 				break
 			}
-			
+
 			// 提取完整的消息
 			line := strings.TrimSpace(bufferStr[:idx])
 			bufferStr = bufferStr[idx+2:] // 跳过\n\n
 			processedCount++
-			
+
 			if strings.HasPrefix(line, "data: ") {
 				jsonStr := strings.TrimPrefix(line, "data: ")
 				jsonStr = strings.TrimSpace(jsonStr)
@@ -1001,18 +1013,18 @@ func (b *bufferedStreamWriter) Write(p []byte) (n int, err error) {
 					log.Printf("[API] 解析SSE消息JSON失败: %v, jsonStr: %s", err, jsonStr[:previewLen])
 				}
 			} else if line != "" {
-					previewLen := 100
-					if len(line) < previewLen {
-						previewLen = len(line)
-					}
-					log.Printf("[API] 跳过非data行: %s", line[:previewLen])
+				previewLen := 100
+				if len(line) < previewLen {
+					previewLen = len(line)
+				}
+				log.Printf("[API] 跳过非data行: %s", line[:previewLen])
 			}
 		}
-		
+
 		if processedCount > 0 {
 			log.Printf("[API] 本次Write处理了 %d 个完整SSE消息，当前累积chunk数=%d，内容总长度=%d", processedCount, b.chunkCount, b.contentBuf.Len())
 		}
-		
+
 		// 保留剩余的不完整消息
 		b.sseBuffer.Reset()
 		if bufferStr != "" {
@@ -1077,13 +1089,13 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 	log.Printf("[API] 处理的chunk总数: %d", b.chunkCount)
 	log.Printf("[API] 累积的内容总长度: %d", b.totalContent)
 	log.Printf("[API] 最终内容长度: %d", len(fullContent))
-	
+
 	// 检查内容是否包含"六"、"七"、"八"
 	hasSix := strings.Contains(fullContent, "六")
 	hasSeven := strings.Contains(fullContent, "七")
 	hasEight := strings.Contains(fullContent, "八")
 	log.Printf("[API] 内容检查: 包含'六'=%v, 包含'七'=%v, 包含'八'=%v", hasSix, hasSeven, hasEight)
-	
+
 	// 记录内容的前200个字符和后200个字符，用于调试
 	previewStart := ""
 	previewEnd := ""
@@ -1113,7 +1125,7 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 	if err := b.db.Table("inspection_reports").Where("id = ?", b.reportID).Updates(updateData).Error; err != nil {
 		log.Printf("[API] 保存日报内容到数据库失败: %v", err)
 		log.Printf("[API] 尝试保存的内容长度: %d", len(fullContent))
-		
+
 		// 尝试直接使用Update单个字段
 		if err2 := b.db.Table("inspection_reports").Where("id = ?", b.reportID).Update("report_content", fullContent).Error; err2 != nil {
 			log.Printf("[API] 使用Update单个字段也失败: %v", err2)
