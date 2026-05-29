@@ -22,10 +22,18 @@ type Config struct {
 }
 
 type InfluxDBConfig struct {
-	URL    string `yaml:"url"`
-	Token  string `yaml:"token"`
-	Org    string `yaml:"org"`
-	Bucket string `yaml:"bucket"`
+	URL                 string `yaml:"url"`
+	Token               string `yaml:"token"`
+	Org                 string `yaml:"org"`
+	Bucket              string `yaml:"bucket"`
+	WriteTimeoutSeconds int    `yaml:"write_timeout_seconds"`
+}
+
+func (c InfluxDBConfig) EffectiveWriteTimeoutSeconds() int {
+	if c.WriteTimeoutSeconds > 0 {
+		return c.WriteTimeoutSeconds
+	}
+	return 10
 }
 
 type PostgreSQLConfig struct {
@@ -84,10 +92,11 @@ func LoadConfig() *Config {
 		JWTSecret:    "your-secret-key-change-in-production",
 		AuthRequired: true, // 默认需要认证
 		InfluxDB: InfluxDBConfig{
-			URL:    "http://localhost:8086",
-			Token:  "your-token",
-			Org:    "monitor",
-			Bucket: "metrics",
+			URL:                 "http://localhost:8086",
+			Token:               "your-token",
+			Org:                 "monitor",
+			Bucket:              "metrics",
+			WriteTimeoutSeconds: 10,
 		},
 		PostgreSQL: PostgreSQLConfig{
 			Host:     "localhost",

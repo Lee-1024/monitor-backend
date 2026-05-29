@@ -5,6 +5,7 @@ influxdb:
   token: "C5lsHVddzZptaXLbi-J3InAyZUw_QGgM09DGFuHVMfrZl22tu9Y_bl0XVN3cotLAhhzCbzvOP4ncGELghxpA1Q=="
   org: "monitor"
   bucket: "metrics"
+  write_timeout_seconds: 10
 
 postgresql:
   host: "10.54.56.54"

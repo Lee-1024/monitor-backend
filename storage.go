@@ -42,6 +42,7 @@ func NewStorage(config *Config) *Storage {
 		config.InfluxDB.Org,
 		config.InfluxDB.Bucket,
 	)
+	log.Printf("InfluxDB write timeout configured: %ds", config.InfluxDB.EffectiveWriteTimeoutSeconds())
 
 	// 初始化PostgreSQL
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
@@ -535,7 +536,10 @@ func (s *Storage) GetAgentStatus(hostID string) (string, error) {
 
 // SaveMetrics 保存指标数据到InfluxDB（完整版）
 func (s *Storage) SaveMetrics(metrics *Metrics) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(s.config.InfluxDB.EffectiveWriteTimeoutSeconds())*time.Second,
+	)
 	defer cancel()
 	start := time.Now()
 	var points []*write.Point
@@ -642,12 +646,13 @@ func (s *Storage) SaveMetrics(metrics *Metrics) error {
 		}
 	}
 
-	// 批量写入所有数据点
-	for _, point := range points {
-		if err := s.influxWrite.WritePoint(ctx, point); err != nil {
-			log.Printf("Failed to write point: %v", err)
-			return err
-		}
+	if len(points) == 0 {
+		return nil
+	}
+
+	if err := s.influxWrite.WritePoint(ctx, points...); err != nil {
+		log.Printf("Failed to write %d metric points for %s: %v", len(points), metrics.HostID, err)
+		return err
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		log.Printf("Saved %d metric points for %s in %v", len(points), metrics.HostID, elapsed)
