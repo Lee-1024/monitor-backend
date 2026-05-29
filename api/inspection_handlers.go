@@ -299,7 +299,19 @@ func (s *APIServer) performInspection(reportID uint, date time.Time) {
 	log.Printf("[Inspection] 巡检统计完成: total=%d, online=%d, offline=%d, warning=%d, critical=%d",
 		totalHosts, onlineHosts, offlineHosts, warningHosts, criticalHosts)
 
-	// 生成LLM日报
+	statsUpdate := map[string]interface{}{
+		"total_hosts":    totalHosts,
+		"online_hosts":   onlineHosts,
+		"offline_hosts":  offlineHosts,
+		"warning_hosts":  warningHosts,
+		"critical_hosts": criticalHosts,
+	}
+	if err := db.Table("inspection_reports").Where("id = ?", reportID).Updates(statsUpdate).Error; err != nil {
+		log.Printf("[Inspection] 更新巡检统计失败，Error: %v", err)
+		return
+	}
+
+	// 生成LLM日报。统计数据必须先写回数据库，否则日报生成器会读到刚重置后的 0。
 	reportContent, summary, keyFindings, recommendations := s.generateInspectionReport(reportID)
 
 	// 更新报告
@@ -307,11 +319,6 @@ func (s *APIServer) performInspection(reportID uint, date time.Time) {
 	updateData := map[string]interface{}{
 		"end_time":        &endTime,
 		"status":          "completed",
-		"total_hosts":     totalHosts,
-		"online_hosts":    onlineHosts,
-		"offline_hosts":   offlineHosts,
-		"warning_hosts":   warningHosts,
-		"critical_hosts":  criticalHosts,
 		"summary":         summary,
 		"report_content":  reportContent,
 		"key_findings":    keyFindings,
@@ -493,7 +500,7 @@ func (s *APIServer) inspectHost(hostID, hostname, agentStatus string, reportID u
 	record.AnomalyCount = len(anomalies)
 
 	var ruleID *uint = nil
-	alerts, err := s.storage.ListAlertHistory(ruleID, hostID, "", 100)
+	alerts, err := s.storage.ListAlertHistory(ruleID, hostID, "firing", 100)
 	if err != nil {
 		log.Printf("[Inspection] Failed to get alerts for %s: %v", hostID, err)
 	}
@@ -513,7 +520,9 @@ func (s *APIServer) inspectHost(hostID, hostname, agentStatus string, reportID u
 	record.Status = "online"
 	if record.CriticalAlertCount > 0 || record.ServiceFailed > 0 {
 		record.Status = "critical"
-		record.Issues = append(record.Issues, fmt.Sprintf("发现 %d 个严重告警", record.CriticalAlertCount))
+		if record.CriticalAlertCount > 0 {
+			record.Issues = append(record.Issues, fmt.Sprintf("发现 %d 个严重告警", record.CriticalAlertCount))
+		}
 		if record.ServiceFailed > 0 {
 			record.Issues = append(record.Issues, fmt.Sprintf("%d 个服务运行失败", record.ServiceFailed))
 		}
@@ -580,14 +589,8 @@ func (s *APIServer) generateInspectionReport(reportID uint) (reportContent, summ
 
 	// 准备数据
 	inspectionData := map[string]interface{}{
-		"report_id":      reportID,
-		"date":           report["date"],
-		"total_hosts":    report["total_hosts"],
-		"online_hosts":   report["online_hosts"],
-		"offline_hosts":  report["offline_hosts"],
-		"warning_hosts":  report["warning_hosts"],
-		"critical_hosts": report["critical_hosts"],
-		"records":        records,
+		"report":  inspectionReportPayload(reportID, report),
+		"records": records,
 	}
 
 	// 通过反射调用LLM方法
@@ -645,19 +648,8 @@ func (s *APIServer) generateInspectionReport(reportID uint) (reportContent, summ
 
 // 生成简单报告（LLM不可用时）
 func (s *APIServer) generateSimpleReport(report map[string]interface{}, records []map[string]interface{}) (reportContent, summary, keyFindings, recommendations string) {
-	totalHosts := 0
-	if v, ok := report["total_hosts"].(int); ok {
-		totalHosts = v
-	} else if v, ok := report["total_hosts"].(float64); ok {
-		totalHosts = int(v)
-	}
-
-	onlineHosts := 0
-	if v, ok := report["online_hosts"].(int); ok {
-		onlineHosts = v
-	} else if v, ok := report["online_hosts"].(float64); ok {
-		onlineHosts = int(v)
-	}
+	totalHosts := reportInt(report, "total_hosts")
+	onlineHosts := reportInt(report, "online_hosts")
 
 	summary = fmt.Sprintf("本次巡检共检查 %d 台主机，其中 %d 台在线。", totalHosts, onlineHosts)
 	keyFindings = "详细巡检数据已记录，请查看巡检记录。"
@@ -678,6 +670,37 @@ func (s *APIServer) generateSimpleReport(report map[string]interface{}, records 
 `, totalHosts, onlineHosts, totalHosts-onlineHosts, keyFindings, recommendations)
 
 	return reportContent, summary, keyFindings, recommendations
+}
+
+func reportInt(report map[string]interface{}, key string) int {
+	switch v := report[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case int32:
+		return int(v)
+	case uint:
+		return int(v)
+	case uint64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func inspectionReportPayload(reportID uint, report map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"id":             reportID,
+		"date":           report["date"],
+		"total_hosts":    float64(reportInt(report, "total_hosts")),
+		"online_hosts":   float64(reportInt(report, "online_hosts")),
+		"offline_hosts":  float64(reportInt(report, "offline_hosts")),
+		"warning_hosts":  float64(reportInt(report, "warning_hosts")),
+		"critical_hosts": float64(reportInt(report, "critical_hosts")),
+	}
 }
 
 // 获取巡检报告列表
@@ -843,7 +866,7 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 
 	inspectionData := map[string]interface{}{
 		"report_id": reportID,
-		"report":    report,
+		"report":    inspectionReportPayload(uint(reportID), report),
 		"records":   records,
 	}
 
@@ -1439,47 +1462,17 @@ func convertMapToInspectionRecordInfo(m map[string]interface{}) InspectionRecord
 		}
 	}
 
-	if v, ok := m["service_count"].(int); ok {
-		info.ServiceCount = v
-	} else if v, ok := m["service_count"].(float64); ok {
-		info.ServiceCount = int(v)
-	}
-
-	if v, ok := m["service_running"].(int); ok {
-		info.ServiceRunning = v
-	} else if v, ok := m["service_running"].(float64); ok {
-		info.ServiceRunning = int(v)
-	}
-
-	if v, ok := m["service_stopped"].(int); ok {
-		info.ServiceStopped = v
-	} else if v, ok := m["service_stopped"].(float64); ok {
-		info.ServiceStopped = int(v)
-	}
-
-	if v, ok := m["service_failed"].(int); ok {
-		info.ServiceFailed = v
-	} else if v, ok := m["service_failed"].(float64); ok {
-		info.ServiceFailed = int(v)
-	}
-
-	if v, ok := m["anomaly_count"].(int); ok {
-		info.AnomalyCount = v
-	} else if v, ok := m["anomaly_count"].(float64); ok {
-		info.AnomalyCount = int(v)
-	}
-
-	if v, ok := m["alert_count"].(int); ok {
-		info.AlertCount = v
-	} else if v, ok := m["alert_count"].(float64); ok {
-		info.AlertCount = int(v)
-	}
-
-	if v, ok := m["critical_alert_count"].(int); ok {
-		info.CriticalAlertCount = v
-	} else if v, ok := m["critical_alert_count"].(float64); ok {
-		info.CriticalAlertCount = int(v)
-	}
+	info.ServiceCount = mapInt(m, "service_count")
+	info.ServiceRunning = mapInt(m, "service_running")
+	info.ServiceStopped = mapInt(m, "service_stopped")
+	info.ServiceFailed = mapInt(m, "service_failed")
+	info.AnomalyCount = mapInt(m, "anomaly_count")
+	info.AlertCount = mapInt(m, "alert_count")
+	info.CriticalAlertCount = mapInt(m, "critical_alert_count")
 
 	return info
+}
+
+func mapInt(m map[string]interface{}, key string) int {
+	return reportInt(m, key)
 }
