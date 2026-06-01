@@ -678,7 +678,7 @@ func (s *APIServer) getProcessHistory(c *gin.Context) {
 		return
 	}
 
-	history, err := s.storage.GetProcessHistory(hostID, processNames, start, end, limit)
+	history, err := s.storage.GetProcessHistory(hostID, processNames, start, end, limit, metricType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, Response{
 			Code:    500,
@@ -776,7 +776,7 @@ func (s *APIServer) getDockerContainerHistory(c *gin.Context) {
 		return
 	}
 
-	history, err := s.storage.GetDockerContainerHistory(hostID, containerNames, start, end, limit)
+	history, err := s.storage.GetDockerContainerHistory(hostID, containerNames, start, end, limit, metricType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, Response{Code: 500, Message: "Failed to get docker history: " + err.Error()})
 		return

@@ -1697,7 +1697,7 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 }
 
 // GetProcessHistory 获取进程历史数据（按进程名分组）
-func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]api.ProcessHistoryPoint, error) {
+func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int, metricType string) ([]api.ProcessHistoryPoint, error) {
 	var processes []ProcessSnapshot
 	query := s.storage.postgres.Model(&ProcessSnapshot{})
 
@@ -1717,7 +1717,11 @@ func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string,
 		query = query.Where("name IN ?", processNames)
 	}
 
-	query = query.Where("(cpu_percent > 0 OR memory_percent > 0)")
+	if metricType == "memory" {
+		query = query.Where("memory_percent > 0")
+	} else {
+		query = query.Where("cpu_percent > 0")
+	}
 
 	if limit > 0 {
 		query = query.Limit(limit)
@@ -1891,7 +1895,7 @@ func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, star
 	return names, nil
 }
 
-func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames []string, start, end time.Time, limit int) ([]api.DockerContainerHistoryPoint, error) {
+func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames []string, start, end time.Time, limit int, metricType string) ([]api.DockerContainerHistoryPoint, error) {
 	var snapshots []DockerContainerSnapshot
 	query := s.storage.postgres.Model(&DockerContainerSnapshot{})
 	if hostID != "" {
@@ -1906,7 +1910,11 @@ func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames
 	if len(containerNames) > 0 {
 		query = query.Where("name IN ?", containerNames)
 	}
-	query = query.Where("(cpu_percent > 0 OR memory_percent > 0)")
+	if metricType == "memory" {
+		query = query.Where("memory_percent > 0")
+	} else {
+		query = query.Where("cpu_percent > 0")
+	}
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
