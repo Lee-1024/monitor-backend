@@ -627,7 +627,7 @@ func (s *APIServer) getProcessHistory(c *gin.Context) {
 		fmt.Sscanf(topNStr, "%d", &topN)
 	}
 
-	limit := 5000
+	limit := 0
 	if limitStr := c.Query("limit"); limitStr != "" {
 		fmt.Sscanf(limitStr, "%d", &limit)
 	}
@@ -736,7 +736,7 @@ func (s *APIServer) getDockerContainerHistory(c *gin.Context) {
 	if topNStr := c.Query("top_n"); topNStr != "" {
 		fmt.Sscanf(topNStr, "%d", &topN)
 	}
-	limit := 5000
+	limit := 0
 	if limitStr := c.Query("limit"); limitStr != "" {
 		fmt.Sscanf(limitStr, "%d", &limit)
 	}
