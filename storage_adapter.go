@@ -1699,7 +1699,7 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 // GetProcessHistory 获取进程历史数据（按进程名分组）
 func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int) ([]api.ProcessHistoryPoint, error) {
 	var processes []ProcessSnapshot
-	query := s.storage.postgres.Order("timestamp ASC")
+	query := s.storage.postgres.Model(&ProcessSnapshot{})
 
 	if hostID != "" {
 		query = query.Where("host_id = ?", hostID)
@@ -1721,10 +1721,13 @@ func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string,
 		query = query.Limit(limit)
 	}
 
-	err := query.Find(&processes).Error
+	err := query.Order("timestamp DESC").Find(&processes).Error
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(processes, func(i, j int) bool {
+		return processes[i].Timestamp.Before(processes[j].Timestamp)
+	})
 
 	result := make([]api.ProcessHistoryPoint, len(processes))
 	for i, p := range processes {
@@ -1888,7 +1891,7 @@ func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, star
 
 func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames []string, start, end time.Time, limit int) ([]api.DockerContainerHistoryPoint, error) {
 	var snapshots []DockerContainerSnapshot
-	query := s.storage.postgres.Order("timestamp ASC")
+	query := s.storage.postgres.Model(&DockerContainerSnapshot{})
 	if hostID != "" {
 		query = query.Where("host_id = ?", hostID)
 	}
@@ -1904,9 +1907,12 @@ func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
-	if err := query.Find(&snapshots).Error; err != nil {
+	if err := query.Order("timestamp DESC").Find(&snapshots).Error; err != nil {
 		return nil, err
 	}
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].Timestamp.Before(snapshots[j].Timestamp)
+	})
 
 	result := make([]api.DockerContainerHistoryPoint, len(snapshots))
 	for i, snapshot := range snapshots {
