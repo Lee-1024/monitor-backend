@@ -1721,27 +1721,25 @@ func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, 
 		pageSize = 100
 	}
 
-	var ids []dockerLatestContainerID
 	subQuery := s.storage.postgres.Model(&DockerContainerSnapshot{}).Select("MAX(id) as max_id")
 	if hostID != "" {
 		subQuery = subQuery.Where("host_id = ?", hostID)
 	}
-	if err := subQuery.Group("host_id, container_id").Scan(&ids).Error; err != nil {
+	subQuery = subQuery.Group("host_id, container_id")
+
+	var total int64
+	countQuery := s.storage.postgres.Table("(?) as latest", subQuery)
+	if err := countQuery.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	total := dockerContainerTotalFromLatestIDs(ids)
-	if len(ids) == 0 {
+	if total == 0 {
 		return []api.DockerContainerInfo{}, 0, nil
-	}
-
-	maxIDs := make([]uint, 0, len(ids))
-	for _, id := range ids {
-		maxIDs = append(maxIDs, id.MaxID)
 	}
 
 	var snapshots []DockerContainerSnapshot
 	offset := (page - 1) * pageSize
-	if err := s.storage.postgres.Where("id IN ?", maxIDs).
+	if err := s.storage.postgres.Model(&DockerContainerSnapshot{}).
+		Joins("JOIN (?) latest ON docker_container_snapshots.id = latest.max_id", subQuery).
 		Order("cpu_percent DESC, memory_percent DESC, timestamp DESC").
 		Offset(offset).
 		Limit(pageSize).
