@@ -18,6 +18,28 @@ func TestDockerSnapshotCutoffUsesThirtyDayDefault(t *testing.T) {
 	}
 }
 
+func TestDockerSnapshotRetentionCanBeConfigured(t *testing.T) {
+	oldRetention := dockerSnapshotRetentionDays
+	t.Cleanup(func() { dockerSnapshotRetentionDays = oldRetention })
+
+	SetDockerSnapshotRetentionDays(14)
+
+	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	want := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+
+	if got := dockerSnapshotCutoff(now); !got.Equal(want) {
+		t.Fatalf("cutoff = %s, want %s", got, want)
+	}
+}
+
+func TestRetentionConfigDefaultsDockerSnapshotsToThirtyDays(t *testing.T) {
+	cfg := RetentionConfig{}
+
+	if got := cfg.EffectiveDockerSnapshotDays(); got != 30 {
+		t.Fatalf("EffectiveDockerSnapshotDays() = %d, want 30", got)
+	}
+}
+
 func TestDockerSnapshotContainerKey(t *testing.T) {
 	snapshot := DockerContainerSnapshot{
 		HostID:      "host-1",

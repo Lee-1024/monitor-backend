@@ -22,6 +22,9 @@ redis:
   password: "admin123456"
   db: 0
 
+retention:
+  docker_snapshot_days: 30
+
 jwt_secret: "bbcceewwx1234567890"
 # 是否要求认证，设置为false可以在开发环境中禁用认证
 auth_required: true

@@ -45,6 +45,7 @@ func NewStorage(config *Config) *Storage {
 	storage := &Storage{
 		config: config,
 	}
+	SetDockerSnapshotRetentionDays(config.Retention.EffectiveDockerSnapshotDays())
 
 	// 初始化InfluxDB
 	storage.influxClient = influxdb2.NewClient(
@@ -1338,6 +1339,13 @@ func (s *Storage) cleanupOldProcessSnapshots() {
 var serviceStatusRetentionDays = 30
 
 var dockerSnapshotRetentionDays = 30
+
+func SetDockerSnapshotRetentionDays(days int) {
+	if days > 0 && days <= 365 {
+		dockerSnapshotRetentionDays = days
+		log.Printf("[DockerCleanup] Docker snapshot retention set to %d days", days)
+	}
+}
 
 func dockerSnapshotCutoff(now time.Time) time.Time {
 	return now.AddDate(0, 0, -dockerSnapshotRetentionDays)

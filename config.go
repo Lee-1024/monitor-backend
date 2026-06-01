@@ -18,6 +18,7 @@ type Config struct {
 	InfluxDB     InfluxDBConfig   `yaml:"influxdb"`
 	PostgreSQL   PostgreSQLConfig `yaml:"postgresql"`
 	Redis        RedisConfig      `yaml:"redis"`
+	Retention    RetentionConfig  `yaml:"retention"`
 	LLM          LLMConfig        `yaml:"llm"`
 }
 
@@ -74,6 +75,17 @@ type RedisConfig struct {
 	DB       int    `yaml:"db"`
 }
 
+type RetentionConfig struct {
+	DockerSnapshotDays int `yaml:"docker_snapshot_days"`
+}
+
+func (c RetentionConfig) EffectiveDockerSnapshotDays() int {
+	if c.DockerSnapshotDays > 0 {
+		return c.DockerSnapshotDays
+	}
+	return 30
+}
+
 type LLMConfig struct {
 	Provider    string  `yaml:"provider"` // openai, claude, custom
 	APIKey      string  `yaml:"api_key"`
@@ -109,6 +121,9 @@ func LoadConfig() *Config {
 			Addr:     "localhost:6379",
 			Password: "",
 			DB:       0,
+		},
+		Retention: RetentionConfig{
+			DockerSnapshotDays: 30,
 		},
 	}
 
