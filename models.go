@@ -261,10 +261,10 @@ type DockerContainerSnapshot struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 
-	HostID    string    `gorm:"index;index:idx_docker_host_container_id;index:idx_docker_host_time;index:idx_docker_host_name_time;size:64" json:"host_id"`
+	HostID    string    `gorm:"index;index:idx_docker_host_container_id;index:idx_docker_host_container_latest;index:idx_docker_host_time;index:idx_docker_host_name_time;size:64" json:"host_id"`
 	Timestamp time.Time `gorm:"index;index:idx_docker_host_time;index:idx_docker_host_name_time" json:"timestamp"`
 
-	ContainerID   string    `gorm:"index;index:idx_docker_host_container_id;size:64" json:"container_id"`
+	ContainerID   string    `gorm:"index;index:idx_docker_host_container_id;index:idx_docker_host_container_latest;size:64" json:"container_id"`
 	Name          string    `gorm:"index;index:idx_docker_host_name_time;size:255" json:"name"`
 	Image         string    `gorm:"size:512" json:"image"`
 	State         string    `gorm:"size:64;index" json:"state"`

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
@@ -27,6 +28,18 @@ type Storage struct {
 	redis        *redis.Client
 	config       *Config
 }
+
+const (
+	processLatestCachePrefix = "process:latest:"
+	dockerLatestCachePrefix  = "docker:latest:"
+	serviceLatestCachePrefix = "service:latest:"
+	processLatestHostsKey    = "process:latest:hosts"
+	dockerLatestHostsKey     = "docker:latest:hosts"
+	serviceLatestHostsKey    = "service:latest:hosts"
+	processLatestTTL         = 60 * time.Second
+	dockerLatestTTL          = 120 * time.Second
+	serviceLatestTTL         = 120 * time.Second
+)
 
 func NewStorage(config *Config) *Storage {
 	storage := &Storage{
@@ -97,6 +110,7 @@ func NewStorage(config *Config) *Storage {
 		&OpsAssistantSession{},
 		&OpsAssistantMessage{},
 	)
+	storage.ensureDockerSnapshotIndexes()
 
 	// 初始化默认管理员用户
 	storage.InitDefaultAdmin()
@@ -119,6 +133,21 @@ func NewStorage(config *Config) *Storage {
 
 	log.Println("Storage initialized successfully")
 	return storage
+}
+
+func (s *Storage) ensureDockerSnapshotIndexes() {
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_docker_latest_host_container
+		ON docker_container_snapshots (host_id, container_id, id DESC)
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create docker latest index: %v", err)
+	}
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_docker_history_host_time_name
+		ON docker_container_snapshots (host_id, timestamp DESC, name)
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create docker history index: %v", err)
+	}
 }
 
 func (s *Storage) Close() {
@@ -946,6 +975,96 @@ func (s *Storage) GetCachedLatestMetrics(hostID string) (*Metrics, error) {
 	}
 
 	return metrics, nil
+}
+
+func (s *Storage) CacheLatestProcesses(hostID string, processes []ProcessSnapshot) error {
+	return s.cacheLatestList(processLatestCachePrefix, processLatestHostsKey, hostID, processLatestTTL, processes)
+}
+
+func (s *Storage) GetCachedLatestProcesses(hostID string) ([]ProcessSnapshot, error) {
+	var processes []ProcessSnapshot
+	err := s.getCachedLatestList(processLatestCachePrefix, processLatestHostsKey, hostID, &processes)
+	return processes, err
+}
+
+func (s *Storage) CacheLatestDockerContainers(hostID string, containers []DockerContainerSnapshot) error {
+	return s.cacheLatestList(dockerLatestCachePrefix, dockerLatestHostsKey, hostID, dockerLatestTTL, containers)
+}
+
+func (s *Storage) GetCachedLatestDockerContainers(hostID string) ([]DockerContainerSnapshot, error) {
+	var containers []DockerContainerSnapshot
+	err := s.getCachedLatestList(dockerLatestCachePrefix, dockerLatestHostsKey, hostID, &containers)
+	return containers, err
+}
+
+func (s *Storage) CacheLatestServiceStatuses(hostID string, services []ServiceStatus) error {
+	return s.cacheLatestList(serviceLatestCachePrefix, serviceLatestHostsKey, hostID, serviceLatestTTL, services)
+}
+
+func (s *Storage) GetCachedLatestServiceStatuses(hostID string) ([]ServiceStatus, error) {
+	var services []ServiceStatus
+	err := s.getCachedLatestList(serviceLatestCachePrefix, serviceLatestHostsKey, hostID, &services)
+	return services, err
+}
+
+func (s *Storage) cacheLatestList(prefix, hostsKey, hostID string, ttl time.Duration, data interface{}) error {
+	if strings.TrimSpace(hostID) == "" {
+		return fmt.Errorf("host_id is required")
+	}
+
+	ctx := context.Background()
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	pipe := s.redis.Pipeline()
+	pipe.Set(ctx, prefix+hostID, payload, ttl)
+	pipe.SAdd(ctx, hostsKey, hostID)
+	pipe.Expire(ctx, hostsKey, ttl)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (s *Storage) getCachedLatestList(prefix, hostsKey, hostID string, target interface{}) error {
+	ctx := context.Background()
+	if strings.TrimSpace(hostID) != "" {
+		jsonData, err := s.redis.Get(ctx, prefix+hostID).Bytes()
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(jsonData, target)
+	}
+
+	hosts, err := s.redis.SMembers(ctx, hostsKey).Result()
+	if err != nil {
+		return err
+	}
+	if len(hosts) == 0 {
+		return fmt.Errorf("cache miss: no hosts")
+	}
+
+	var rawMessages []json.RawMessage
+	for _, host := range hosts {
+		jsonData, err := s.redis.Get(ctx, prefix+host).Bytes()
+		if err != nil {
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(jsonData, &items); err != nil {
+			continue
+		}
+		rawMessages = append(rawMessages, items...)
+	}
+	if len(rawMessages) == 0 {
+		return fmt.Errorf("cache miss: no latest data")
+	}
+
+	payload, err := json.Marshal(rawMessages)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(payload, target)
 }
 
 // 辅助函数：类型转换

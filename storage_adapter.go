@@ -1537,6 +1537,21 @@ func (s *StorageAdapter) getProcessesAlternative(hostID string, limit int) ([]ap
 
 // GetProcessesWithPagination 获取进程列表（支持分页）
 func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSize int) ([]api.ProcessInfo, int64, error) {
+	if cached, err := s.storage.GetCachedLatestProcesses(hostID); err == nil {
+		result := processSnapshotsToAPI(cached)
+		sort.Slice(result, func(i, j int) bool {
+			if result[i].CPUPercent != result[j].CPUPercent {
+				return result[i].CPUPercent > result[j].CPUPercent
+			}
+			if result[i].MemoryPercent != result[j].MemoryPercent {
+				return result[i].MemoryPercent > result[j].MemoryPercent
+			}
+			return result[i].PID < result[j].PID
+		})
+		total := int64(len(result))
+		return paginateProcessInfos(result, page, pageSize), total, nil
+	}
+
 	// 先获取总数（符合条件的活跃进程数）
 	var total int64
 	recentTime := time.Now().Add(-10 * time.Second)
@@ -1585,7 +1600,10 @@ func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSiz
 		return nil, 0, err
 	}
 
-	// 转换为结果
+	return processSnapshotsToAPI(processes), total, nil
+}
+
+func processSnapshotsToAPI(processes []ProcessSnapshot) []api.ProcessInfo {
 	result := make([]api.ProcessInfo, 0, len(processes))
 	for _, p := range processes {
 		result = append(result, api.ProcessInfo{
@@ -1602,8 +1620,25 @@ func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSiz
 			Command:       p.Command,
 		})
 	}
+	return result
+}
 
-	return result, total, nil
+func paginateProcessInfos(items []api.ProcessInfo, page, pageSize int) []api.ProcessInfo {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	start := (page - 1) * pageSize
+	if start >= len(items) {
+		return []api.ProcessInfo{}
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[start:end]
 }
 
 // GetTopProcessNamesByHistory 从历史数据中获取CPU/内存占用最高的前N个进程名
@@ -1721,15 +1756,41 @@ func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, 
 		pageSize = 100
 	}
 
-	subQuery := s.storage.postgres.Model(&DockerContainerSnapshot{}).Select("MAX(id) as max_id")
-	if hostID != "" {
-		subQuery = subQuery.Where("host_id = ?", hostID)
+	if cached, err := s.storage.GetCachedLatestDockerContainers(hostID); err == nil {
+		result := dockerSnapshotsToAPI(cached)
+		sort.Slice(result, func(i, j int) bool {
+			if result[i].CPUPercent != result[j].CPUPercent {
+				return result[i].CPUPercent > result[j].CPUPercent
+			}
+			if result[i].MemoryPercent != result[j].MemoryPercent {
+				return result[i].MemoryPercent > result[j].MemoryPercent
+			}
+			return result[i].Timestamp.After(result[j].Timestamp)
+		})
+		total := int64(len(result))
+		return paginateDockerContainerInfos(result, page, pageSize), total, nil
 	}
-	subQuery = subQuery.Group("host_id, container_id")
+
+	whereClause := ""
+	args := []interface{}{}
+	if hostID != "" {
+		whereClause = "WHERE host_id = ?"
+		args = append(args, hostID)
+	} else {
+		whereClause = "WHERE timestamp >= ?"
+		args = append(args, time.Now().Add(-10*time.Minute))
+	}
 
 	var total int64
-	countQuery := s.storage.postgres.Table("(?) as latest", subQuery)
-	if err := countQuery.Count(&total).Error; err != nil {
+	countSQL := fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT DISTINCT ON (host_id, container_id) id
+			FROM docker_container_snapshots
+			%s
+			ORDER BY host_id, container_id, id DESC
+		) latest
+	`, whereClause)
+	if err := s.storage.postgres.Raw(countSQL, args...).Scan(&total).Error; err != nil {
 		return nil, 0, err
 	}
 	if total == 0 {
@@ -1738,20 +1799,50 @@ func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, 
 
 	var snapshots []DockerContainerSnapshot
 	offset := (page - 1) * pageSize
-	if err := s.storage.postgres.Model(&DockerContainerSnapshot{}).
-		Joins("JOIN (?) latest ON docker_container_snapshots.id = latest.max_id", subQuery).
-		Order("cpu_percent DESC, memory_percent DESC, timestamp DESC").
-		Offset(offset).
-		Limit(pageSize).
-		Find(&snapshots).Error; err != nil {
+	queryArgs := append([]interface{}{}, args...)
+	queryArgs = append(queryArgs, pageSize, offset)
+	querySQL := fmt.Sprintf(`
+		SELECT latest.*
+		FROM (
+			SELECT DISTINCT ON (host_id, container_id) *
+			FROM docker_container_snapshots
+			%s
+			ORDER BY host_id, container_id, id DESC
+		) latest
+		ORDER BY latest.cpu_percent DESC, latest.memory_percent DESC, latest.timestamp DESC
+		LIMIT ? OFFSET ?
+	`, whereClause)
+	if err := s.storage.postgres.Raw(querySQL, queryArgs...).Scan(&snapshots).Error; err != nil {
 		return nil, 0, err
 	}
 
+	return dockerSnapshotsToAPI(snapshots), total, nil
+}
+
+func dockerSnapshotsToAPI(snapshots []DockerContainerSnapshot) []api.DockerContainerInfo {
 	result := make([]api.DockerContainerInfo, len(snapshots))
 	for i, snapshot := range snapshots {
 		result[i] = dockerSnapshotToAPI(snapshot)
 	}
-	return result, total, nil
+	return result
+}
+
+func paginateDockerContainerInfos(items []api.DockerContainerInfo, page, pageSize int) []api.DockerContainerInfo {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	start := (page - 1) * pageSize
+	if start >= len(items) {
+		return []api.DockerContainerInfo{}
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[start:end]
 }
 
 type dockerLatestContainerID struct {
@@ -2253,6 +2344,15 @@ func (s *StorageAdapter) GetScriptExecutions(hostID, scriptID string, limit int)
 
 // GetServiceStatus 获取服务状态
 func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, error) {
+	if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil {
+		result := serviceStatusesToAPI(cached)
+		agentStatuses, err := s.getAgentStatusesForServices(result)
+		if err != nil {
+			return nil, err
+		}
+		return applyAgentStatusToServiceInfos(result, agentStatuses), nil
+	}
+
 	var services []ServiceStatus
 
 	if hostID != "" {
@@ -2322,6 +2422,16 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 		}
 	}
 
+	result := serviceStatusesToAPI(services)
+	agentStatuses, err := s.getAgentStatusesForServices(result)
+	if err != nil {
+		return nil, err
+	}
+
+	return applyAgentStatusToServiceInfos(result, agentStatuses), nil
+}
+
+func serviceStatusesToAPI(services []ServiceStatus) []api.ServiceInfo {
 	result := make([]api.ServiceInfo, len(services))
 	for i, svc := range services {
 		result[i] = api.ServiceInfo{
@@ -2337,13 +2447,7 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 			PortAccessible: svc.PortAccessible,
 		}
 	}
-
-	agentStatuses, err := s.getAgentStatusesForServices(result)
-	if err != nil {
-		return nil, err
-	}
-
-	return applyAgentStatusToServiceInfos(result, agentStatuses), nil
+	return result
 }
 
 func (s *StorageAdapter) getAgentStatusesForServices(services []api.ServiceInfo) (map[string]string, error) {

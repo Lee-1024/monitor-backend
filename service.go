@@ -258,6 +258,10 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 		})
 	}
 
+	if err := s.storage.CacheLatestProcesses(req.HostId, snapshots); err != nil {
+		log.Printf("Failed to cache latest processes for host %s: %v", req.HostId, err)
+	}
+
 	if err := s.storage.postgres.CreateInBatches(snapshots, 100).Error; err != nil {
 		log.Printf("Failed to save process snapshots for host %s: %v", req.HostId, err)
 		return &pb.MetricsResponse{
@@ -359,6 +363,7 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 	// 保存服务状态
 	timestamp := time.Unix(req.Timestamp, 0)
 	savedCount := 0
+	latest := make([]ServiceStatus, 0, len(req.Services))
 	for _, svc := range req.Services {
 		status := &ServiceStatus{
 			HostID:      req.HostId,
@@ -374,6 +379,7 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 			status.Port = int(svc.Port)
 			status.PortAccessible = svc.PortAccessible
 		}
+		latest = append(latest, *status)
 		if err := s.storage.postgres.Create(status).Error; err != nil {
 			log.Printf("Failed to save service status: %v", err)
 			return &pb.MetricsResponse{
@@ -382,6 +388,10 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 			}, err
 		}
 		savedCount++
+	}
+
+	if err := s.storage.CacheLatestServiceStatuses(req.HostId, latest); err != nil {
+		log.Printf("Failed to cache latest service statuses for host %s: %v", req.HostId, err)
 	}
 
 	return &pb.MetricsResponse{
@@ -414,6 +424,10 @@ func (s *CollectorService) ReportDockerContainers(ctx context.Context, req *pb.L
 
 	if len(snapshots) == 0 {
 		return &pb.MetricsResponse{Success: true, Message: "No valid docker containers to save"}, nil
+	}
+
+	if err := s.storage.CacheLatestDockerContainers(req.HostId, snapshots); err != nil {
+		log.Printf("Failed to cache latest docker containers for host %s: %v", req.HostId, err)
 	}
 
 	if err := s.storage.postgres.CreateInBatches(snapshots, 100).Error; err != nil {
