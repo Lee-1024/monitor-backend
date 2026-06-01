@@ -1660,7 +1660,7 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 		FROM (
 			SELECT name, MAX(%s) as max_usage
 			FROM process_snapshots
-			WHERE timestamp >= ? AND timestamp <= ?`, orderBy)
+			WHERE timestamp >= ? AND timestamp <= ? AND %s > 0`, orderBy, orderBy)
 
 	args := []interface{}{start, end}
 	if hostID != "" {
@@ -1716,6 +1716,8 @@ func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string,
 	if len(processNames) > 0 {
 		query = query.Where("name IN ?", processNames)
 	}
+
+	query = query.Where("(cpu_percent > 0 OR memory_percent > 0)")
 
 	if limit > 0 {
 		query = query.Limit(limit)
@@ -1867,7 +1869,7 @@ func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, star
 
 	query := s.storage.postgres.Model(&DockerContainerSnapshot{}).
 		Select(fmt.Sprintf("name, MAX(%s) as max_usage", orderBy)).
-		Where("timestamp >= ? AND timestamp <= ?", start, end)
+		Where(fmt.Sprintf("timestamp >= ? AND timestamp <= ? AND %s > 0", orderBy), start, end)
 	if hostID != "" {
 		query = query.Where("host_id = ?", hostID)
 	}
@@ -1904,6 +1906,7 @@ func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames
 	if len(containerNames) > 0 {
 		query = query.Where("name IN ?", containerNames)
 	}
+	query = query.Where("(cpu_percent > 0 OR memory_percent > 0)")
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
