@@ -150,6 +150,12 @@ func (e *AlertEngine) checkRules() {
 			continue
 		}
 
+		if rule.MetricType == "server_probe" {
+			log.Printf("[AlertEngine] Processing server_probe rule: %s", rule.Name)
+			e.checkServerProbeRule(rule)
+			continue
+		}
+
 		// GPU不可用告警特殊处理
 		if rule.MetricType == "gpu_unavailable" {
 			log.Printf("[AlertEngine] Processing gpu_unavailable rule: %s", rule.Name)
@@ -165,6 +171,34 @@ func (e *AlertEngine) checkRules() {
 		}
 	}
 	log.Printf("[AlertEngine] Rule check cycle completed")
+}
+
+func (e *AlertEngine) checkServerProbeRule(rule api.AlertRuleInfo) {
+	for _, targetID := range rule.ServerProbeTargetIDs {
+		target, err := e.storage.GetServerProbeTarget(targetID)
+		if err != nil {
+			log.Printf("[checkServerProbeRule] Failed to get target %d: %v", targetID, err)
+			continue
+		}
+		hostID := serverProbeAlertHostID(target.ID)
+		if e.storage.IsRuleSilenced(rule.ID, hostID) {
+			continue
+		}
+		alertKey := fmt.Sprintf("%d:%s", rule.ID, hostID)
+		if target.LastStatus == "down" {
+			if e.updateSpecialAlertState(alertKey, rule, hostID, time.Now()) {
+				e.triggerServerProbeAlert(rule, *target)
+			}
+			continue
+		}
+		if target.LastStatus == "up" {
+			e.handleServerProbeResolved(rule, *target, alertKey)
+		}
+	}
+}
+
+func serverProbeAlertHostID(targetID uint) string {
+	return fmt.Sprintf("server-probe:%d", targetID)
 }
 
 // checkHostDownRule 检查主机宕机规则
@@ -1625,6 +1659,67 @@ func (e *AlertEngine) triggerServicePortAlert(rule api.AlertRuleInfo, host api.A
 			e.notifyMu.Unlock()
 		}()
 	}
+}
+
+func (e *AlertEngine) triggerServerProbeAlert(rule api.AlertRuleInfo, target api.ServerProbeTargetInfo) {
+	hostID := serverProbeAlertHostID(target.ID)
+	message := fmt.Sprintf("服务端探测 %s 不可用：%s", target.Name, target.LastError)
+	history := api.AlertHistoryInfo{
+		RuleID:      rule.ID,
+		RuleName:    rule.Name,
+		HostID:      hostID,
+		Hostname:    target.Name,
+		Severity:    rule.Severity,
+		Status:      "firing",
+		FiredAt:     time.Now(),
+		MetricType:  "server_probe",
+		MetricValue: 0,
+		Threshold:   0,
+		Message:     message,
+		Labels: map[string]string{
+			"target_id": fmt.Sprintf("%d", target.ID),
+			"type":      target.Type,
+			"target":    serverProbeTargetLabel(target),
+		},
+		NotifyStatus: "pending",
+	}
+
+	createdHistory, err := e.storage.CreateAlertHistory(&history)
+	if err != nil {
+		log.Printf("[triggerServerProbeAlert] Failed to create alert history: %v", err)
+		return
+	}
+	e.notifySpecialAlert(rule, api.AgentInfo{HostID: hostID, Hostname: target.Name}, createdHistory, fmt.Sprintf("%d:%s", rule.ID, hostID))
+}
+
+func (e *AlertEngine) handleServerProbeResolved(rule api.AlertRuleInfo, target api.ServerProbeTargetInfo, alertKey string) {
+	hostID := serverProbeAlertHostID(target.ID)
+	e.resetSpecialAlertState(alertKey)
+	historyList, err := e.storage.ListAlertHistory(&rule.ID, hostID, "firing", 1)
+	if err != nil || len(historyList) == 0 {
+		return
+	}
+	now := time.Now()
+	existingHistory := &historyList[0]
+	if err := e.storage.UpdateAlertHistory(existingHistory.ID, "resolved", &now); err != nil {
+		log.Printf("[handleServerProbeResolved] Failed to update alert history: %v", err)
+		return
+	}
+	message := fmt.Sprintf("服务端探测 %s 已恢复：%s", target.Name, serverProbeTargetLabel(target))
+	if updateErr := e.storage.UpdateAlertHistoryMetricValue(existingHistory.ID, 1, message); updateErr != nil {
+		log.Printf("[handleServerProbeResolved] Failed to update alert history message: %v", updateErr)
+	}
+	existingHistory.Message = message
+	existingHistory.Status = "resolved"
+	existingHistory.ResolvedAt = &now
+	go e.notifier.Send(rule.NotifyChannels, existingHistory, rule.Receivers)
+}
+
+func serverProbeTargetLabel(target api.ServerProbeTargetInfo) string {
+	if target.Type == "tcp" {
+		return fmt.Sprintf("%s:%d", target.Host, target.Port)
+	}
+	return target.URL
 }
 
 // handleServicePortResolved 处理服务端口告警恢复

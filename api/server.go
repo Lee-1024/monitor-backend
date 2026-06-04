@@ -270,6 +270,16 @@ func (s *APIServer) setupRoutes() {
 			services.DELETE("", s.deleteServiceStatus)
 		}
 
+		serverProbes := v1.Group("/server-probes")
+		{
+			serverProbes.GET("", s.listServerProbeTargets)
+			serverProbes.POST("", s.createServerProbeTarget)
+			serverProbes.PUT("/:id", s.updateServerProbeTarget)
+			serverProbes.DELETE("/:id", s.deleteServerProbeTarget)
+			serverProbes.POST("/:id/test", s.testServerProbeTarget)
+			serverProbes.GET("/:id/results", s.listServerProbeResults)
+		}
+
 		// 告警规则路由
 		alerts := v1.Group("/alerts")
 		{

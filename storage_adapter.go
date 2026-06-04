@@ -2512,6 +2512,154 @@ func (s *StorageAdapter) DeleteServiceStatus(hostID string) (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+func (s *StorageAdapter) ListServerProbeTargets() ([]api.ServerProbeTargetInfo, error) {
+	var targets []ServerProbeTarget
+	if err := s.storage.postgres.Order("id DESC").Find(&targets).Error; err != nil {
+		return nil, err
+	}
+	result := make([]api.ServerProbeTargetInfo, 0, len(targets))
+	for _, target := range targets {
+		result = append(result, serverProbeTargetToAPI(target))
+	}
+	return result, nil
+}
+
+func (s *StorageAdapter) CreateServerProbeTarget(info *api.ServerProbeTargetInfo) (*api.ServerProbeTargetInfo, error) {
+	target := serverProbeTargetFromAPI(info)
+	normalizeServerProbeTarget(&target)
+	if err := validateServerProbeTarget(&target); err != nil {
+		return nil, err
+	}
+	if err := s.storage.postgres.Create(&target).Error; err != nil {
+		return nil, err
+	}
+	result := serverProbeTargetToAPI(target)
+	return &result, nil
+}
+
+func (s *StorageAdapter) UpdateServerProbeTarget(id uint, info *api.ServerProbeTargetInfo) (*api.ServerProbeTargetInfo, error) {
+	var target ServerProbeTarget
+	if err := s.storage.postgres.First(&target, id).Error; err != nil {
+		return nil, err
+	}
+	target.Name = info.Name
+	target.Type = info.Type
+	target.Host = info.Host
+	target.Port = info.Port
+	target.URL = info.URL
+	target.IntervalSeconds = info.IntervalSeconds
+	target.TimeoutSeconds = info.TimeoutSeconds
+	target.Enabled = info.Enabled
+	target.Description = info.Description
+	normalizeServerProbeTarget(&target)
+	if err := validateServerProbeTarget(&target); err != nil {
+		return nil, err
+	}
+	if err := s.storage.postgres.Save(&target).Error; err != nil {
+		return nil, err
+	}
+	result := serverProbeTargetToAPI(target)
+	return &result, nil
+}
+
+func (s *StorageAdapter) DeleteServerProbeTarget(id uint) error {
+	return s.storage.postgres.Delete(&ServerProbeTarget{}, id).Error
+}
+
+func (s *StorageAdapter) TestServerProbeTarget(id uint) (*api.ServerProbeResultInfo, error) {
+	var target ServerProbeTarget
+	if err := s.storage.postgres.First(&target, id).Error; err != nil {
+		return nil, err
+	}
+	result := runServerProbe(target)
+	if err := s.storage.recordServerProbeResult(target, result); err != nil {
+		return nil, err
+	}
+	var row ServerProbeResult
+	if err := s.storage.postgres.Where("target_id = ?", id).Order("checked_at DESC").First(&row).Error; err != nil {
+		return nil, err
+	}
+	info := serverProbeResultToAPI(row)
+	return &info, nil
+}
+
+func (s *StorageAdapter) GetServerProbeTarget(id uint) (*api.ServerProbeTargetInfo, error) {
+	var target ServerProbeTarget
+	if err := s.storage.postgres.First(&target, id).Error; err != nil {
+		return nil, err
+	}
+	info := serverProbeTargetToAPI(target)
+	return &info, nil
+}
+
+func (s *StorageAdapter) ListServerProbeResults(targetID uint, limit int) ([]api.ServerProbeResultInfo, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var rows []ServerProbeResult
+	if err := s.storage.postgres.Where("target_id = ?", targetID).Order("checked_at DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make([]api.ServerProbeResultInfo, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, serverProbeResultToAPI(row))
+	}
+	return result, nil
+}
+
+func serverProbeTargetFromAPI(info *api.ServerProbeTargetInfo) ServerProbeTarget {
+	if info == nil {
+		return ServerProbeTarget{Enabled: true, LastStatus: serverProbeStatusUnknown}
+	}
+	return ServerProbeTarget{
+		Name:            info.Name,
+		Type:            info.Type,
+		Host:            info.Host,
+		Port:            info.Port,
+		URL:             info.URL,
+		IntervalSeconds: info.IntervalSeconds,
+		TimeoutSeconds:  info.TimeoutSeconds,
+		Enabled:         info.Enabled,
+		Description:     info.Description,
+		LastStatus:      serverProbeStatusUnknown,
+	}
+}
+
+func serverProbeTargetToAPI(target ServerProbeTarget) api.ServerProbeTargetInfo {
+	return api.ServerProbeTargetInfo{
+		ID:              target.ID,
+		CreatedAt:       target.CreatedAt,
+		UpdatedAt:       target.UpdatedAt,
+		Name:            target.Name,
+		Type:            target.Type,
+		Host:            target.Host,
+		Port:            target.Port,
+		URL:             target.URL,
+		IntervalSeconds: target.IntervalSeconds,
+		TimeoutSeconds:  target.TimeoutSeconds,
+		Enabled:         target.Enabled,
+		Description:     target.Description,
+		LastStatus:      target.LastStatus,
+		LastCheckedAt:   target.LastCheckedAt,
+		LastSuccessAt:   target.LastSuccessAt,
+		LastError:       target.LastError,
+		LastLatencyMs:   target.LastLatencyMs,
+	}
+}
+
+func serverProbeResultToAPI(row ServerProbeResult) api.ServerProbeResultInfo {
+	return api.ServerProbeResultInfo{
+		ID:         row.ID,
+		CreatedAt:  row.CreatedAt,
+		TargetID:   row.TargetID,
+		CheckedAt:  row.CheckedAt,
+		Status:     row.Status,
+		LatencyMs:  row.LatencyMs,
+		Error:      row.Error,
+		HTTPStatus: row.HTTPStatus,
+	}
+}
+
 // calculateCrashFrequency 计算宕机频率
 func (s *StorageAdapter) calculateCrashFrequency(events []api.CrashEvent) string {
 	if len(events) == 0 {
@@ -2809,6 +2957,9 @@ func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRul
 	if err := s.replaceAlertRuleHosts(alertRule.ID, rule.HostIDs); err != nil {
 		return nil, err
 	}
+	if err := s.replaceAlertRuleServerProbeTargets(alertRule.ID, rule.ServerProbeTargetIDs); err != nil {
+		return nil, err
+	}
 
 	log.Printf("[CreateAlertRule] Rule saved successfully: ID=%d", alertRule.ID)
 
@@ -3054,6 +3205,11 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 			return err
 		}
 	}
+	if rule.ServerProbeTargetIDs != nil {
+		if err := s.replaceAlertRuleServerProbeTargets(id, rule.ServerProbeTargetIDs); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -3291,28 +3447,30 @@ func (s *StorageAdapter) alertRuleToAPI(rule *AlertRule) *api.AlertRuleInfo {
 	if len(hostIDs) == 0 && rule.HostID != "" {
 		hostIDs = []string{rule.HostID}
 	}
+	serverProbeTargetIDs := s.getAlertRuleServerProbeTargetIDs(rule.ID)
 
 	return &api.AlertRuleInfo{
-		ID:              rule.ID,
-		CreatedAt:       rule.CreatedAt,
-		UpdatedAt:       rule.UpdatedAt,
-		Name:            rule.Name,
-		Description:     rule.Description,
-		Enabled:         rule.Enabled,
-		Severity:        rule.Severity,
-		MetricType:      rule.MetricType,
-		HostID:          rule.HostID,
-		HostIDs:         hostIDs,
-		Mountpoint:      rule.Mountpoint,
-		ServicePort:     rule.ServicePort,
-		Condition:       rule.Condition,
-		Threshold:       rule.Threshold,
-		Duration:        rule.Duration,
-		NotifyChannels:  rule.NotifyChannels,
-		Receivers:       rule.Receivers,
-		SilenceStart:    rule.SilenceStart,
-		SilenceEnd:      rule.SilenceEnd,
-		InhibitDuration: rule.InhibitDuration,
+		ID:                   rule.ID,
+		CreatedAt:            rule.CreatedAt,
+		UpdatedAt:            rule.UpdatedAt,
+		Name:                 rule.Name,
+		Description:          rule.Description,
+		Enabled:              rule.Enabled,
+		Severity:             rule.Severity,
+		MetricType:           rule.MetricType,
+		HostID:               rule.HostID,
+		HostIDs:              hostIDs,
+		Mountpoint:           rule.Mountpoint,
+		ServicePort:          rule.ServicePort,
+		ServerProbeTargetIDs: serverProbeTargetIDs,
+		Condition:            rule.Condition,
+		Threshold:            rule.Threshold,
+		Duration:             rule.Duration,
+		NotifyChannels:       rule.NotifyChannels,
+		Receivers:            rule.Receivers,
+		SilenceStart:         rule.SilenceStart,
+		SilenceEnd:           rule.SilenceEnd,
+		InhibitDuration:      rule.InhibitDuration,
 	}
 }
 
@@ -3369,6 +3527,39 @@ func (s *StorageAdapter) getAlertRuleHostIDs(ruleID uint) []string {
 		hostIDs = append(hostIDs, row.HostID)
 	}
 	return hostIDs
+}
+
+func (s *StorageAdapter) replaceAlertRuleServerProbeTargets(ruleID uint, targetIDs []uint) error {
+	if err := s.storage.postgres.Where("rule_id = ?", ruleID).Delete(&AlertRuleServerProbeTarget{}).Error; err != nil {
+		return fmt.Errorf("failed to clear alert rule server probe targets: %w", err)
+	}
+	seen := make(map[uint]struct{})
+	for _, targetID := range targetIDs {
+		if targetID == 0 {
+			continue
+		}
+		if _, exists := seen[targetID]; exists {
+			continue
+		}
+		seen[targetID] = struct{}{}
+		if err := s.storage.postgres.Create(&AlertRuleServerProbeTarget{RuleID: ruleID, TargetID: targetID}).Error; err != nil {
+			return fmt.Errorf("failed to save alert rule server probe target %d: %w", targetID, err)
+		}
+	}
+	return nil
+}
+
+func (s *StorageAdapter) getAlertRuleServerProbeTargetIDs(ruleID uint) []uint {
+	var rows []AlertRuleServerProbeTarget
+	if err := s.storage.postgres.Where("rule_id = ?", ruleID).Order("id ASC").Find(&rows).Error; err != nil {
+		log.Printf("Failed to load alert rule server probe targets for rule %d: %v", ruleID, err)
+		return []uint{}
+	}
+	result := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, row.TargetID)
+	}
+	return result
 }
 
 // ============================================

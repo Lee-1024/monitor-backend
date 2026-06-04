@@ -79,6 +79,15 @@ type StorageInterface interface {
 	GetServiceStatus(hostID string) ([]ServiceInfo, error)
 	DeleteServiceStatus(hostID string) (int64, error)
 
+	// 服务端探测相关
+	ListServerProbeTargets() ([]ServerProbeTargetInfo, error)
+	CreateServerProbeTarget(target *ServerProbeTargetInfo) (*ServerProbeTargetInfo, error)
+	UpdateServerProbeTarget(id uint, target *ServerProbeTargetInfo) (*ServerProbeTargetInfo, error)
+	DeleteServerProbeTarget(id uint) error
+	TestServerProbeTarget(id uint) (*ServerProbeResultInfo, error)
+	ListServerProbeResults(targetID uint, limit int) ([]ServerProbeResultInfo, error)
+	GetServerProbeTarget(id uint) (*ServerProbeTargetInfo, error)
+
 	// 告警规则相关
 	CreateAlertRule(rule *AlertRuleInfo) (*AlertRuleInfo, error)
 	UpdateAlertRule(id uint, rule *AlertRuleInfo) error
@@ -227,6 +236,37 @@ type ServiceInfo struct {
 	PortAccessible bool      `json:"port_accessible,omitempty"` // 端口是否可访问
 }
 
+type ServerProbeTargetInfo struct {
+	ID              uint       `json:"id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	Name            string     `json:"name"`
+	Type            string     `json:"type"`
+	Host            string     `json:"host"`
+	Port            int        `json:"port"`
+	URL             string     `json:"url"`
+	IntervalSeconds int        `json:"interval_seconds"`
+	TimeoutSeconds  int        `json:"timeout_seconds"`
+	Enabled         bool       `json:"enabled"`
+	Description     string     `json:"description"`
+	LastStatus      string     `json:"last_status"`
+	LastCheckedAt   *time.Time `json:"last_checked_at,omitempty"`
+	LastSuccessAt   *time.Time `json:"last_success_at,omitempty"`
+	LastError       string     `json:"last_error"`
+	LastLatencyMs   int64      `json:"last_latency_ms"`
+}
+
+type ServerProbeResultInfo struct {
+	ID         uint      `json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	TargetID   uint      `json:"target_id"`
+	CheckedAt  time.Time `json:"checked_at"`
+	Status     string    `json:"status"`
+	LatencyMs  int64     `json:"latency_ms"`
+	Error      string    `json:"error"`
+	HTTPStatus int       `json:"http_status,omitempty"`
+}
+
 // AgentInfo Agent信息
 type AgentInfo struct {
 	HostID    string            `json:"host_id"`
@@ -314,26 +354,27 @@ type CrashAnalysis struct {
 
 // AlertRuleInfo 告警规则信息
 type AlertRuleInfo struct {
-	ID              uint       `json:"id"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	Name            string     `json:"name"`
-	Description     string     `json:"description"`
-	Enabled         bool       `json:"enabled"`
-	Severity        string     `json:"severity"`
-	MetricType      string     `json:"metric_type"`
-	HostID          string     `json:"host_id"`
-	HostIDs         []string   `json:"host_ids,omitempty"`
-	Mountpoint      string     `json:"mountpoint,omitempty"`   // 挂载点（仅用于 disk 指标）
-	ServicePort     int        `json:"service_port,omitempty"` // 服务端口（仅用于 service_port 指标）
-	Condition       string     `json:"condition"`
-	Threshold       float64    `json:"threshold"`
-	Duration        int        `json:"duration"`
-	NotifyChannels  []string   `json:"notify_channels"`
-	Receivers       []string   `json:"receivers"`
-	SilenceStart    *time.Time `json:"silence_start,omitempty"`
-	SilenceEnd      *time.Time `json:"silence_end,omitempty"`
-	InhibitDuration int        `json:"inhibit_duration"` // 抑制持续时间（秒）
+	ID                   uint       `json:"id"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	Name                 string     `json:"name"`
+	Description          string     `json:"description"`
+	Enabled              bool       `json:"enabled"`
+	Severity             string     `json:"severity"`
+	MetricType           string     `json:"metric_type"`
+	HostID               string     `json:"host_id"`
+	HostIDs              []string   `json:"host_ids,omitempty"`
+	Mountpoint           string     `json:"mountpoint,omitempty"`   // 挂载点（仅用于 disk 指标）
+	ServicePort          int        `json:"service_port,omitempty"` // 服务端口（仅用于 service_port 指标）
+	ServerProbeTargetIDs []uint     `json:"server_probe_target_ids,omitempty"`
+	Condition            string     `json:"condition"`
+	Threshold            float64    `json:"threshold"`
+	Duration             int        `json:"duration"`
+	NotifyChannels       []string   `json:"notify_channels"`
+	Receivers            []string   `json:"receivers"`
+	SilenceStart         *time.Time `json:"silence_start,omitempty"`
+	SilenceEnd           *time.Time `json:"silence_end,omitempty"`
+	InhibitDuration      int        `json:"inhibit_duration"` // 抑制持续时间（秒）
 }
 
 // AlertHistoryInfo 告警历史信息

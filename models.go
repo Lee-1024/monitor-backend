@@ -291,6 +291,40 @@ func (s DockerContainerSnapshot) ContainerKey() string {
 	return s.HostID + ":" + id
 }
 
+type ServerProbeTarget struct {
+	ID        uint           `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+
+	Name            string     `gorm:"size:255;not null" json:"name"`
+	Type            string     `gorm:"size:16;index;not null" json:"type"`
+	Host            string     `gorm:"size:255" json:"host"`
+	Port            int        `json:"port"`
+	URL             string     `gorm:"size:1024" json:"url"`
+	IntervalSeconds int        `gorm:"default:60" json:"interval_seconds"`
+	TimeoutSeconds  int        `gorm:"default:3" json:"timeout_seconds"`
+	Enabled         bool       `gorm:"default:true;index" json:"enabled"`
+	Description     string     `gorm:"type:text" json:"description"`
+	LastStatus      string     `gorm:"size:16;default:unknown;index" json:"last_status"`
+	LastCheckedAt   *time.Time `json:"last_checked_at,omitempty"`
+	LastSuccessAt   *time.Time `json:"last_success_at,omitempty"`
+	LastError       string     `gorm:"type:text" json:"last_error"`
+	LastLatencyMs   int64      `json:"last_latency_ms"`
+}
+
+type ServerProbeResult struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	TargetID   uint      `gorm:"index;not null" json:"target_id"`
+	CheckedAt  time.Time `gorm:"index;not null" json:"checked_at"`
+	Status     string    `gorm:"size:16;index;not null" json:"status"`
+	LatencyMs  int64     `json:"latency_ms"`
+	Error      string    `gorm:"type:text" json:"error"`
+	HTTPStatus int       `json:"http_status,omitempty"`
+}
+
 type AlertRule struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
 	CreatedAt time.Time `json:"created_at"`
@@ -326,6 +360,13 @@ type AlertRuleHost struct {
 	CreatedAt time.Time `json:"created_at"`
 	RuleID    uint      `gorm:"index:idx_alert_rule_host,unique;not null" json:"rule_id"`
 	HostID    string    `gorm:"index:idx_alert_rule_host,unique;size:64;not null" json:"host_id"`
+}
+
+type AlertRuleServerProbeTarget struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	RuleID    uint      `gorm:"index:idx_alert_rule_probe_target,unique;not null" json:"rule_id"`
+	TargetID  uint      `gorm:"index:idx_alert_rule_probe_target,unique;not null" json:"target_id"`
 }
 
 // AlertHistory 告警历史记录

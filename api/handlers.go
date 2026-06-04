@@ -1095,6 +1095,16 @@ func (s *APIServer) updateAlertRule(c *gin.Context) {
 	if servicePort, ok := updateData["service_port"].(float64); ok {
 		rule.ServicePort = int(servicePort)
 	}
+	if targetIDsRaw, exists := updateData["server_probe_target_ids"]; exists {
+		rule.ServerProbeTargetIDs = []uint{}
+		if targetIDs, ok := targetIDsRaw.([]interface{}); ok {
+			for _, raw := range targetIDs {
+				if value, ok := raw.(float64); ok && value > 0 {
+					rule.ServerProbeTargetIDs = append(rule.ServerProbeTargetIDs, uint(value))
+				}
+			}
+		}
+	}
 	if condition, ok := updateData["condition"].(string); ok && condition != "" {
 		rule.Condition = condition
 	}

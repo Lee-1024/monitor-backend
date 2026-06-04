@@ -92,11 +92,14 @@ func NewStorage(config *Config) *Storage {
 		&User{},
 		&ProcessSnapshot{},
 		&DockerContainerSnapshot{},
+		&ServerProbeTarget{},
+		&ServerProbeResult{},
 		&LogEntry{},
 		&ScriptExecution{},
 		&ServiceStatus{},
 		&AlertRule{},
 		&AlertRuleHost{},
+		&AlertRuleServerProbeTarget{},
 		&AlertHistory{},
 		&AlertSilence{},
 		&NotificationChannel{},
@@ -112,6 +115,7 @@ func NewStorage(config *Config) *Storage {
 		&OpsAssistantMessage{},
 	)
 	storage.ensureDockerSnapshotIndexes()
+	storage.ensureServerProbeIndexes()
 
 	// 初始化默认管理员用户
 	storage.InitDefaultAdmin()
@@ -130,6 +134,7 @@ func NewStorage(config *Config) *Storage {
 	storage.StartLogCleanup()
 	storage.StartProcessSnapshotCleanup()
 	storage.StartDockerSnapshotCleanup()
+	storage.StartServerProbeWorker()
 	storage.StartServiceStatusCleanup()
 
 	log.Println("Storage initialized successfully")
@@ -148,6 +153,15 @@ func (s *Storage) ensureDockerSnapshotIndexes() {
 		ON docker_container_snapshots (host_id, timestamp DESC, name)
 	`).Error; err != nil {
 		log.Printf("[Storage] Failed to create docker history index: %v", err)
+	}
+}
+
+func (s *Storage) ensureServerProbeIndexes() {
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_server_probe_results_target_time
+		ON server_probe_results (target_id, checked_at DESC)
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create server probe result index: %v", err)
 	}
 }
 
