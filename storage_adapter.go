@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"monitor-backend/api"
 	pb "monitor-backend/proto"
@@ -25,6 +26,13 @@ type StorageAdapter struct {
 }
 
 const agentOnlineTimeout = 30 * time.Second
+
+func agentListOrderExpr() clause.Expr {
+	return clause.Expr{
+		SQL:  "CASE WHEN status = 'online' AND last_seen > ? THEN 0 ELSE 1 END ASC, LOWER(COALESCE(NULLIF(hostname, ''), host_id)) ASC, host_id ASC",
+		Vars: []interface{}{time.Now().Add(-agentOnlineTimeout)},
+	}
+}
 
 func agentDisplayStatus(agent Agent, now time.Time) string {
 	if agent.Status == "online" && !agent.LastSeen.IsZero() && now.Sub(agent.LastSeen) > agentOnlineTimeout {
@@ -65,7 +73,7 @@ func (s *StorageAdapter) ListAgents(status string, page, pageSize int) ([]api.Ag
 
 	// 分页查询
 	offset := (page - 1) * pageSize
-	err := query.Offset(offset).Limit(pageSize).Order("last_seen DESC").Find(&agents).Error
+	err := query.Offset(offset).Limit(pageSize).Order(agentListOrderExpr()).Find(&agents).Error
 	if err != nil {
 		return nil, 0, err
 	}
