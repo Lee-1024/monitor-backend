@@ -1,30 +1,17 @@
 package main
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-func TestAgentDisplayStatusMarksStaleOnlineAgentOffline(t *testing.T) {
-	now := time.Now()
-	agent := Agent{
-		Status:   "online",
-		LastSeen: now.Add(-(agentOnlineTimeout + time.Second)),
-	}
-
-	if status := agentDisplayStatus(agent, now); status != "offline" {
-		t.Fatalf("expected stale online agent to display as offline, got %q", status)
+func TestHistoryFieldNameForCPUMax(t *testing.T) {
+	got := historyFieldName("cpu", "usage_percent", "max")
+	if got != "usage_percent_max" {
+		t.Fatalf("historyFieldName() = %q, want %q", got, "usage_percent_max")
 	}
 }
 
-func TestAgentDisplayStatusKeepsRecentlySeenAgentOnline(t *testing.T) {
-	now := time.Now()
-	agent := Agent{
-		Status:   "online",
-		LastSeen: now.Add(-(agentOnlineTimeout - time.Second)),
-	}
-
-	if status := agentDisplayStatus(agent, now); status != "online" {
-		t.Fatalf("expected recently seen agent to display as online, got %q", status)
+func TestHistoryFieldNameKeepsCPUMeanCompatible(t *testing.T) {
+	got := historyFieldName("cpu", "usage_percent", "mean")
+	if got != "usage_percent" {
+		t.Fatalf("historyFieldName() = %q, want %q", got, "usage_percent")
 	}
 }

@@ -295,6 +295,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 			history := &api.AlertHistoryInfo{
 				RuleID:       rule.ID,
 				RuleName:     rule.Name,
+				RuleDesc:     rule.Description,
 				HostID:       host.HostID,
 				Hostname:     host.Hostname,
 				Severity:     rule.Severity,
@@ -1122,6 +1123,7 @@ func (e *AlertEngine) triggerAlert(rule api.AlertRuleInfo, host api.AgentInfo, m
 	history := &api.AlertHistoryInfo{
 		RuleID:       rule.ID,
 		RuleName:     rule.Name,
+		RuleDesc:     rule.Description,
 		HostID:       host.HostID,
 		Hostname:     host.Hostname,
 		Severity:     rule.Severity,
@@ -1474,6 +1476,7 @@ func (e *AlertEngine) checkGPUUnavailableRule(rule api.AlertRuleInfo, agents []a
 		history := &api.AlertHistoryInfo{
 			RuleID:       rule.ID,
 			RuleName:     rule.Name,
+			RuleDesc:     rule.Description,
 			HostID:       host.HostID,
 			Hostname:     host.Hostname,
 			Severity:     rule.Severity,
@@ -1600,6 +1603,7 @@ func (e *AlertEngine) triggerServicePortAlert(rule api.AlertRuleInfo, host api.A
 	history := api.AlertHistoryInfo{
 		RuleID:      rule.ID,
 		RuleName:    rule.Name,
+		RuleDesc:    rule.Description,
 		HostID:      host.HostID,
 		Hostname:    host.Hostname,
 		Severity:    rule.Severity,
@@ -1667,6 +1671,7 @@ func (e *AlertEngine) triggerServerProbeAlert(rule api.AlertRuleInfo, target api
 	history := api.AlertHistoryInfo{
 		RuleID:      rule.ID,
 		RuleName:    rule.Name,
+		RuleDesc:    rule.Description,
 		HostID:      hostID,
 		Hostname:    target.Name,
 		Severity:    rule.Severity,
@@ -1801,6 +1806,14 @@ func getMetricTypeName(metricType string) string {
 		return "磁盘使用率"
 	case "network":
 		return "网络"
+	case "host_down":
+		return "主机宕机"
+	case "service_port":
+		return "服务端口"
+	case "server_probe":
+		return "服务端探测"
+	case "gpu_unavailable":
+		return "GPU不可用"
 	default:
 		return metricType
 	}

@@ -383,6 +383,7 @@ type AlertHistoryInfo struct {
 	CreatedAt    time.Time         `json:"created_at"`
 	RuleID       uint              `json:"rule_id"`
 	RuleName     string            `json:"rule_name"`
+	RuleDesc     string            `json:"rule_description"`
 	HostID       string            `json:"host_id"`
 	Hostname     string            `json:"hostname"`
 	Severity     string            `json:"severity"`

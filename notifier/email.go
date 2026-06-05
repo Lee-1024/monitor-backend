@@ -108,6 +108,7 @@ func (e *EmailNotifier) buildEmailBody(history *api.AlertHistoryInfo) string {
             <div class="detail">
                 <span class="detail-label">规则名称:</span> %s
             </div>
+            %s
             <div class="detail">
                 <span class="detail-label">主机:</span> %s (%s)
             </div>
@@ -139,7 +140,7 @@ func (e *EmailNotifier) buildEmailBody(history *api.AlertHistoryInfo) string {
     </div>
 </body>
 </html>
-`, statusBadge, history.RuleName, history.RuleName, history.Hostname, history.HostID, severityBadge, statusBadge, metricTypeDisplayName(history.MetricType), history.MetricValue, history.Threshold, history.FiredAt.Format("2006-01-02 15:04:05"), formatNotificationTime(time.Now()), history.Message)
+`, statusBadge, history.RuleName, history.RuleName, ruleDescriptionHTMLBlock(history.RuleDesc), history.Hostname, history.HostID, severityBadge, statusBadge, metricTypeDisplayName(history.MetricType), history.MetricValue, history.Threshold, history.FiredAt.Format("2006-01-02 15:04:05"), formatNotificationTime(time.Now()), history.Message)
 
 	return html
 }

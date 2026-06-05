@@ -1,6 +1,11 @@
 package notifier
 
-import "time"
+import (
+	"fmt"
+	"html"
+	"strings"
+	"time"
+)
 
 func metricTypeDisplayName(metricType string) string {
 	names := map[string]string{
@@ -10,6 +15,7 @@ func metricTypeDisplayName(metricType string) string {
 		"network":         "网络",
 		"host_down":       "主机宕机",
 		"service_port":    "服务端口",
+		"server_probe":    "服务端探测",
 		"gpu_unavailable": "GPU不可用",
 	}
 
@@ -21,4 +27,23 @@ func metricTypeDisplayName(metricType string) string {
 
 func formatNotificationTime(now time.Time) string {
 	return now.Format("2006-01-02 15:04:05")
+}
+
+func ruleDescriptionMarkdownLine(description string, prefix string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s**规则描述:** %s  \n", prefix, description)
+}
+
+func ruleDescriptionHTMLBlock(description string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+            <div class="detail">
+                <span class="detail-label">规则描述:</span> %s
+            </div>`, html.EscapeString(description))
 }

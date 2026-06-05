@@ -376,6 +376,7 @@ type AlertHistory struct {
 
 	RuleID     uint       `gorm:"index;not null" json:"rule_id"`      // 规则ID
 	RuleName   string     `gorm:"size:255" json:"rule_name"`          // 规则名称
+	RuleDesc   string     `gorm:"type:text" json:"rule_description"`  // 规则描述
 	HostID     string     `gorm:"index;size:64" json:"host_id"`       // 主机ID
 	Hostname   string     `gorm:"size:255" json:"hostname"`           // 主机名
 	Severity   string     `gorm:"size:32;index" json:"severity"`      // 严重程度

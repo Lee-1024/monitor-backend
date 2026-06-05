@@ -11,6 +11,7 @@ import (
 	"log"
 	"monitor-backend/api"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -40,6 +41,20 @@ func (f *FeishuNotifier) Send(history *api.AlertHistoryInfo, receivers []string)
 		log.Printf("[FeishuNotifier] Error: WebhookURL is empty")
 		return fmt.Errorf("feishu webhook URL is empty")
 	}
+	fields := []map[string]interface{}{
+		{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**主机:**\n%s (%s)", history.Hostname, history.HostID)}},
+		{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**状态:**\n%s", f.getStatusEmoji(history.Status))}},
+	}
+	if description := strings.TrimSpace(history.RuleDesc); description != "" {
+		fields = append(fields, map[string]interface{}{"is_short": false, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**规则描述:**\n%s", description)}})
+	}
+	fields = append(fields,
+		map[string]interface{}{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**严重程度:**\n%s", f.getSeverityEmoji(history.Severity))}},
+		map[string]interface{}{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**指标类型:**\n%s", metricTypeDisplayName(history.MetricType))}},
+		map[string]interface{}{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**指标值:**\n%.2f", history.MetricValue)}},
+		map[string]interface{}{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**触发时间:**\n%s", history.FiredAt.Format("2006-01-02 15:04:05"))}},
+		map[string]interface{}{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**通知时间:**\n%s", formatNotificationTime(time.Now()))}},
+	)
 
 	payload := map[string]interface{}{
 		"msg_type": "interactive",
@@ -56,16 +71,8 @@ func (f *FeishuNotifier) Send(history *api.AlertHistoryInfo, receivers []string)
 			},
 			"elements": []map[string]interface{}{
 				{
-					"tag": "div",
-					"fields": []map[string]interface{}{
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**主机:**\n%s (%s)", history.Hostname, history.HostID)}},
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**状态:**\n%s", f.getStatusEmoji(history.Status))}},
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**严重程度:**\n%s", f.getSeverityEmoji(history.Severity))}},
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**指标类型:**\n%s", metricTypeDisplayName(history.MetricType))}},
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**指标值:**\n%.2f", history.MetricValue)}},
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**触发时间:**\n%s", history.FiredAt.Format("2006-01-02 15:04:05"))}},
-						{"is_short": true, "text": map[string]string{"tag": "lark_md", "content": fmt.Sprintf("**通知时间:**\n%s", formatNotificationTime(time.Now()))}},
-					},
+					"tag":    "div",
+					"fields": fields,
 				},
 				{
 					"tag": "div",

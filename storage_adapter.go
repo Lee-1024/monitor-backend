@@ -675,8 +675,36 @@ func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, inter
 			metricType,
 			hostID,
 			interval)
+	} else if metricType == "cpu" {
+		// CPU：同时返回窗口平均值和峰值，平均值保持 usage_percent 兼容旧前端。
+		query = fmt.Sprintf(`meanData = from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> aggregateWindow(every: %s, fn: mean, createEmpty: false)
+  |> set(key: "aggregation", value: "mean")
+
+maxData = from(bucket: "%s")
+  |> range(start: %s)
+  |> filter(fn: (r) => r["_measurement"] == "%s")
+  |> filter(fn: (r) => r["host_id"] == "%s")
+  |> filter(fn: (r) => r["_field"] == "usage_percent")
+  |> aggregateWindow(every: %s, fn: max, createEmpty: false)
+  |> set(key: "aggregation", value: "max")
+
+union(tables: [meanData, maxData])`,
+			s.storage.config.InfluxDB.Bucket,
+			start,
+			metricType,
+			hostID,
+			interval,
+			s.storage.config.InfluxDB.Bucket,
+			start,
+			metricType,
+			hostID,
+			interval)
 	} else {
-		// CPU和内存：正常查询
+		// 内存等指标：正常查询
 		query = fmt.Sprintf(`from(bucket: "%s")
   |> range(start: %s)
   |> filter(fn: (r) => r["_measurement"] == "%s")
@@ -722,7 +750,8 @@ func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, inter
 		}
 
 		// 获取字段和值
-		fieldName := record.Field()
+		aggregation, _ := record.ValueByKey("aggregation").(string)
+		fieldName := historyFieldName(metricType, record.Field(), aggregation)
 		fieldValue := record.Value()
 
 		if fieldValue != nil && fieldName != "" {
@@ -789,6 +818,13 @@ func (s *StorageAdapter) GetHistoryMetrics(hostID, metricType, start, end, inter
 
 	log.Printf("Returning %d data points", len(points))
 	return points, nil
+}
+
+func historyFieldName(metricType, fieldName, aggregation string) string {
+	if metricType == "cpu" && fieldName == "usage_percent" && aggregation == "max" {
+		return "usage_percent_max"
+	}
+	return fieldName
 }
 
 // GetDiskHistoryByMountpoint 获取指定挂载点的磁盘历史数据
@@ -3571,6 +3607,7 @@ func (s *StorageAdapter) CreateAlertHistory(history *api.AlertHistoryInfo) (*api
 	alertHistory := &AlertHistory{
 		RuleID:       history.RuleID,
 		RuleName:     history.RuleName,
+		RuleDesc:     history.RuleDesc,
 		HostID:       history.HostID,
 		Hostname:     history.Hostname,
 		Severity:     history.Severity,
@@ -3695,6 +3732,7 @@ func (s *StorageAdapter) alertHistoryToAPI(history *AlertHistory) *api.AlertHist
 		CreatedAt:    history.CreatedAt,
 		RuleID:       history.RuleID,
 		RuleName:     history.RuleName,
+		RuleDesc:     history.RuleDesc,
 		HostID:       history.HostID,
 		Hostname:     history.Hostname,
 		Severity:     history.Severity,

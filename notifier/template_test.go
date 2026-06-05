@@ -13,6 +13,7 @@ func TestMetricTypeDisplayNameUsesChinese(t *testing.T) {
 		"network":         "网络",
 		"host_down":       "主机宕机",
 		"service_port":    "服务端口",
+		"server_probe":    "服务端探测",
 		"gpu_unavailable": "GPU不可用",
 		"custom_metric":   "custom_metric",
 	}
@@ -29,5 +30,15 @@ func TestNotificationTimeUsesStandardFormat(t *testing.T) {
 
 	if got := formatNotificationTime(now); got != "2026-05-28 15:04:05" {
 		t.Fatalf("expected formatted notification time, got %q", got)
+	}
+}
+
+func TestRuleDescriptionNotificationLine(t *testing.T) {
+	if got := ruleDescriptionMarkdownLine("定位到服务端探测目标，确认业务入口是否可访问", ""); got != "**规则描述:** 定位到服务端探测目标，确认业务入口是否可访问  \n" {
+		t.Fatalf("expected markdown description line, got %q", got)
+	}
+
+	if got := ruleDescriptionMarkdownLine("", ""); got != "" {
+		t.Fatalf("expected empty markdown description line, got %q", got)
 	}
 }
