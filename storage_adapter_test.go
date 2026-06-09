@@ -26,3 +26,11 @@ func TestAgentListOrderExprUsesStableDisplayOrder(t *testing.T) {
 		t.Fatalf("agentListOrderExpr Vars length = %d, want 1", len(expr.Vars))
 	}
 }
+
+func TestProcessHistorySelectColumnsOnlyIncludesChartFields(t *testing.T) {
+	got := processHistorySelectColumns()
+	want := "timestamp, name, cpu_percent, memory_percent, memory_bytes"
+	if got != want {
+		t.Fatalf("processHistorySelectColumns() = %q, want %q", got, want)
+	}
+}

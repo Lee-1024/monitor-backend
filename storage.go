@@ -114,6 +114,7 @@ func NewStorage(config *Config) *Storage {
 		&OpsAssistantSession{},
 		&OpsAssistantMessage{},
 	)
+	storage.ensureProcessSnapshotIndexes()
 	storage.ensureDockerSnapshotIndexes()
 	storage.ensureServerProbeIndexes()
 
@@ -139,6 +140,29 @@ func NewStorage(config *Config) *Storage {
 
 	log.Println("Storage initialized successfully")
 	return storage
+}
+
+func (s *Storage) ensureProcessSnapshotIndexes() {
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_process_history_host_time_name
+		ON process_snapshots (host_id, timestamp DESC, name)
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create process history index: %v", err)
+	}
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_process_history_cpu_top
+		ON process_snapshots (host_id, timestamp DESC, name, cpu_percent)
+		WHERE cpu_percent > 0
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create process CPU history index: %v", err)
+	}
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_process_history_memory_top
+		ON process_snapshots (host_id, timestamp DESC, name, memory_percent)
+		WHERE memory_percent > 0
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create process memory history index: %v", err)
+	}
 }
 
 func (s *Storage) ensureDockerSnapshotIndexes() {

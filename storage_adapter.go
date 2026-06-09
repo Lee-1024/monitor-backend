@@ -1743,7 +1743,8 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 // GetProcessHistory 获取进程历史数据（按进程名分组）
 func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int, metricType string) ([]api.ProcessHistoryPoint, error) {
 	var processes []ProcessSnapshot
-	query := s.storage.postgres.Model(&ProcessSnapshot{})
+	query := s.storage.postgres.Model(&ProcessSnapshot{}).
+		Select(processHistorySelectColumns())
 
 	if hostID != "" {
 		query = query.Where("host_id = ?", hostID)
@@ -1791,6 +1792,10 @@ func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string,
 	}
 
 	return result, nil
+}
+
+func processHistorySelectColumns() string {
+	return "timestamp, name, cpu_percent, memory_percent, memory_bytes"
 }
 
 // ============================================
