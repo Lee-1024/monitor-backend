@@ -1685,8 +1685,8 @@ func paginateProcessInfos(items []api.ProcessInfo, page, pageSize int) []api.Pro
 	return items[start:end]
 }
 
-// GetTopProcessNamesByHistory 从历史数据中获取CPU/内存占用最高的前N个进程实例
-func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]api.ProcessHistoryTarget, error) {
+// GetTopProcessNamesByHistory 从历史数据中获取CPU/内存占用最高的前N个进程名
+func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error) {
 	if topN <= 0 {
 		topN = 10
 	}
@@ -1697,12 +1697,11 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 		orderBy = "memory_percent"
 	}
 
-	// 查询指定时间范围内的进程实例，按CPU或内存使用率降序排序，取前N个 name+pid。
-	// 只按进程名聚合会把同名多进程混在一起，趋势图也无法展示 PID。
+	// 趋势图按进程名展示连续曲线，PID 在历史点中展示当前采样命中的进程实例。
 	sql := fmt.Sprintf(`
-		SELECT name, pid
+		SELECT name
 		FROM (
-			SELECT name, pid, MAX(%s) as max_usage
+			SELECT name, MAX(%s) as max_usage
 			FROM process_snapshots
 			WHERE timestamp >= ? AND timestamp <= ? AND %s > 0`, orderBy, orderBy)
 
@@ -1713,15 +1712,14 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 	}
 
 	sql += fmt.Sprintf(`
-			GROUP BY name, pid
-			ORDER BY max_usage DESC, name ASC, pid ASC
+			GROUP BY name
+			ORDER BY max_usage DESC, name ASC
 			LIMIT %d
 		) as top_processes`, topN)
 
 	// 使用 Raw 查询获取进程名列表
 	type ProcessNameResult struct {
 		Name string `gorm:"column:name"`
-		PID  int32  `gorm:"column:pid"`
 	}
 	var results []ProcessNameResult
 	err := s.storage.postgres.Raw(sql, args...).Scan(&results).Error
@@ -1730,65 +1728,62 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 		return nil, fmt.Errorf("failed to get top process names: %v", err)
 	}
 
-	targets := make([]api.ProcessHistoryTarget, 0, len(results))
+	processNames := make([]string, 0, len(results))
 	for _, r := range results {
 		if r.Name != "" {
-			targets = append(targets, api.ProcessHistoryTarget{
-				ProcessName: r.Name,
-				PID:         r.PID,
-			})
+			processNames = append(processNames, r.Name)
 		}
 	}
 
-	log.Printf("Found top %d process targets by %s: %v", len(targets), metricType, targets)
-	return targets, nil
+	log.Printf("Found top %d process names by %s: %v", len(processNames), metricType, processNames)
+	return processNames, nil
 }
 
-// GetProcessHistory 获取进程历史数据（按进程实例分组）
-func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, processTargets []api.ProcessHistoryTarget, start, end time.Time, limit int, metricType string) ([]api.ProcessHistoryPoint, error) {
+// GetProcessHistory 获取进程历史数据（按进程名分组，每个采样点保留命中的PID）
+func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int, metricType string) ([]api.ProcessHistoryPoint, error) {
 	var processes []ProcessSnapshot
-	query := s.storage.postgres.Model(&ProcessSnapshot{}).
-		Select(processHistorySelectColumns())
+	orderBy := "cpu_percent"
+	if metricType == "memory" {
+		orderBy = "memory_percent"
+	}
 
+	sql := fmt.Sprintf(`
+		SELECT timestamp, name, pid, cpu_percent, memory_percent, memory_bytes
+		FROM (
+			SELECT timestamp, name, pid, cpu_percent, memory_percent, memory_bytes,
+				ROW_NUMBER() OVER (PARTITION BY timestamp, name ORDER BY %s DESC, pid ASC) AS rn
+			FROM process_snapshots
+			WHERE %s > 0`, orderBy, orderBy)
+	args := []interface{}{}
 	if hostID != "" {
-		query = query.Where("host_id = ?", hostID)
+		sql += " AND host_id = ?"
+		args = append(args, hostID)
 	}
 
 	if !start.IsZero() {
-		query = query.Where("timestamp >= ?", start)
+		sql += " AND timestamp >= ?"
+		args = append(args, start)
 	}
 
 	if !end.IsZero() {
-		query = query.Where("timestamp <= ?", end)
+		sql += " AND timestamp <= ?"
+		args = append(args, end)
 	}
 
-	if len(processTargets) > 0 {
-		targetQuery := s.storage.postgres.Where("1 = 0")
-		for _, target := range processTargets {
-			targetQuery = targetQuery.Or("(name = ? AND pid = ?)", target.ProcessName, target.PID)
-		}
-		query = query.Where(targetQuery)
-	} else if len(processNames) > 0 {
-		query = query.Where("name IN ?", processNames)
+	if len(processNames) > 0 {
+		sql += " AND name IN ?"
+		args = append(args, processNames)
 	}
 
-	if metricType == "memory" {
-		query = query.Where("memory_percent > 0")
-	} else {
-		query = query.Where("cpu_percent > 0")
-	}
-
+	sql += ") ranked WHERE rn = 1 ORDER BY timestamp ASC, name ASC"
 	if limit > 0 {
-		query = query.Limit(limit)
+		sql += fmt.Sprintf(" LIMIT %d", limit)
 	}
 
-	err := query.Order("timestamp DESC").Find(&processes).Error
+	err := s.storage.postgres.Raw(sql, args...).Scan(&processes).Error
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(processes, func(i, j int) bool {
-		return processes[i].Timestamp.Before(processes[j].Timestamp)
-	})
 
 	result := make([]api.ProcessHistoryPoint, len(processes))
 	for i, p := range processes {

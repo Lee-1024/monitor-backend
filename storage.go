@@ -163,6 +163,20 @@ func (s *Storage) ensureProcessSnapshotIndexes() {
 	`).Error; err != nil {
 		log.Printf("[Storage] Failed to create process memory history index: %v", err)
 	}
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_process_history_cpu_name_time
+		ON process_snapshots (host_id, name, timestamp DESC, cpu_percent DESC, pid)
+		WHERE cpu_percent > 0
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create process CPU name history index: %v", err)
+	}
+	if err := s.postgres.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_process_history_memory_name_time
+		ON process_snapshots (host_id, name, timestamp DESC, memory_percent DESC, pid)
+		WHERE memory_percent > 0
+	`).Error; err != nil {
+		log.Printf("[Storage] Failed to create process memory name history index: %v", err)
+	}
 }
 
 func (s *Storage) ensureDockerSnapshotIndexes() {
