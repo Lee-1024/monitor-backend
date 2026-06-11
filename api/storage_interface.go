@@ -60,8 +60,8 @@ type StorageInterface interface {
 	// 进程监控相关
 	GetProcesses(hostID string, limit int) ([]ProcessInfo, error)
 	GetProcessesWithPagination(hostID string, page, pageSize int) ([]ProcessInfo, int64, error)
-	GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int, metricType string) ([]ProcessHistoryPoint, error)
-	GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]string, error)
+	GetProcessHistory(hostID string, processNames []string, processTargets []ProcessHistoryTarget, start, end time.Time, limit int, metricType string) ([]ProcessHistoryPoint, error)
+	GetTopProcessNamesByHistory(hostID string, start, end time.Time, metricType string, topN int) ([]ProcessHistoryTarget, error)
 
 	// Docker鐩戞帶鐩稿叧
 	GetDockerContainersWithPagination(hostID string, page, pageSize int) ([]DockerContainerInfo, int64, error)
@@ -146,9 +146,15 @@ type StorageInterface interface {
 type ProcessHistoryPoint struct {
 	Timestamp     time.Time `json:"timestamp"`
 	ProcessName   string    `json:"process_name"`
+	PID           int32     `json:"pid"`
 	CPUPercent    float64   `json:"cpu_percent"`
 	MemoryPercent float64   `json:"memory_percent"`
 	MemoryBytes   uint64    `json:"memory_bytes"`
+}
+
+type ProcessHistoryTarget struct {
+	ProcessName string `json:"process_name"`
+	PID         int32  `json:"pid"`
 }
 
 // ProcessInfo 进程信息
