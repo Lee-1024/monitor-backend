@@ -699,6 +699,8 @@ func (c *LLMClient) StreamInspectionReport(inspectionData map[string]interface{}
 func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interface{}) string {
 	report, _ := inspectionData["report"].(map[string]interface{})
 	records, _ := inspectionData["records"].([]map[string]interface{})
+	portServices, _ := inspectionData["port_services"].([]map[string]interface{})
+	serverProbeTargets, _ := inspectionData["server_probe_targets"].([]map[string]interface{})
 
 	// 提取报告统计信息和巡检日期
 	totalHosts := 0
@@ -738,9 +740,15 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 
 	// 格式化巡检日期
 	inspectionDateStr := inspectionDate.Format("2006年01月02日 15:04")
+	portServicesText := formatPortServicesForInspectionReport(portServices)
+	serverProbeTargetsText := formatServerProbeTargetsForInspectionReport(serverProbeTargets)
 
 	// 格式化主机记录信息
 	recordsText := ""
+	serverProbeTotal := 0
+	serverProbeUp := 0
+	serverProbeDown := 0
+	serverProbeUnknown := 0
 	for i, record := range records {
 		hostname, _ := record["hostname"].(string)
 		hostID, _ := record["host_id"].(string)
@@ -758,6 +766,17 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 		}
 		if v, ok := record["disk_usage"].(float64); ok {
 			diskUsage = v
+		}
+
+		recordServerProbeTotal := mapNumberToInt(record["server_probe_count"])
+		recordServerProbeUp := mapNumberToInt(record["server_probe_up"])
+		recordServerProbeDown := mapNumberToInt(record["server_probe_down"])
+		recordServerProbeUnknown := mapNumberToInt(record["server_probe_unknown"])
+		if i == 0 {
+			serverProbeTotal = recordServerProbeTotal
+			serverProbeUp = recordServerProbeUp
+			serverProbeDown = recordServerProbeDown
+			serverProbeUnknown = recordServerProbeUnknown
 		}
 
 		issues := []string{}
@@ -783,6 +802,10 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 		recordsText += fmt.Sprintf("- CPU使用率: %.1f%%\n", cpuUsage)
 		recordsText += fmt.Sprintf("- 内存使用率: %.1f%%\n", memoryUsage)
 		recordsText += fmt.Sprintf("- 磁盘使用率: %.1f%%\n", diskUsage)
+		if recordServerProbeTotal > 0 {
+			recordsText += fmt.Sprintf("- 服务端探测: 总数 %d，正常 %d，失败 %d，未知 %d\n",
+				recordServerProbeTotal, recordServerProbeUp, recordServerProbeDown, recordServerProbeUnknown)
+		}
 
 		if len(issues) > 0 {
 			recordsText += "- 问题:\n"
@@ -807,8 +830,15 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 - 离线主机: %d
 - 告警主机: %d
 - 严重告警主机: %d
+- 服务端探测: 总数 %d，正常 %d，失败 %d，未知 %d
 
 ## 主机巡检详情
+%s
+
+## 配置端口服务状态
+%s
+
+## 服务端探测目标状态
 %s
 
 请按照以下格式生成详细的巡检日报（使用Markdown格式）：
@@ -828,7 +858,9 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 （详细列出发现的问题、警告和严重告警，按严重程度分类）
 
 ## 五、服务状态
-（统计服务运行状态，列出异常服务）
+（不要写主机在线/离线状态。本节只统计“配置端口服务状态”和“服务端探测目标状态”：
+- 配置端口服务：按服务名称、主机、端口、运行状态、端口是否可访问汇总，列出异常或不可访问项
+- 服务端探测目标：按目标名称、类型、地址、最近状态、延迟、错误信息汇总，列出失败或未知项）
 
 ## 六、关键发现
 （总结本次巡检的关键发现，包括但不限于：
@@ -850,7 +882,110 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 （列出需要立即处理的问题和后续跟进事项）
 
 请用中文撰写，内容要专业、详细、可操作。`,
-		totalHosts, onlineHosts, offlineHosts, warningHosts, criticalHosts, recordsText, inspectionDateStr)
+		totalHosts, onlineHosts, offlineHosts, warningHosts, criticalHosts,
+		serverProbeTotal, serverProbeUp, serverProbeDown, serverProbeUnknown,
+		recordsText, portServicesText, serverProbeTargetsText, inspectionDateStr)
+}
+
+func mapNumberToInt(value interface{}) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case int32:
+		return int(v)
+	case uint:
+		return int(v)
+	case uint64:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func formatPortServicesForInspectionReport(services []map[string]interface{}) string {
+	if len(services) == 0 {
+		return "未配置端口服务，或当前没有端口服务上报数据。\n"
+	}
+
+	running := 0
+	abnormal := 0
+	text := fmt.Sprintf("- 配置端口服务总数: %d\n", len(services))
+	for _, service := range services {
+		status, _ := service["status"].(string)
+		portAccessible, _ := service["port_accessible"].(bool)
+		if status == "running" && portAccessible {
+			running++
+		} else {
+			abnormal++
+		}
+	}
+	text += fmt.Sprintf("- 运行且端口可访问: %d\n", running)
+	text += fmt.Sprintf("- 异常或端口不可访问: %d\n", abnormal)
+	text += "- 明细:\n"
+	for _, service := range services {
+		text += fmt.Sprintf("  - %s / %s:%d，状态=%s，端口可访问=%t\n",
+			mapString(service["host_id"]),
+			mapString(service["name"]),
+			mapNumberToInt(service["port"]),
+			mapString(service["status"]),
+			mapBool(service["port_accessible"]))
+	}
+	return text
+}
+
+func formatServerProbeTargetsForInspectionReport(targets []map[string]interface{}) string {
+	if len(targets) == 0 {
+		return "未配置服务端探测目标。\n"
+	}
+
+	up := 0
+	down := 0
+	unknown := 0
+	text := fmt.Sprintf("- 启用探测目标总数: %d\n", len(targets))
+	for _, target := range targets {
+		switch mapString(target["last_status"]) {
+		case "up":
+			up++
+		case "down":
+			down++
+		default:
+			unknown++
+		}
+	}
+	text += fmt.Sprintf("- 正常: %d\n", up)
+	text += fmt.Sprintf("- 失败: %d\n", down)
+	text += fmt.Sprintf("- 未知: %d\n", unknown)
+	text += "- 明细:\n"
+	for _, target := range targets {
+		text += fmt.Sprintf("  - %s，类型=%s，地址=%s，状态=%s，延迟=%dms，错误=%s\n",
+			mapString(target["name"]),
+			mapString(target["type"]),
+			mapString(target["address"]),
+			mapString(target["last_status"]),
+			mapNumberToInt(target["last_latency_ms"]),
+			mapString(target["last_error"]))
+	}
+	return text
+}
+
+func mapString(value interface{}) string {
+	if v, ok := value.(string); ok {
+		return v
+	}
+	return ""
+}
+
+func mapBool(value interface{}) bool {
+	if v, ok := value.(bool); ok {
+		return v
+	}
+	return false
 }
 
 // GenerateInspectionReport 非流式生成巡检日报（用于不支持流式的提供商）

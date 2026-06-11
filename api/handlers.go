@@ -414,32 +414,13 @@ func (s *APIServer) deleteCrashEvents(c *gin.Context) {
 func (s *APIServer) getCrashAnalysis(c *gin.Context) {
 	hostID := c.Param("host_id")
 
-	// 获取最近的宕机事件
-	events, err := s.storage.GetCrashEvents(hostID, 10)
+	analysis, err := s.storage.GetCrashAnalysis(hostID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, Response{
 			Code:    500,
 			Message: "Failed to get crash analysis",
 		})
 		return
-	}
-
-	// 统计已恢复数量
-	resolvedCount := 0
-	for _, event := range events {
-		if event.IsResolved {
-			resolvedCount++
-		}
-	}
-
-	// 统计分析
-	analysis := map[string]interface{}{
-		"total_crashes":   len(events),
-		"resolved_count":  resolvedCount,
-		"recent_crashes":  events,
-		"crash_frequency": calculateCrashFrequency(events),
-		"main_reasons":    analyzeMainReasons(events),
-		"avg_downtime":    calculateAvgDowntime(events),
 	}
 
 	c.JSON(http.StatusOK, Response{

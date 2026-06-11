@@ -538,6 +538,12 @@ type InspectionRecord struct {
 	ServiceStopped int `json:"service_stopped"` // 停止的服务数
 	ServiceFailed  int `json:"service_failed"`  // 失败的服务数
 
+	// 服务端探测状态
+	ServerProbeCount   int `json:"server_probe_count"`   // 启用的服务端探测目标总数
+	ServerProbeUp      int `json:"server_probe_up"`      // 探测正常数
+	ServerProbeDown    int `json:"server_probe_down"`    // 探测失败数
+	ServerProbeUnknown int `json:"server_probe_unknown"` // 探测未知数
+
 	// 异常和告警
 	AnomalyCount       int `json:"anomaly_count"`        // 异常事件数量
 	AlertCount         int `json:"alert_count"`          // 告警数量

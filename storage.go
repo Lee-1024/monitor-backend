@@ -358,7 +358,11 @@ func (s *Storage) CreateCrashEvent(hostID, hostname string, lastSeen time.Time) 
 	}
 
 	// 分析宕机原因
-	reason := s.AnalyzeCrashReason(lastMetrics)
+	rules, err := s.GetCrashReasonAlertRules(hostID)
+	if err != nil {
+		log.Printf("Failed to get crash reason alert rules for %s: %v", hostID, err)
+	}
+	reason := AnalyzeCrashReasonWithRules(lastMetrics, rules)
 
 	// 创建宕机事件
 	event := &CrashEvent{
@@ -474,8 +478,51 @@ func (s *Storage) GetLastMetricsBeforeTime(hostID string, beforeTime time.Time) 
 
 // AnalyzeCrashReason 分析宕机原因
 func (s *Storage) AnalyzeCrashReason(metrics *LastMetrics) string {
-	reasons := make([]string, 0)
+	return AnalyzeCrashReasonWithRules(metrics, nil)
+}
 
+func (s *Storage) GetCrashReasonAlertRules(hostID string) ([]AlertRule, error) {
+	var rules []AlertRule
+	err := s.postgres.
+		Where("enabled = ? AND metric_type IN ? AND (host_id = '' OR host_id = ? OR id IN (?))",
+			true,
+			[]string{"cpu", "memory", "disk"},
+			hostID,
+			s.postgres.Model(&AlertRuleHost{}).Select("rule_id").Where("host_id = ?", hostID),
+		).
+		Order("severity ASC, id ASC").
+		Find(&rules).Error
+	return rules, err
+}
+
+func AnalyzeCrashReasonWithRules(metrics *LastMetrics, rules []AlertRule) string {
+	if metrics == nil {
+		metrics = &LastMetrics{}
+	}
+
+	if len(rules) > 0 {
+		reasons := make([]string, 0)
+		for _, rule := range rules {
+			value, ok := crashMetricValue(metrics, rule.MetricType)
+			if !ok {
+				continue
+			}
+			if checkCrashRuleCondition(value, rule.Condition, rule.Threshold) {
+				reasons = append(reasons, fmt.Sprintf("%s触发告警规则「%s」(当前%.1f%%，阈值%s%.1f%%)",
+					crashMetricDisplayName(rule.MetricType),
+					rule.Name,
+					value,
+					crashConditionDisplay(rule.Condition),
+					rule.Threshold,
+				))
+			}
+		}
+		if len(reasons) > 0 {
+			return "可能原因：" + strings.Join(reasons, "；")
+		}
+	}
+
+	reasons := make([]string, 0)
 	// CPU过高
 	if metrics.CPU > 90 {
 		reasons = append(reasons, fmt.Sprintf("CPU负载过高(%.1f%%)", metrics.CPU))
@@ -504,6 +551,70 @@ func (s *Storage) AnalyzeCrashReason(metrics *LastMetrics) string {
 	}
 
 	return result
+}
+
+func crashMetricValue(metrics *LastMetrics, metricType string) (float64, bool) {
+	switch metricType {
+	case "cpu":
+		return metrics.CPU, true
+	case "memory":
+		return metrics.Memory, true
+	case "disk":
+		return metrics.Disk, true
+	default:
+		return 0, false
+	}
+}
+
+func checkCrashRuleCondition(value float64, condition string, threshold float64) bool {
+	switch condition {
+	case "gt":
+		return value > threshold
+	case "gte":
+		return value >= threshold
+	case "lt":
+		return value < threshold
+	case "lte":
+		return value <= threshold
+	case "eq":
+		return value == threshold
+	case "neq":
+		return value != threshold
+	default:
+		return value > threshold
+	}
+}
+
+func crashConditionDisplay(condition string) string {
+	switch condition {
+	case "gt":
+		return ">"
+	case "gte":
+		return ">="
+	case "lt":
+		return "<"
+	case "lte":
+		return "<="
+	case "eq":
+		return "="
+	case "neq":
+		return "!="
+	default:
+		return ">"
+	}
+}
+
+func crashMetricDisplayName(metricType string) string {
+	switch metricType {
+	case "cpu":
+		return "CPU使用率"
+	case "memory":
+		return "内存使用率"
+	case "disk":
+		return "磁盘使用率"
+	default:
+		return metricType
+	}
 }
 
 // ResolveCrashEvent 标记宕机事件已恢复

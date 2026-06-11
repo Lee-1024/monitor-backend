@@ -1463,7 +1463,7 @@ func (s *StorageAdapter) GetCrashAnalysis(hostID string) (*api.CrashAnalysis, er
 		ResolvedCount:  resolvedCount,
 		RecentCrashes:  events,
 		CrashFrequency: s.calculateCrashFrequency(events),
-		MainReasons:    s.analyzeMainReasons(events),
+		MainReasons:    s.analyzeMainReasons(hostID, events),
 		AvgDowntime:    s.calculateAvgDowntime(events),
 	}
 
@@ -2733,25 +2733,73 @@ func (s *StorageAdapter) calculateCrashFrequency(events []api.CrashEvent) string
 }
 
 // analyzeMainReasons 分析主要原因
-func (s *StorageAdapter) analyzeMainReasons(events []api.CrashEvent) map[string]int {
+func (s *StorageAdapter) analyzeMainReasons(hostID string, events []api.CrashEvent) map[string]int {
 	reasons := make(map[string]int)
+	rulesByHost := make(map[string][]AlertRule)
+	if hostID != "" {
+		rules, err := s.storage.GetCrashReasonAlertRules(hostID)
+		if err != nil {
+			log.Printf("Failed to get crash reason alert rules for %s: %v", hostID, err)
+		}
+		rulesByHost[hostID] = rules
+	}
 
 	for _, event := range events {
+		eventRules, ok := rulesByHost[event.HostID]
+		if !ok {
+			rules, err := s.storage.GetCrashReasonAlertRules(event.HostID)
+			if err != nil {
+				log.Printf("Failed to get crash reason alert rules for %s: %v", event.HostID, err)
+			}
+			eventRules = rules
+			rulesByHost[event.HostID] = eventRules
+		}
+
+		matched := false
+		metrics := &LastMetrics{CPU: event.LastCPU, Memory: event.LastMemory, Disk: event.LastDisk}
+		for _, rule := range eventRules {
+			value, valueOK := crashMetricValue(metrics, rule.MetricType)
+			if !valueOK || !checkCrashRuleCondition(value, rule.Condition, rule.Threshold) {
+				continue
+			}
+			reasons[crashMainReasonName(rule.MetricType)]++
+			matched = true
+		}
+		if matched {
+			continue
+		}
+
 		if event.LastCPU > 90 {
 			reasons["CPU过高"]++
+			matched = true
 		}
 		if event.LastMemory > 95 {
 			reasons["内存不足"]++
+			matched = true
 		}
 		if event.LastDisk > 95 {
 			reasons["磁盘满"]++
+			matched = true
 		}
-		if event.LastCPU < 90 && event.LastMemory < 95 && event.LastDisk < 95 {
+		if !matched {
 			reasons["网络/其他"]++
 		}
 	}
 
 	return reasons
+}
+
+func crashMainReasonName(metricType string) string {
+	switch metricType {
+	case "cpu":
+		return "CPU过高"
+	case "memory":
+		return "内存不足"
+	case "disk":
+		return "磁盘满"
+	default:
+		return "网络/其他"
+	}
 }
 
 // calculateAvgDowntime 计算平均宕机时长

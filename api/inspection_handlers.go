@@ -43,9 +43,21 @@ type InspectionRecordInfo struct {
 	ServiceRunning     int                    `json:"service_running"`
 	ServiceStopped     int                    `json:"service_stopped"`
 	ServiceFailed      int                    `json:"service_failed"`
+	ServerProbeCount   int                    `json:"server_probe_count"`
+	ServerProbeUp      int                    `json:"server_probe_up"`
+	ServerProbeDown    int                    `json:"server_probe_down"`
+	ServerProbeUnknown int                    `json:"server_probe_unknown"`
 	AnomalyCount       int                    `json:"anomaly_count"`
 	AlertCount         int                    `json:"alert_count"`
 	CriticalAlertCount int                    `json:"critical_alert_count"`
+}
+
+type serverProbeSummary struct {
+	Total         int
+	Up            int
+	Down          int
+	Unknown       int
+	FailedTargets []string
 }
 
 // InspectionReportInfo 巡检日报信息
@@ -225,6 +237,12 @@ func (s *APIServer) performInspection(reportID uint, date time.Time) {
 	warningHosts := 0
 	criticalHosts := 0
 
+	probeTargets, err := s.storage.ListServerProbeTargets()
+	if err != nil {
+		log.Printf("[Inspection] Failed to get server probe targets: %v", err)
+	}
+	probeSummary := summarizeServerProbeTargets(probeTargets)
+
 	// 遍历每个主机进行巡检
 	for _, agent := range agents {
 		hostID, _ := agent["host_id"].(string)
@@ -233,7 +251,7 @@ func (s *APIServer) performInspection(reportID uint, date time.Time) {
 
 		log.Printf("[Inspection] Inspecting host: %s (%s), status: %s", hostID, hostname, status)
 
-		record := s.inspectHost(hostID, hostname, status, reportID)
+		record := s.inspectHost(hostID, hostname, status, reportID, probeSummary)
 
 		// 先进行统计（无论保存是否成功）
 		switch record.Status {
@@ -284,6 +302,10 @@ func (s *APIServer) performInspection(reportID uint, date time.Time) {
 			"service_running":      record.ServiceRunning,
 			"service_stopped":      record.ServiceStopped,
 			"service_failed":       record.ServiceFailed,
+			"server_probe_count":   record.ServerProbeCount,
+			"server_probe_up":      record.ServerProbeUp,
+			"server_probe_down":    record.ServerProbeDown,
+			"server_probe_unknown": record.ServerProbeUnknown,
 			"anomaly_count":        record.AnomalyCount,
 			"alert_count":          record.AlertCount,
 			"critical_alert_count": record.CriticalAlertCount,
@@ -350,7 +372,7 @@ func activeInspectionAgents(agents []map[string]interface{}) []map[string]interf
 }
 
 // 巡检单个主机
-func (s *APIServer) inspectHost(hostID, hostname, agentStatus string, reportID uint) InspectionRecordInfo {
+func (s *APIServer) inspectHost(hostID, hostname, agentStatus string, reportID uint, probeSummary serverProbeSummary) InspectionRecordInfo {
 	record := InspectionRecordInfo{
 		HostID:          hostID,
 		Hostname:        hostname,
@@ -359,6 +381,16 @@ func (s *APIServer) inspectHost(hostID, hostname, agentStatus string, reportID u
 		Warnings:        []string{},
 		Recommendations: []string{},
 		Metrics:         make(map[string]interface{}),
+	}
+	record.ServerProbeCount = probeSummary.Total
+	record.ServerProbeUp = probeSummary.Up
+	record.ServerProbeDown = probeSummary.Down
+	record.ServerProbeUnknown = probeSummary.Unknown
+	record.Metrics["server_probe"] = map[string]interface{}{
+		"total":   probeSummary.Total,
+		"up":      probeSummary.Up,
+		"down":    probeSummary.Down,
+		"unknown": probeSummary.Unknown,
 	}
 
 	if agentStatus != "online" {
@@ -511,9 +543,10 @@ func (s *APIServer) inspectHost(hostID, hostname, agentStatus string, reportID u
 		}
 	}
 
-	log.Printf("[Inspection] Host %s summary: CPU=%.2f%%, Memory=%.2f%%, Disk=%.2f%%, Services=%d/%d/%d/%d, Alerts=%d/%d, Anomalies=%d",
+	log.Printf("[Inspection] Host %s summary: CPU=%.2f%%, Memory=%.2f%%, Disk=%.2f%%, Services=%d/%d/%d/%d, ServerProbes=%d/%d/%d/%d, Alerts=%d/%d, Anomalies=%d",
 		hostID, record.CPUUsage, record.MemoryUsage, record.DiskUsage,
 		record.ServiceCount, record.ServiceRunning, record.ServiceStopped, record.ServiceFailed,
+		record.ServerProbeCount, record.ServerProbeUp, record.ServerProbeDown, record.ServerProbeUnknown,
 		record.AlertCount, record.CriticalAlertCount, record.AnomalyCount)
 
 	// 评估状态
@@ -552,8 +585,29 @@ func (s *APIServer) inspectHost(hostID, hostname, agentStatus string, reportID u
 	if record.ServiceStopped > 0 {
 		record.Recommendations = append(record.Recommendations, fmt.Sprintf("建议检查 %d 个已停止的服务是否需要启动", record.ServiceStopped))
 	}
-
 	return record
+}
+
+func summarizeServerProbeTargets(targets []ServerProbeTargetInfo) serverProbeSummary {
+	summary := serverProbeSummary{
+		FailedTargets: []string{},
+	}
+	for _, target := range targets {
+		if !target.Enabled {
+			continue
+		}
+		summary.Total++
+		switch target.LastStatus {
+		case "up":
+			summary.Up++
+		case "down":
+			summary.Down++
+			summary.FailedTargets = append(summary.FailedTargets, target.Name)
+		default:
+			summary.Unknown++
+		}
+	}
+	return summary
 }
 
 // 生成巡检日报（使用LLM）
@@ -579,18 +633,28 @@ func (s *APIServer) generateInspectionReport(reportID uint) (reportContent, summ
 
 	var records []map[string]interface{}
 	db.Table("inspection_records").Where("report_id = ?", reportID).Find(&records)
+	services, err := s.storage.GetServiceStatus("")
+	if err != nil {
+		log.Printf("[Inspection] 获取服务状态失败，ReportID: %d, Error: %v", reportID, err)
+	}
+	probeTargets, err := s.storage.ListServerProbeTargets()
+	if err != nil {
+		log.Printf("[Inspection] 获取服务端探测目标失败，ReportID: %d, Error: %v", reportID, err)
+	}
 
 	// 检查LLM是否可用
 	llmClient := s.llmManager.GetClient()
 	if llmClient == nil {
 		// LLM不可用，生成简单报告
-		return s.generateSimpleReport(report, records)
+		return s.generateSimpleReport(report, records, services, probeTargets)
 	}
 
 	// 准备数据
 	inspectionData := map[string]interface{}{
-		"report":  inspectionReportPayload(reportID, report),
-		"records": records,
+		"report":               inspectionReportPayload(reportID, report),
+		"records":              records,
+		"port_services":        portServicePayload(services),
+		"server_probe_targets": serverProbeTargetPayload(probeTargets),
 	}
 
 	// 通过反射调用LLM方法
@@ -612,13 +676,13 @@ func (s *APIServer) generateInspectionReport(reportID uint) (reportContent, summ
 	}
 
 	if actualClient == nil {
-		return s.generateSimpleReport(report, records)
+		return s.generateSimpleReport(report, records, services, probeTargets)
 	}
 
 	// 调用LLM生成报告（非流式）
 	generateMethod := reflect.ValueOf(actualClient).MethodByName("GenerateInspectionReport")
 	if !generateMethod.IsValid() {
-		return s.generateSimpleReport(report, records)
+		return s.generateSimpleReport(report, records, services, probeTargets)
 	}
 
 	results := generateMethod.Call([]reflect.Value{
@@ -643,13 +707,24 @@ func (s *APIServer) generateInspectionReport(reportID uint) (reportContent, summ
 		}
 	}
 
-	return s.generateSimpleReport(report, records)
+	return s.generateSimpleReport(report, records, services, probeTargets)
 }
 
 // 生成简单报告（LLM不可用时）
-func (s *APIServer) generateSimpleReport(report map[string]interface{}, records []map[string]interface{}) (reportContent, summary, keyFindings, recommendations string) {
+func (s *APIServer) generateSimpleReport(report map[string]interface{}, records []map[string]interface{}, services []ServiceInfo, probeTargets []ServerProbeTargetInfo) (reportContent, summary, keyFindings, recommendations string) {
 	totalHosts := reportInt(report, "total_hosts")
 	onlineHosts := reportInt(report, "online_hosts")
+	serverProbeCount := 0
+	serverProbeUp := 0
+	serverProbeDown := 0
+	serverProbeUnknown := 0
+	if len(records) > 0 {
+		serverProbeCount = reportInt(records[0], "server_probe_count")
+		serverProbeUp = reportInt(records[0], "server_probe_up")
+		serverProbeDown = reportInt(records[0], "server_probe_down")
+		serverProbeUnknown = reportInt(records[0], "server_probe_unknown")
+	}
+	portServiceTotal, portServiceRunning, portServiceAbnormal := summarizePortServices(services)
 
 	summary = fmt.Sprintf("本次巡检共检查 %d 台主机，其中 %d 台在线。", totalHosts, onlineHosts)
 	keyFindings = "详细巡检数据已记录，请查看巡检记录。"
@@ -662,14 +737,83 @@ func (s *APIServer) generateSimpleReport(report map[string]interface{}, records 
 - 在线主机: %d
 - 离线主机: %d
 
+## 端口服务状态
+- 配置端口服务总数: %d
+- 运行中: %d
+- 异常或不可访问: %d
+
+## 服务端探测
+- 探测目标总数: %d
+- 正常: %d
+- 失败: %d
+- 未知: %d
+
 ## 关键发现
 %s
 
 ## 建议
 %s
-`, totalHosts, onlineHosts, totalHosts-onlineHosts, keyFindings, recommendations)
+`, totalHosts, onlineHosts, totalHosts-onlineHosts, portServiceTotal, portServiceRunning, portServiceAbnormal, serverProbeCount, serverProbeUp, serverProbeDown, serverProbeUnknown, keyFindings, recommendations)
 
 	return reportContent, summary, keyFindings, recommendations
+}
+
+func portServicePayload(services []ServiceInfo) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(services))
+	for _, service := range services {
+		if service.Port <= 0 {
+			continue
+		}
+		result = append(result, map[string]interface{}{
+			"host_id":         service.HostID,
+			"name":            service.Name,
+			"status":          service.Status,
+			"enabled":         service.Enabled,
+			"port":            service.Port,
+			"port_accessible": service.PortAccessible,
+			"description":     service.Description,
+			"timestamp":       service.Timestamp,
+		})
+	}
+	return result
+}
+
+func serverProbeTargetPayload(targets []ServerProbeTargetInfo) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(targets))
+	for _, target := range targets {
+		if !target.Enabled {
+			continue
+		}
+		address := target.URL
+		if target.Type == "tcp" {
+			address = fmt.Sprintf("%s:%d", target.Host, target.Port)
+		}
+		result = append(result, map[string]interface{}{
+			"name":            target.Name,
+			"type":            target.Type,
+			"address":         address,
+			"last_status":     target.LastStatus,
+			"last_latency_ms": target.LastLatencyMs,
+			"last_error":      target.LastError,
+			"last_checked_at": target.LastCheckedAt,
+		})
+	}
+	return result
+}
+
+func summarizePortServices(services []ServiceInfo) (total, running, abnormal int) {
+	for _, service := range services {
+		if service.Port <= 0 {
+			continue
+		}
+		total++
+		if service.Status == "running" && service.PortAccessible {
+			running++
+			continue
+		}
+		abnormal++
+	}
+	return total, running, abnormal
 }
 
 func reportInt(report map[string]interface{}, key string) int {
@@ -863,11 +1007,21 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 
 	var records []map[string]interface{}
 	db.Table("inspection_records").Where("report_id = ?", reportID).Find(&records)
+	services, err := s.storage.GetServiceStatus("")
+	if err != nil {
+		log.Printf("[API] 获取服务状态失败，ReportID=%d, Error=%v", reportID, err)
+	}
+	probeTargets, err := s.storage.ListServerProbeTargets()
+	if err != nil {
+		log.Printf("[API] 获取服务端探测目标失败，ReportID=%d, Error=%v", reportID, err)
+	}
 
 	inspectionData := map[string]interface{}{
-		"report_id": reportID,
-		"report":    inspectionReportPayload(uint(reportID), report),
-		"records":   records,
+		"report_id":            reportID,
+		"report":               inspectionReportPayload(uint(reportID), report),
+		"records":              records,
+		"port_services":        portServicePayload(services),
+		"server_probe_targets": serverProbeTargetPayload(probeTargets),
 	}
 
 	// 通过反射调用流式方法
@@ -1466,6 +1620,10 @@ func convertMapToInspectionRecordInfo(m map[string]interface{}) InspectionRecord
 	info.ServiceRunning = mapInt(m, "service_running")
 	info.ServiceStopped = mapInt(m, "service_stopped")
 	info.ServiceFailed = mapInt(m, "service_failed")
+	info.ServerProbeCount = mapInt(m, "server_probe_count")
+	info.ServerProbeUp = mapInt(m, "server_probe_up")
+	info.ServerProbeDown = mapInt(m, "server_probe_down")
+	info.ServerProbeUnknown = mapInt(m, "server_probe_unknown")
 	info.AnomalyCount = mapInt(m, "anomaly_count")
 	info.AlertCount = mapInt(m, "alert_count")
 	info.CriticalAlertCount = mapInt(m, "critical_alert_count")

@@ -82,3 +82,30 @@ func TestConvertMapToInspectionRecordInfoConvertsServiceCountsFromInt64(t *testi
 		t.Fatalf("service failed = %d, want 1", record.ServiceFailed)
 	}
 }
+
+func TestSummarizeServerProbeTargetsCountsEnabledStatuses(t *testing.T) {
+	targets := []ServerProbeTargetInfo{
+		{Name: "api", Enabled: true, LastStatus: "up"},
+		{Name: "db", Enabled: true, LastStatus: "down"},
+		{Name: "cache", Enabled: true, LastStatus: "unknown"},
+		{Name: "disabled", Enabled: false, LastStatus: "down"},
+	}
+
+	summary := summarizeServerProbeTargets(targets)
+
+	if summary.Total != 3 {
+		t.Fatalf("total = %d, want 3", summary.Total)
+	}
+	if summary.Up != 1 {
+		t.Fatalf("up = %d, want 1", summary.Up)
+	}
+	if summary.Down != 1 {
+		t.Fatalf("down = %d, want 1", summary.Down)
+	}
+	if summary.Unknown != 1 {
+		t.Fatalf("unknown = %d, want 1", summary.Unknown)
+	}
+	if len(summary.FailedTargets) != 1 || summary.FailedTargets[0] != "db" {
+		t.Fatalf("failed targets = %#v, want [db]", summary.FailedTargets)
+	}
+}
