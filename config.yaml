@@ -25,6 +25,11 @@ redis:
 retention:
   docker_snapshot_days: 30
 
+logging:
+  level: "info"                 # debug, info, warn, error
+  gorm_level: "error"           # silent, error, warn, info
+  ignore_record_not_found: true # suppress expected gorm.ErrRecordNotFound SQL logs
+
 jwt_secret: "bbcceewwx1234567890"
 # 是否要求认证，设置为false可以在开发环境中禁用认证
 auth_required: true

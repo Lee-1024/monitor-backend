@@ -67,7 +67,9 @@ func NewStorage(config *Config) *Storage {
 		config.PostgreSQL.Database,
 	)
 	var err error
-	storage.postgres, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	storage.postgres, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: newGormLogger(config.Logging),
+	})
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}

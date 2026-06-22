@@ -34,7 +34,8 @@ func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManag
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 
-	router := gin.Default()
+	router := gin.New()
+	router.Use(gin.Recovery())
 
 	// CORS配置
 	router.Use(cors.New(cors.Config{

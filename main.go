@@ -24,6 +24,7 @@ import (
 func main() {
 	// 加载配置
 	config := LoadConfig()
+	ConfigureLogging(config.Logging)
 
 	// 初始化存储
 	storage := NewStorage(config)

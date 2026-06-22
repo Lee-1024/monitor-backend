@@ -197,7 +197,7 @@ func (s *StorageAdapter) GetMetrics(hostID, metricType, start, end string) ([]ap
 func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, error) {
 	// 先尝试从Redis缓存获取
 	if cachedMetrics, err := s.storage.GetCachedLatestMetrics(hostID); err == nil {
-		log.Printf("Cache hit for latest metrics: %s", hostID)
+		Debugf("Cache hit for latest metrics: %s", hostID)
 		// 转换为API格式
 		latest := &api.LatestMetrics{
 			HostID:    hostID,
@@ -223,13 +223,13 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 
 		// 添加磁盘数据 - 返回所有分区数组
 		if len(cachedMetrics.Disk.Partitions) > 0 {
-			log.Printf("[GetLatestMetrics] Cache hit: Found %d partitions in cache", len(cachedMetrics.Disk.Partitions))
+			Debugf("[GetLatestMetrics] Cache hit: Found %d partitions in cache", len(cachedMetrics.Disk.Partitions))
 			var partitions []map[string]interface{}
 			var rootPartition map[string]interface{}
 			var otherPartitions []map[string]interface{}
 
 			for i, p := range cachedMetrics.Disk.Partitions {
-				log.Printf("[GetLatestMetrics] Cache partition %d: mountpoint='%s', device='%s'", i, p.Mountpoint, p.Device)
+				Debugf("[GetLatestMetrics] Cache partition %d: mountpoint='%s', device='%s'", i, p.Mountpoint, p.Device)
 				partData := map[string]interface{}{
 					"device":       p.Device,
 					"mountpoint":   p.Mountpoint,
@@ -260,12 +260,12 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			}
 			partitions = append(partitions, otherPartitions...)
 
-			log.Printf("[GetLatestMetrics] Cache: Returning %d partitions", len(partitions))
+			Debugf("[GetLatestMetrics] Cache: Returning %d partitions", len(partitions))
 			latest.Disk = map[string]interface{}{
 				"partitions": partitions,
 			}
 		} else {
-			log.Printf("[GetLatestMetrics] Cache hit: No partitions found in cache")
+			Debugf("[GetLatestMetrics] Cache hit: No partitions found in cache")
 		}
 
 		// 添加网络数据
@@ -293,7 +293,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 	}
 
 	// 缓存未命中，从InfluxDB查询
-	log.Printf("Cache miss for latest metrics: %s, querying InfluxDB", hostID)
+	Debugf("Cache miss for latest metrics: %s, querying InfluxDB", hostID)
 	ctx := context.Background()
 	latest := &api.LatestMetrics{
 		HostID:  hostID,
@@ -414,7 +414,7 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 			}
 			result.Close()
 
-			log.Printf("Found %d disk records, %d partitions", recordCount, len(partitions))
+			Debugf("Found %d disk records, %d partitions", recordCount, len(partitions))
 
 			// 转换为数组，按挂载点排序（根分区优先）
 			var allPartitions []map[string]interface{}
@@ -516,10 +516,10 @@ func (s *StorageAdapter) GetLatestMetrics(hostID string) (*api.LatestMetrics, er
 				"partitions": finalPartitions,
 			}
 
-			log.Printf("[GetLatestMetrics] InfluxDB: Returning %d disk partitions", len(finalPartitions))
+			Debugf("[GetLatestMetrics] InfluxDB: Returning %d disk partitions", len(finalPartitions))
 			for i, part := range finalPartitions {
 				if mp, ok := part["mountpoint"].(string); ok {
-					log.Printf("[GetLatestMetrics] InfluxDB partition %d: mountpoint='%s'", i, mp)
+					Debugf("[GetLatestMetrics] InfluxDB partition %d: mountpoint='%s'", i, mp)
 				}
 			}
 		} else if measurement == "network" {
@@ -725,8 +725,8 @@ union(tables: [meanData, maxData])`,
 			interval)
 	}
 
-	log.Printf("Executing InfluxDB query for %s/%s", hostID, metricType)
-	log.Printf("Query: %s", query)
+	Debugf("Executing InfluxDB query for %s/%s", hostID, metricType)
+	Debugf("Query: %s", query)
 
 	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 	result, err := queryAPI.Query(ctx, query)
@@ -796,11 +796,11 @@ union(tables: [meanData, maxData])`,
 		}
 	}
 
-	log.Printf("Query returned %d records, grouped into %d time points", recordCount, len(pointsMap))
+	Debugf("Query returned %d records, grouped into %d time points", recordCount, len(pointsMap))
 
 	// 没有数据时返回空数组
 	if len(pointsMap) == 0 {
-		log.Printf("No data found for host_id=%s, type=%s, start=%s", hostID, metricType, start)
+		Debugf("No data found for host_id=%s, type=%s, start=%s", hostID, metricType, start)
 		return []api.MetricPoint{}, nil
 	}
 
@@ -824,7 +824,7 @@ union(tables: [meanData, maxData])`,
 		})
 	}
 
-	log.Printf("Returning %d data points", len(points))
+	Debugf("Returning %d data points", len(points))
 	return points, nil
 }
 
@@ -852,7 +852,7 @@ func (s *StorageAdapter) GetDiskHistoryByMountpoint(hostID, mountpoint, start, e
 		mountpoint,
 		interval)
 
-	log.Printf("Executing InfluxDB query for disk history: host_id=%s, mountpoint=%s", hostID, mountpoint)
+	Debugf("Executing InfluxDB query for disk history: host_id=%s, mountpoint=%s", hostID, mountpoint)
 
 	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 	result, err := queryAPI.Query(ctx, query)
@@ -889,7 +889,7 @@ func (s *StorageAdapter) GetDiskHistoryByMountpoint(hostID, mountpoint, start, e
 		}
 	}
 
-	log.Printf("Query returned %d records, grouped into %d time points", recordCount, len(pointsMap))
+	Debugf("Query returned %d records, grouped into %d time points", recordCount, len(pointsMap))
 
 	if len(pointsMap) == 0 {
 		return []api.MetricPoint{}, nil
@@ -1008,13 +1008,13 @@ func (s *StorageAdapter) GetOverview() (*api.Overview, error) {
 				if floatVal, ok := val.(float64); ok {
 					overview.AvgCPU = floatVal
 					found = true
-					log.Printf("Found average CPU: %.2f%%", floatVal)
+					Debugf("Found average CPU: %.2f%%", floatVal)
 					break
 				}
 			}
 		}
 		if !found {
-			log.Printf("No CPU data found in query result")
+			Debugf("No CPU data found in query result")
 		}
 		if result.Err() != nil {
 			log.Printf("Error reading CPU query result: %v", result.Err())
@@ -1045,13 +1045,13 @@ func (s *StorageAdapter) GetOverview() (*api.Overview, error) {
 				if floatVal, ok := val.(float64); ok {
 					overview.AvgMemory = floatVal
 					found = true
-					log.Printf("Found average memory: %.2f%%", floatVal)
+					Debugf("Found average memory: %.2f%%", floatVal)
 					break
 				}
 			}
 		}
 		if !found {
-			log.Printf("No memory data found in query result")
+			Debugf("No memory data found in query result")
 		}
 		if result.Err() != nil {
 			log.Printf("Error reading memory query result: %v", result.Err())
@@ -1455,7 +1455,7 @@ func (s *StorageAdapter) GetCrashAnalysis(hostID string) (*api.CrashAnalysis, er
 		}
 	}
 
-	log.Printf("Crash analysis for %s: total=%d, resolved=%d", hostID, len(events), resolvedCount)
+	Debugf("Crash analysis for %s: total=%d, resolved=%d", hostID, len(events), resolvedCount)
 
 	// 计算统计信息
 	analysis := &api.CrashAnalysis{
@@ -1517,7 +1517,7 @@ func (s *StorageAdapter) getProcessesAlternative(hostID string, limit int) ([]ap
 		sql += fmt.Sprintf(" LIMIT %d", limit)
 	}
 
-	log.Printf("Executing process query SQL: %s", sql)
+	Debugf("Executing process query SQL: %s", sql)
 	err := s.storage.postgres.Raw(sql, args...).Scan(&processes).Error
 	if err != nil {
 		log.Printf("Error executing process query: %v, SQL: %s", err, sql)
@@ -1735,7 +1735,7 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 		}
 	}
 
-	log.Printf("Found top %d process names by %s: %v", len(processNames), metricType, processNames)
+	Debugf("Found top %d process names by %s: %v", len(processNames), metricType, processNames)
 	return processNames, nil
 }
 
@@ -3000,19 +3000,19 @@ func (s *StorageAdapter) DeleteUser(id uint) error {
 
 // CreateAlertRule 创建告警规则
 func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRuleInfo, error) {
-	log.Printf("[CreateAlertRule] Creating rule: Name=%s, NotifyChannels=%v, Receivers=%v",
+	Debugf("[CreateAlertRule] Creating rule: Name=%s, NotifyChannels=%v, Receivers=%v",
 		rule.Name, rule.NotifyChannels, rule.Receivers)
 
 	// 确保 NotifyChannels 和 Receivers 不是 nil，至少是空数组
 	notifyChannels := rule.NotifyChannels
 	if notifyChannels == nil {
 		notifyChannels = []string{}
-		log.Printf("[CreateAlertRule] NotifyChannels was nil, using empty array")
+		Debugf("[CreateAlertRule] NotifyChannels was nil, using empty array")
 	}
 	receivers := rule.Receivers
 	if receivers == nil {
 		receivers = []string{}
-		log.Printf("[CreateAlertRule] Receivers was nil, using empty array")
+		Debugf("[CreateAlertRule] Receivers was nil, using empty array")
 	}
 
 	// 确保转换为 StringSliceJSON 类型
@@ -3049,7 +3049,7 @@ func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRul
 		InhibitDuration: rule.InhibitDuration,
 	}
 
-	log.Printf("[CreateAlertRule] AlertRule before save: NotifyChannels=%v, Receivers=%v",
+	Debugf("[CreateAlertRule] AlertRule before save: NotifyChannels=%v, Receivers=%v",
 		alertRule.NotifyChannels, alertRule.Receivers)
 
 	if err := s.storage.postgres.Create(alertRule).Error; err != nil {
@@ -3064,12 +3064,12 @@ func (s *StorageAdapter) CreateAlertRule(rule *api.AlertRuleInfo) (*api.AlertRul
 		return nil, err
 	}
 
-	log.Printf("[CreateAlertRule] Rule saved successfully: ID=%d", alertRule.ID)
+	Debugf("[CreateAlertRule] Rule saved successfully: ID=%d", alertRule.ID)
 
 	// 验证保存后的数据
 	var savedRule AlertRule
 	if err := s.storage.postgres.First(&savedRule, alertRule.ID).Error; err == nil {
-		log.Printf("[CreateAlertRule] Verified saved rule: ID=%d, NotifyChannels=%v, Receivers=%v",
+		Debugf("[CreateAlertRule] Verified saved rule: ID=%d, NotifyChannels=%v, Receivers=%v",
 			savedRule.ID, savedRule.NotifyChannels, savedRule.Receivers)
 	}
 
@@ -3108,7 +3108,7 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 	// 使用 map 来构建更新字段，只更新实际提供的字段
 	updates := make(map[string]interface{})
 
-	log.Printf("[UpdateAlertRule] Updating rule ID=%d: NotifyChannels=%v, Receivers=%v", id, rule.NotifyChannels, rule.Receivers)
+	Debugf("[UpdateAlertRule] Updating rule ID=%d: NotifyChannels=%v, Receivers=%v", id, rule.NotifyChannels, rule.Receivers)
 
 	// 检查是否有其他字段被设置（除了 enabled）
 	// 由于 handler 中已经处理了部分更新，如果字段在 JSON 中存在就会被设置
@@ -3118,7 +3118,7 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 		rule.Duration != 0 || rule.InhibitDuration != 0 || rule.NotifyChannels != nil ||
 		rule.Receivers != nil || rule.SilenceStart != nil || rule.SilenceEnd != nil || rule.HostIDs != nil
 
-	log.Printf("[UpdateAlertRule] Rule ID=%d: hasOtherFields=%v", id, hasOtherFields)
+	Debugf("[UpdateAlertRule] Rule ID=%d: hasOtherFields=%v", id, hasOtherFields)
 
 	// 只更新实际提供的字段
 	// 由于 handler 中已经处理了部分更新，如果字段在 JSON 中存在就会被设置到 rule 中
@@ -3222,7 +3222,7 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 		// 由于 handler 中只有当 updateData["notify_channels"] 存在时才会设置 rule.NotifyChannels
 		// 所以如果 rule.NotifyChannels 不是 nil，说明前端提供了该字段（即使是空数组）
 		if rule.NotifyChannels != nil {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Updating notify_channels to %v (provided in request)", id, rule.NotifyChannels)
+			Debugf("[UpdateAlertRule] Rule ID=%d: Updating notify_channels to %v (provided in request)", id, rule.NotifyChannels)
 			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
 			jsonData, err := json.Marshal(rule.NotifyChannels)
 			if err != nil {
@@ -3230,23 +3230,23 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 				return fmt.Errorf("failed to marshal notify_channels: %w", err)
 			}
 			// 使用原始 SQL 更新，确保 JSON 字符串正确存储
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled notify_channels JSON: %s", id, string(jsonData))
+			Debugf("[UpdateAlertRule] Rule ID=%d: Marshaled notify_channels JSON: %s", id, string(jsonData))
 			updates["notify_channels"] = string(jsonData)
 		} else {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: notify_channels not provided in request, keeping existing value", id)
+			Debugf("[UpdateAlertRule] Rule ID=%d: notify_channels not provided in request, keeping existing value", id)
 		}
 		if rule.Receivers != nil {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Updating receivers to %v (provided in request)", id, rule.Receivers)
+			Debugf("[UpdateAlertRule] Rule ID=%d: Updating receivers to %v (provided in request)", id, rule.Receivers)
 			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
 			jsonData, err := json.Marshal(rule.Receivers)
 			if err != nil {
 				log.Printf("[UpdateAlertRule] Rule ID=%d: Failed to marshal Receivers: %v", id, err)
 				return fmt.Errorf("failed to marshal receivers: %w", err)
 			}
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled receivers JSON: %s", id, string(jsonData))
+			Debugf("[UpdateAlertRule] Rule ID=%d: Marshaled receivers JSON: %s", id, string(jsonData))
 			updates["receivers"] = string(jsonData)
 		} else {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: receivers not provided in request, keeping existing value", id)
+			Debugf("[UpdateAlertRule] Rule ID=%d: receivers not provided in request, keeping existing value", id)
 		}
 		if rule.SilenceStart != nil {
 			updates["silence_start"] = rule.SilenceStart
@@ -3260,30 +3260,30 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 		// 由于 handler 中只有当 updateData["notify_channels"] 存在时才会设置 rule.NotifyChannels
 		// 所以如果 rule.NotifyChannels 不是 nil，说明前端提供了该字段（即使是空数组）
 		if rule.NotifyChannels != nil {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Only NotifyChannels provided, updating to %v", id, rule.NotifyChannels)
+			Debugf("[UpdateAlertRule] Rule ID=%d: Only NotifyChannels provided, updating to %v", id, rule.NotifyChannels)
 			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
 			jsonData, err := json.Marshal(rule.NotifyChannels)
 			if err != nil {
 				log.Printf("[UpdateAlertRule] Rule ID=%d: Failed to marshal NotifyChannels: %v", id, err)
 				return fmt.Errorf("failed to marshal notify_channels: %w", err)
 			}
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled notify_channels JSON: %s", id, string(jsonData))
+			Debugf("[UpdateAlertRule] Rule ID=%d: Marshaled notify_channels JSON: %s", id, string(jsonData))
 			updates["notify_channels"] = string(jsonData)
 		} else {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: NotifyChannels not provided, keeping existing value", id)
+			Debugf("[UpdateAlertRule] Rule ID=%d: NotifyChannels not provided, keeping existing value", id)
 		}
 		if rule.Receivers != nil {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Only Receivers provided, updating to %v", id, rule.Receivers)
+			Debugf("[UpdateAlertRule] Rule ID=%d: Only Receivers provided, updating to %v", id, rule.Receivers)
 			// 手动序列化为 JSON，因为使用 Updates(map) 时 GORM 不会调用 MarshalJSON
 			jsonData, err := json.Marshal(rule.Receivers)
 			if err != nil {
 				log.Printf("[UpdateAlertRule] Rule ID=%d: Failed to marshal Receivers: %v", id, err)
 				return fmt.Errorf("failed to marshal receivers: %w", err)
 			}
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Marshaled receivers JSON: %s", id, string(jsonData))
+			Debugf("[UpdateAlertRule] Rule ID=%d: Marshaled receivers JSON: %s", id, string(jsonData))
 			updates["receivers"] = string(jsonData)
 		} else {
-			log.Printf("[UpdateAlertRule] Rule ID=%d: Receivers not provided, keeping existing value", id)
+			Debugf("[UpdateAlertRule] Rule ID=%d: Receivers not provided, keeping existing value", id)
 		}
 	}
 	// 如果只有 enabled 被设置，就只更新 enabled（已经在上面设置了）
@@ -3296,13 +3296,13 @@ func (s *StorageAdapter) UpdateAlertRule(id uint, rule *api.AlertRuleInfo) error
 	// 添加 updated_at
 	updates["updated_at"] = time.Now()
 
-	log.Printf("[UpdateAlertRule] Rule ID=%d: Executing update with fields: %v", id, updates)
+	Debugf("[UpdateAlertRule] Rule ID=%d: Executing update with fields: %v", id, updates)
 	err := s.storage.postgres.Model(&AlertRule{}).Where("id = ?", id).Updates(updates).Error
 	if err != nil {
 		log.Printf("[UpdateAlertRule] Rule ID=%d: Update failed: %v", id, err)
 		return err
 	}
-	log.Printf("[UpdateAlertRule] Rule ID=%d: Update successful", id)
+	Debugf("[UpdateAlertRule] Rule ID=%d: Update successful", id)
 	if rule.HostIDs != nil {
 		if err := s.replaceAlertRuleHosts(id, rule.HostIDs); err != nil {
 			return err
@@ -3447,16 +3447,16 @@ func (s *StorageAdapter) ListAlertRules(enabled *bool) ([]api.AlertRuleInfo, err
 		}
 
 		// 手动解析 JSON 字段，容忍无效数据
-		log.Printf("[ListAlertRules] Rule ID=%d: notifyChannelsStr.Valid=%v, notifyChannelsStr.String=%q",
+		Debugf("[ListAlertRules] Rule ID=%d: notifyChannelsStr.Valid=%v, notifyChannelsStr.String=%q",
 			rule.ID, notifyChannelsStr.Valid, notifyChannelsStr.String)
 
 		if notifyChannelsStr.Valid && notifyChannelsStr.String != "" {
 			// 处理特殊情况：如果值是 "false" 或 "null"，设置为空数组
 			trimmed := strings.TrimSpace(notifyChannelsStr.String)
-			log.Printf("[ListAlertRules] Rule ID=%d: trimmed notify_channels=%q", rule.ID, trimmed)
+			Debugf("[ListAlertRules] Rule ID=%d: trimmed notify_channels=%q", rule.ID, trimmed)
 
 			if trimmed == "false" || trimmed == "null" || trimmed == `""` {
-				log.Printf("[ListAlertRules] Rule ID=%d: notify_channels is invalid value (%q), resetting to empty array", rule.ID, trimmed)
+				Debugf("[ListAlertRules] Rule ID=%d: notify_channels is invalid value (%q), resetting to empty array", rule.ID, trimmed)
 				rule.NotifyChannels = []string{}
 				// 修复数据库
 				s.storage.postgres.Exec("UPDATE alert_rules SET notify_channels = '[]' WHERE id = ?", rule.ID)
@@ -3468,11 +3468,11 @@ func (s *StorageAdapter) ListAlertRules(enabled *bool) ([]api.AlertRuleInfo, err
 					// 修复数据库
 					s.storage.postgres.Exec("UPDATE alert_rules SET notify_channels = '[]' WHERE id = ?", rule.ID)
 				} else {
-					log.Printf("[ListAlertRules] Rule ID=%d: Successfully parsed NotifyChannels=%v", rule.ID, rule.NotifyChannels)
+					Debugf("[ListAlertRules] Rule ID=%d: Successfully parsed NotifyChannels=%v", rule.ID, rule.NotifyChannels)
 				}
 			}
 		} else {
-			log.Printf("[ListAlertRules] Rule ID=%d: notifyChannelsStr is invalid or empty, setting to empty array", rule.ID)
+			Debugf("[ListAlertRules] Rule ID=%d: notifyChannelsStr is invalid or empty, setting to empty array", rule.ID)
 			rule.NotifyChannels = []string{}
 		}
 
@@ -3944,7 +3944,7 @@ func (s *StorageAdapter) IsRuleSilenced(ruleID uint, hostID string) bool {
 
 	query.Count(&count)
 	isSilenced := count > 0
-	log.Printf("[IsRuleSilenced] RuleID=%d, HostID=%s, Count=%d, IsSilenced=%v", ruleID, hostID, count, isSilenced)
+	Debugf("[IsRuleSilenced] RuleID=%d, HostID=%s, Count=%d, IsSilenced=%v", ruleID, hostID, count, isSilenced)
 	return isSilenced
 }
 
@@ -4082,7 +4082,7 @@ func (s *StorageAdapter) GetPredictionData(hostID, metricType string, days int) 
 	maxDays := 60
 	if days > maxDays {
 		days = maxDays
-		log.Printf("GetPredictionData: limiting query days to %d", maxDays)
+		Debugf("GetPredictionData: limiting query days to %d", maxDays)
 	}
 	start := fmt.Sprintf("-%dd", days)
 
@@ -4124,7 +4124,7 @@ func (s *StorageAdapter) GetPredictionData(hostID, metricType string, days int) 
 			s.storage.config.InfluxDB.Bucket, start, metricType, hostID, field)
 	}
 
-	log.Printf("GetPredictionData query for %s/%s: %s", hostID, metricType, query)
+	Debugf("GetPredictionData query for %s/%s: %s", hostID, metricType, query)
 
 	queryAPI := s.storage.influxClient.QueryAPI(s.storage.config.InfluxDB.Org)
 	result, err := queryAPI.Query(ctx, query)
@@ -4170,7 +4170,7 @@ func (s *StorageAdapter) GetPredictionData(hostID, metricType string, days int) 
 		})
 	}
 
-	log.Printf("GetPredictionData: retrieved %d data points from %d records", len(points), recordCount)
+	Debugf("GetPredictionData: retrieved %d data points from %d records", len(points), recordCount)
 
 	if len(points) == 0 {
 		return nil, fmt.Errorf("no data points found for host %s, metric type %s, days %d", hostID, metricType, days)
@@ -4375,15 +4375,15 @@ func (s *StorageAdapter) ListLLMModelConfigs(enabled *bool) ([]api.LLMModelConfi
 		return nil, err
 	}
 
-	log.Printf("[Storage] 查询到 %d 个LLM配置", len(configs))
+	Debugf("[Storage] 查询到 %d 个LLM配置", len(configs))
 	for i, config := range configs {
-		log.Printf("[Storage] 配置[%d]: ID=%d, 名称=%s, is_default=%v", i, config.ID, config.Name, config.IsDefault)
+		Debugf("[Storage] 配置[%d]: ID=%d, 名称=%s, is_default=%v", i, config.ID, config.Name, config.IsDefault)
 	}
 
 	result := make([]api.LLMModelConfigInfo, len(configs))
 	for i, config := range configs {
 		result[i] = *s.llmModelConfigToAPI(&config)
-		log.Printf("[Storage] 转换后的配置[%d]: ID=%d, 名称=%s, is_default=%v", i, result[i].ID, result[i].Name, result[i].IsDefault)
+		Debugf("[Storage] 转换后的配置[%d]: ID=%d, 名称=%s, is_default=%v", i, result[i].ID, result[i].Name, result[i].IsDefault)
 	}
 
 	return result, nil
@@ -4391,7 +4391,7 @@ func (s *StorageAdapter) ListLLMModelConfigs(enabled *bool) ([]api.LLMModelConfi
 
 // SetDefaultLLMModelConfig 设置默认LLM模型配置
 func (s *StorageAdapter) SetDefaultLLMModelConfig(id uint) error {
-	log.Printf("[Storage] 开始设置默认LLM配置，ID: %d", id)
+	Debugf("[Storage] 开始设置默认LLM配置，ID: %d", id)
 
 	// 先取消所有默认配置（必须有WHERE条件，即使条件为true）
 	result := s.storage.postgres.Model(&LLMModelConfig{}).Where("is_default = ?", true).Update("is_default", false)
@@ -4399,7 +4399,7 @@ func (s *StorageAdapter) SetDefaultLLMModelConfig(id uint) error {
 		log.Printf("[Storage] 取消默认配置失败: %v", result.Error)
 		return result.Error
 	}
-	log.Printf("[Storage] 已取消 %d 个默认配置", result.RowsAffected)
+	Debugf("[Storage] 已取消 %d 个默认配置", result.RowsAffected)
 
 	// 设置新的默认配置
 	result = s.storage.postgres.Model(&LLMModelConfig{}).Where("id = ?", id).Update("is_default", true)
@@ -4411,7 +4411,7 @@ func (s *StorageAdapter) SetDefaultLLMModelConfig(id uint) error {
 		log.Printf("[Storage] 警告: 没有找到ID为 %d 的配置", id)
 		return fmt.Errorf("config with id %d not found", id)
 	}
-	log.Printf("[Storage] 成功设置ID %d 为默认配置，影响行数: %d", id, result.RowsAffected)
+	Debugf("[Storage] 成功设置ID %d 为默认配置，影响行数: %d", id, result.RowsAffected)
 
 	return nil
 }

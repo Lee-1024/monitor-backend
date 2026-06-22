@@ -19,7 +19,35 @@ type Config struct {
 	PostgreSQL   PostgreSQLConfig `yaml:"postgresql"`
 	Redis        RedisConfig      `yaml:"redis"`
 	Retention    RetentionConfig  `yaml:"retention"`
+	Logging      LoggingConfig    `yaml:"logging"`
 	LLM          LLMConfig        `yaml:"llm"`
+}
+
+type LoggingConfig struct {
+	Level                string `yaml:"level"`
+	GormLevel            string `yaml:"gorm_level"`
+	IgnoreRecordNotFound *bool  `yaml:"ignore_record_not_found"`
+}
+
+func (c LoggingConfig) EffectiveLevel() string {
+	if c.Level != "" {
+		return c.Level
+	}
+	return "info"
+}
+
+func (c LoggingConfig) EffectiveGormLevel() string {
+	if c.GormLevel != "" {
+		return c.GormLevel
+	}
+	return "error"
+}
+
+func (c LoggingConfig) EffectiveIgnoreRecordNotFound() bool {
+	if c.IgnoreRecordNotFound != nil {
+		return *c.IgnoreRecordNotFound
+	}
+	return true
 }
 
 type InfluxDBConfig struct {
