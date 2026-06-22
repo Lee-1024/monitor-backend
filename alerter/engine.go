@@ -15,18 +15,21 @@ import (
 
 // AlertEngine 告警引擎
 type AlertEngine struct {
-	storage       api.StorageInterface
-	notifier      *notifier.NotificationManager
-	checkInterval time.Duration
-	running       bool
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
-	alertStates   map[string]*AlertState // key: ruleID:hostID
-	mu            sync.RWMutex
+	storage        api.StorageInterface
+	notifier       *notifier.NotificationManager
+	checkInterval  time.Duration
+	running        bool
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	alertStates    map[string]*AlertState // key: ruleID:hostID
+	recoveryStates map[string]time.Time
+	mu             sync.RWMutex
 	// 告警抑制：记录每个告警的最后通知时间 key: ruleID:hostID
 	lastNotifyTime map[string]time.Time
 	notifyMu       sync.RWMutex
 }
+
+const defaultHostDownRecoveryConfirmDuration = 60 * time.Second
 
 // AlertState 告警状态
 type AlertState struct {
@@ -46,6 +49,7 @@ func NewAlertEngine(storage api.StorageInterface, notifier *notifier.Notificatio
 		checkInterval:  checkInterval,
 		stopChan:       make(chan struct{}),
 		alertStates:    make(map[string]*AlertState),
+		recoveryStates: make(map[string]time.Time),
 		lastNotifyTime: make(map[string]time.Time),
 	}
 }
@@ -205,6 +209,8 @@ func serverProbeAlertHostID(targetID uint) string {
 func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.AgentInfo) {
 	// 获取需要检查的主机列表
 	hostsToCheck := e.getHostsToCheck(rule, allAgents)
+	var firingNotifications []*api.AlertHistoryInfo
+	var resolvedNotifications []*api.AlertHistoryInfo
 
 	for _, host := range hostsToCheck {
 		// 检查是否被静默
@@ -219,6 +225,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 
 		// 如果主机离线，触发告警
 		if isHostDown {
+			e.clearHostDownRecoveryState(rule, host.HostID)
 			// 检查是否已有未恢复的告警
 			historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
 			if err != nil {
@@ -268,23 +275,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 				e.lastNotifyTime[inhibitKey] = time.Now()
 				e.notifyMu.Unlock()
 
-				// 发送通知
-				go func() {
-					// 再次检查告警状态，确保在发送通知时仍然是 firing
-					recheckHistory, recheckErr := e.storage.GetAlertHistory(existingHistory.ID)
-					if recheckErr != nil || recheckHistory == nil || recheckHistory.Status != "firing" {
-						log.Printf("Host down alert already resolved before sending notification for Rule=%s, Host=%s, skipping", rule.Name, host.HostID)
-						return
-					}
-
-					err := e.notifier.Send(rule.NotifyChannels, recheckHistory, rule.Receivers)
-					notifyStatus := "success"
-					if err != nil {
-						notifyStatus = "failed"
-						log.Printf("Failed to send notification: %v", err)
-					}
-					log.Printf("Host down notification sent for Rule=%s, Host=%s (status: %s)", rule.Name, host.HostID, notifyStatus)
-				}()
+				firingNotifications = append(firingNotifications, existingHistory)
 				continue
 			}
 
@@ -340,21 +331,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 				e.lastNotifyTime[inhibitKey] = time.Now()
 				e.notifyMu.Unlock()
 
-				go func() {
-					err := e.notifier.Send(rule.NotifyChannels, savedHistory, rule.Receivers)
-					notifyStatus := "success"
-					notifyError := ""
-					if err != nil {
-						notifyStatus = "failed"
-						notifyError = err.Error()
-						log.Printf("Failed to send notification: %v", err)
-					}
-
-					// 更新通知状态
-					if updateErr := e.updateAlertHistoryNotifyStatus(savedHistory.ID, notifyStatus, notifyError); updateErr != nil {
-						log.Printf("Failed to update alert history notify status: %v", updateErr)
-					}
-				}()
+				firingNotifications = append(firingNotifications, savedHistory)
 			} else {
 				// 即使不发送通知，也更新状态为抑制
 				if err := e.storage.UpdateAlertHistory(savedHistory.ID, "inhibited", nil); err != nil {
@@ -367,6 +344,10 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 			if err != nil {
 				log.Printf("Failed to list alert history for Rule=%s, Host=%s: %v", rule.Name, host.HostID, err)
 			} else if len(historyList) > 0 {
+				if !e.hostDownRecoveryConfirmed(rule, host.HostID, time.Now()) {
+					log.Printf("Host down recovery pending for Rule=%s, Host=%s", rule.Name, host.HostID)
+					continue
+				}
 				now := time.Now()
 				resolvedCount := 0
 
@@ -412,7 +393,8 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 						// 发送恢复通知
 						history.Status = "resolved"
 						history.ResolvedAt = &now
-						go e.notifier.Send(rule.NotifyChannels, &history, rule.Receivers)
+						historyCopy := history
+						resolvedNotifications = append(resolvedNotifications, &historyCopy)
 					}
 				}
 
@@ -421,9 +403,14 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 				} else {
 					log.Printf("No alerts were resolved for Rule=%s, Host=%s (all were already resolved)", rule.Name, host.HostID)
 				}
+			} else {
+				e.clearHostDownRecoveryState(rule, host.HostID)
 			}
 		}
 	}
+
+	e.sendAggregatedHostDownNotifications(rule, firingNotifications, "firing")
+	e.sendAggregatedHostDownNotifications(rule, resolvedNotifications, "resolved")
 }
 
 func hostDownExceededDuration(rule api.AlertRuleInfo, lastSeen time.Time, now time.Time) bool {
@@ -433,6 +420,98 @@ func hostDownExceededDuration(rule api.AlertRuleInfo, lastSeen time.Time, now ti
 
 	duration := time.Duration(rule.Duration) * time.Second
 	return !now.Before(lastSeen.Add(duration))
+}
+
+func (e *AlertEngine) hostDownRecoveryConfirmed(rule api.AlertRuleInfo, hostID string, now time.Time) bool {
+	stateKey := fmt.Sprintf("host_down_recovery:%d:%s", rule.ID, hostID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	firstSeenOnline, exists := e.recoveryStates[stateKey]
+	if !exists {
+		e.recoveryStates[stateKey] = now
+		return defaultHostDownRecoveryConfirmDuration <= 0
+	}
+
+	if now.Sub(firstSeenOnline) >= defaultHostDownRecoveryConfirmDuration {
+		delete(e.recoveryStates, stateKey)
+		return true
+	}
+	return false
+}
+
+func (e *AlertEngine) clearHostDownRecoveryState(rule api.AlertRuleInfo, hostID string) {
+	stateKey := fmt.Sprintf("host_down_recovery:%d:%s", rule.ID, hostID)
+	e.mu.Lock()
+	delete(e.recoveryStates, stateKey)
+	e.mu.Unlock()
+}
+
+func (e *AlertEngine) sendAggregatedHostDownNotifications(rule api.AlertRuleInfo, histories []*api.AlertHistoryInfo, status string) {
+	if len(histories) == 0 || e.notifier == nil {
+		return
+	}
+
+	now := time.Now()
+	notification := buildAggregatedHostDownNotification(rule, histories, status, now)
+	go func() {
+		err := e.notifier.Send(rule.NotifyChannels, notification, rule.Receivers)
+		notifyStatus := "success"
+		notifyError := ""
+		if err != nil {
+			notifyStatus = "failed"
+			notifyError = err.Error()
+			log.Printf("Failed to send aggregated host_down %s notification: %v", status, err)
+		}
+		for _, history := range histories {
+			if updateErr := e.updateAlertHistoryNotifyStatus(history.ID, notifyStatus, notifyError); updateErr != nil {
+				log.Printf("Failed to update alert history notify status: %v", updateErr)
+			}
+		}
+	}()
+}
+
+func buildAggregatedHostDownNotification(rule api.AlertRuleInfo, histories []*api.AlertHistoryInfo, status string, now time.Time) *api.AlertHistoryInfo {
+	hostLabels := make([]string, 0, len(histories))
+	for _, history := range histories {
+		hostLabels = append(hostLabels, hostNotificationLabel(history))
+	}
+
+	statusText := "离线"
+	actionText := "告警"
+	if status == "resolved" {
+		statusText = "恢复"
+		actionText = "恢复"
+	}
+
+	message := fmt.Sprintf("主机%s%s：共 %d 台主机。%s", statusText, actionText, len(histories), strings.Join(hostLabels, "、"))
+	notification := &api.AlertHistoryInfo{
+		RuleID:       rule.ID,
+		RuleName:     rule.Name,
+		RuleDesc:     rule.Description,
+		HostID:       "aggregated",
+		Hostname:     fmt.Sprintf("%d hosts", len(histories)),
+		Severity:     rule.Severity,
+		Status:       status,
+		FiredAt:      histories[0].FiredAt,
+		MetricType:   "host_down",
+		MetricValue:  float64(len(histories)),
+		Threshold:    rule.Threshold,
+		Message:      message,
+		Labels:       map[string]string{"aggregation": "host_down", "host_count": fmt.Sprintf("%d", len(histories))},
+		NotifyStatus: "pending",
+	}
+	if status == "resolved" {
+		notification.ResolvedAt = &now
+	}
+	return notification
+}
+
+func hostNotificationLabel(history *api.AlertHistoryInfo) string {
+	if strings.TrimSpace(history.Hostname) == "" || history.Hostname == history.HostID {
+		return history.HostID
+	}
+	return fmt.Sprintf("%s(%s)", history.Hostname, history.HostID)
 }
 
 func (e *AlertEngine) updateSpecialAlertState(stateKey string, rule api.AlertRuleInfo, hostID string, now time.Time) bool {

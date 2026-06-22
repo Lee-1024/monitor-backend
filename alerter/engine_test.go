@@ -1,6 +1,7 @@
 package alerter
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,58 @@ func TestSpecialAlertStateRequiresDurationBeforeFiring(t *testing.T) {
 
 	if !engine.updateSpecialAlertState("1:host-a:service", rule, "host-a", now.Add(30*time.Second)) {
 		t.Fatal("special alert should fire after duration is reached")
+	}
+}
+
+func TestHostDownRecoveryRequiresStableOnlinePeriod(t *testing.T) {
+	engine := NewAlertEngine(nil, nil, time.Second)
+	rule := api.AlertRuleInfo{ID: 1}
+	now := time.Now()
+
+	if engine.hostDownRecoveryConfirmed(rule, "host-a", now) {
+		t.Fatal("recovery should enter pending state on first online check")
+	}
+
+	if engine.hostDownRecoveryConfirmed(rule, "host-a", now.Add(defaultHostDownRecoveryConfirmDuration-time.Second)) {
+		t.Fatal("recovery should remain pending before the confirmation period is reached")
+	}
+
+	if !engine.hostDownRecoveryConfirmed(rule, "host-a", now.Add(defaultHostDownRecoveryConfirmDuration)) {
+		t.Fatal("recovery should be confirmed after the stable online period")
+	}
+}
+
+func TestBuildAggregatedHostDownNotificationSummarizesHosts(t *testing.T) {
+	now := time.Now()
+	rule := api.AlertRuleInfo{
+		ID:          1,
+		Name:        "主机离线",
+		Description: "主机长时间未上报",
+		Severity:    "critical",
+	}
+	histories := []*api.AlertHistoryInfo{
+		{ID: 1, HostID: "host-a", Hostname: "alpha", FiredAt: now, Status: "firing"},
+		{ID: 2, HostID: "host-b", Hostname: "beta", FiredAt: now.Add(time.Second), Status: "firing"},
+		{ID: 3, HostID: "host-c", Hostname: "", FiredAt: now.Add(2 * time.Second), Status: "firing"},
+	}
+
+	notification := buildAggregatedHostDownNotification(rule, histories, "firing", now)
+
+	if notification.RuleID != rule.ID || notification.RuleName != rule.Name {
+		t.Fatalf("unexpected rule fields: %#v", notification)
+	}
+	if notification.HostID != "aggregated" || notification.Hostname != "3 hosts" {
+		t.Fatalf("unexpected aggregate host fields: host_id=%s hostname=%s", notification.HostID, notification.Hostname)
+	}
+	if notification.Status != "firing" || notification.MetricType != "host_down" {
+		t.Fatalf("unexpected status fields: %#v", notification)
+	}
+	if notification.Message == "" ||
+		!strings.Contains(notification.Message, "共 3 台主机") ||
+		!strings.Contains(notification.Message, "alpha(host-a)") ||
+		!strings.Contains(notification.Message, "beta(host-b)") ||
+		!strings.Contains(notification.Message, "host-c") {
+		t.Fatalf("unexpected aggregate message: %s", notification.Message)
 	}
 }
 
