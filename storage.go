@@ -46,6 +46,7 @@ func NewStorage(config *Config) *Storage {
 		config: config,
 	}
 	SetDockerSnapshotRetentionDays(config.Retention.EffectiveDockerSnapshotDays())
+	SetProcessSnapshotRetentionDays(config.Retention.EffectiveProcessSnapshotDays())
 
 	// 初始化InfluxDB
 	storage.influxClient = influxdb2.NewClient(

@@ -104,7 +104,15 @@ type RedisConfig struct {
 }
 
 type RetentionConfig struct {
-	DockerSnapshotDays int `yaml:"docker_snapshot_days"`
+	ProcessSnapshotDays int `yaml:"process_snapshot_days"`
+	DockerSnapshotDays  int `yaml:"docker_snapshot_days"`
+}
+
+func (c RetentionConfig) EffectiveProcessSnapshotDays() int {
+	if c.ProcessSnapshotDays > 0 {
+		return c.ProcessSnapshotDays
+	}
+	return 30
 }
 
 func (c RetentionConfig) EffectiveDockerSnapshotDays() int {
@@ -151,7 +159,8 @@ func LoadConfig() *Config {
 			DB:       0,
 		},
 		Retention: RetentionConfig{
-			DockerSnapshotDays: 30,
+			ProcessSnapshotDays: 30,
+			DockerSnapshotDays:  30,
 		},
 	}
 
