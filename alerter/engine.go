@@ -17,6 +17,7 @@ import (
 type AlertEngine struct {
 	storage        api.StorageInterface
 	notifier       *notifier.NotificationManager
+	healthChecker  HealthChecker
 	checkInterval  time.Duration
 	running        bool
 	stopChan       chan struct{}
@@ -31,6 +32,10 @@ type AlertEngine struct {
 
 const defaultHostDownRecoveryConfirmDuration = 60 * time.Second
 
+type HealthChecker interface {
+	Healthy() error
+}
+
 // AlertState 告警状态
 type AlertState struct {
 	RuleID      uint
@@ -39,6 +44,10 @@ type AlertState struct {
 	StartTime   time.Time
 	LastCheck   time.Time
 	TriggerTime *time.Time
+}
+
+func (e *AlertEngine) SetHealthChecker(checker HealthChecker) {
+	e.healthChecker = checker
 }
 
 // NewAlertEngine 创建告警引擎
@@ -207,6 +216,13 @@ func serverProbeAlertHostID(targetID uint) string {
 
 // checkHostDownRule 检查主机宕机规则
 func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.AgentInfo) {
+	if e.healthChecker != nil {
+		if err := e.healthChecker.Healthy(); err != nil {
+			log.Printf("[AlertEngine] Backend unhealthy, skipping host_down rule %s to avoid false mass alerts: %v", rule.Name, err)
+			return
+		}
+	}
+
 	// 获取需要检查的主机列表
 	hostsToCheck := e.getHostsToCheck(rule, allAgents)
 	var firingNotifications []*api.AlertHistoryInfo

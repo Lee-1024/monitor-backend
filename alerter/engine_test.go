@@ -1,6 +1,7 @@
 package alerter
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,30 @@ func TestBuildAggregatedHostDownNotificationSummarizesHosts(t *testing.T) {
 		!strings.Contains(notification.Message, "host-c") {
 		t.Fatalf("unexpected aggregate message: %s", notification.Message)
 	}
+}
+
+func TestHostDownRuleSkipsWhenBackendHealthIsUnhealthy(t *testing.T) {
+	checker := &stubHealthChecker{err: errors.New("postgres ping failed")}
+	engine := NewAlertEngine(nil, nil, time.Second)
+	engine.SetHealthChecker(checker)
+
+	engine.checkHostDownRule(api.AlertRuleInfo{ID: 1, Duration: 30}, []api.AgentInfo{
+		{HostID: "host-a", LastSeen: time.Now().Add(-time.Hour)},
+	})
+
+	if checker.calls != 1 {
+		t.Fatalf("health checker calls = %d, want 1", checker.calls)
+	}
+}
+
+type stubHealthChecker struct {
+	calls int
+	err   error
+}
+
+func (s *stubHealthChecker) Healthy() error {
+	s.calls++
+	return s.err
 }
 
 func TestGPUAvailableRequiresAtLeastOneDevice(t *testing.T) {

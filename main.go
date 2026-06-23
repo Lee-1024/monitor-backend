@@ -69,6 +69,7 @@ func main() {
 
 	// 启动告警引擎
 	alertEngine := alerter.NewAlertEngine(storageAdapter, notificationManager, 30*time.Second)
+	alertEngine.SetHealthChecker(NewBackendHealthChecker(storage))
 	alertEngine.Start()
 	defer alertEngine.Stop()
 
