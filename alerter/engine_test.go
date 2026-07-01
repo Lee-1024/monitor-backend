@@ -106,14 +106,87 @@ func TestHostDownRuleSkipsWhenBackendHealthIsUnhealthy(t *testing.T) {
 	}
 }
 
+func TestHostDownRuleCreatesBackendHealthAlertDuringStartupGrace(t *testing.T) {
+	storage := &backendHealthAlertStorage{}
+	checker := &stubHealthChecker{status: HealthStatus{
+		Healthy: false,
+		Reason:  "backend startup grace period active",
+		Kind:    "startup_grace",
+	}}
+	engine := NewAlertEngine(storage, nil, time.Second)
+	engine.SetHealthChecker(checker)
+
+	engine.checkHostDownRule(api.AlertRuleInfo{ID: 7, Name: "主机宕机", Severity: "critical", Duration: 30}, []api.AgentInfo{
+		{HostID: "host-a", Hostname: "alpha", LastSeen: time.Now().Add(-time.Hour)},
+	})
+
+	if len(storage.created) != 1 {
+		t.Fatalf("created alerts = %d, want 1 backend health alert", len(storage.created))
+	}
+	if got := storage.created[0].MetricType; got != "backend_health" {
+		t.Fatalf("created metric type = %q, want backend_health", got)
+	}
+	if got := storage.created[0].HostID; got != backendHealthHostID {
+		t.Fatalf("created host id = %q, want %q", got, backendHealthHostID)
+	}
+	for _, history := range storage.created {
+		if history.MetricType == "host_down" {
+			t.Fatal("host_down alert should not be created while backend health is gated")
+		}
+	}
+}
+
 type stubHealthChecker struct {
-	calls int
-	err   error
+	calls  int
+	err    error
+	status HealthStatus
 }
 
 func (s *stubHealthChecker) Healthy() error {
 	s.calls++
 	return s.err
+}
+
+func (s *stubHealthChecker) Status() HealthStatus {
+	s.calls++
+	if s.err != nil {
+		return HealthStatus{Healthy: false, Reason: s.err.Error(), Kind: "dependency"}
+	}
+	if s.status.Reason != "" || s.status.Kind != "" || s.status.Healthy {
+		return s.status
+	}
+	return HealthStatus{Healthy: true}
+}
+
+type backendHealthAlertStorage struct {
+	api.StorageInterface
+	created []api.AlertHistoryInfo
+}
+
+func (s *backendHealthAlertStorage) ListAlertHistory(ruleID *uint, hostID string, status string, limit int) ([]api.AlertHistoryInfo, error) {
+	return nil, nil
+}
+
+func (s *backendHealthAlertStorage) CreateAlertHistory(history *api.AlertHistoryInfo) (*api.AlertHistoryInfo, error) {
+	history.ID = uint(len(s.created) + 1)
+	s.created = append(s.created, *history)
+	return history, nil
+}
+
+func (s *backendHealthAlertStorage) UpdateAlertHistory(id uint, status string, resolvedAt *time.Time) error {
+	return nil
+}
+
+func (s *backendHealthAlertStorage) UpdateAlertHistoryNotifyStatus(id uint, notifyStatus string, notifyError string) error {
+	return nil
+}
+
+func (s *backendHealthAlertStorage) UpdateAlertHistoryMetricValue(id uint, metricValue float64, message string) error {
+	return nil
+}
+
+func (s *backendHealthAlertStorage) IsRuleSilenced(ruleID uint, hostID string) bool {
+	return false
 }
 
 func TestGPUAvailableRequiresAtLeastOneDevice(t *testing.T) {

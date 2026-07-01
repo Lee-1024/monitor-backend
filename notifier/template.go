@@ -14,6 +14,7 @@ func metricTypeDisplayName(metricType string) string {
 		"disk":            "磁盘使用率",
 		"network":         "网络",
 		"host_down":       "主机宕机",
+		"backend_health":  "后台服务健康",
 		"service_port":    "服务端口",
 		"server_probe":    "服务端探测",
 		"gpu_unavailable": "GPU不可用",

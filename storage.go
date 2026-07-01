@@ -47,6 +47,11 @@ func NewStorage(config *Config) *Storage {
 	}
 	SetDockerSnapshotRetentionDays(config.Retention.EffectiveDockerSnapshotDays())
 	SetProcessSnapshotRetentionDays(config.Retention.EffectiveProcessSnapshotDays())
+	SetSnapshotCleanupThrottle(
+		config.Retention.EffectiveCleanupBatchSize(),
+		config.Retention.EffectiveCleanupMaxBatchesPerRun(),
+		config.Retention.EffectiveCleanupIntervalSeconds(),
+	)
 
 	// 初始化InfluxDB
 	storage.influxClient = influxdb2.NewClient(
@@ -1461,13 +1466,34 @@ func SetLogRetentionDays(days int) {
 
 var processSnapshotRetentionDays = 30
 
-const processSnapshotCleanupBatchSize = 5000
+var processSnapshotCleanupBatchSize = 500
+var snapshotCleanupMaxBatchesPerRun = 1
+var snapshotCleanupInterval = time.Minute
 
 func SetProcessSnapshotRetentionDays(days int) {
 	if days > 0 && days <= 365 {
 		processSnapshotRetentionDays = days
 		log.Printf("[ProcessCleanup] Process snapshot retention set to %d days", days)
 	}
+}
+
+func SetSnapshotCleanupThrottle(batchSize int, maxBatchesPerRun int, intervalSeconds int) {
+	if batchSize > 0 && batchSize <= 100000 {
+		processSnapshotCleanupBatchSize = batchSize
+		dockerSnapshotCleanupBatchSize = batchSize
+	}
+	if maxBatchesPerRun > 0 && maxBatchesPerRun <= 1000 {
+		snapshotCleanupMaxBatchesPerRun = maxBatchesPerRun
+	}
+	if intervalSeconds > 0 {
+		snapshotCleanupInterval = time.Duration(intervalSeconds) * time.Second
+	}
+	log.Printf(
+		"[SnapshotCleanup] Throttle configured: batch_size=%d max_batches_per_run=%d interval=%s",
+		processSnapshotCleanupBatchSize,
+		snapshotCleanupMaxBatchesPerRun,
+		snapshotCleanupInterval,
+	)
 }
 
 func processSnapshotCutoff(now time.Time) time.Time {
@@ -1478,15 +1504,9 @@ func (s *Storage) StartProcessSnapshotCleanup() {
 	go s.cleanupOldProcessSnapshots()
 
 	go func() {
-		for {
-			now := time.Now()
-			next := time.Date(now.Year(), now.Month(), now.Day(), 3, 30, 0, 0, now.Location())
-			if next.Before(now) {
-				next = next.Add(24 * time.Hour)
-			}
-
-			timer := time.NewTimer(next.Sub(now))
-			<-timer.C
+		ticker := time.NewTicker(snapshotCleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
 			s.cleanupOldProcessSnapshots()
 		}
 	}()
@@ -1495,7 +1515,7 @@ func (s *Storage) StartProcessSnapshotCleanup() {
 func (s *Storage) cleanupOldProcessSnapshots() {
 	cutoff := processSnapshotCutoff(time.Now())
 
-	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", cutoff, processSnapshotCleanupBatchSize)
+	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
 	if err != nil {
 		log.Printf("[ProcessCleanup] Failed to cleanup old process snapshots: %v", err)
 		return
@@ -1509,7 +1529,7 @@ var serviceStatusRetentionDays = 30
 
 var dockerSnapshotRetentionDays = 30
 
-const dockerSnapshotCleanupBatchSize = 5000
+var dockerSnapshotCleanupBatchSize = 500
 
 func SetDockerSnapshotRetentionDays(days int) {
 	if days > 0 && days <= 365 {
@@ -1526,15 +1546,9 @@ func (s *Storage) StartDockerSnapshotCleanup() {
 	go s.cleanupOldDockerSnapshots()
 
 	go func() {
-		for {
-			now := time.Now()
-			next := time.Date(now.Year(), now.Month(), now.Day(), 3, 45, 0, 0, now.Location())
-			if next.Before(now) {
-				next = next.Add(24 * time.Hour)
-			}
-
-			timer := time.NewTimer(next.Sub(now))
-			<-timer.C
+		ticker := time.NewTicker(snapshotCleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
 			s.cleanupOldDockerSnapshots()
 		}
 	}()
@@ -1543,7 +1557,7 @@ func (s *Storage) StartDockerSnapshotCleanup() {
 func (s *Storage) cleanupOldDockerSnapshots() {
 	cutoff := dockerSnapshotCutoff(time.Now())
 
-	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", cutoff, dockerSnapshotCleanupBatchSize)
+	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", cutoff, dockerSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
 	if err != nil {
 		log.Printf("[DockerCleanup] Failed to cleanup old docker snapshots: %v", err)
 		return
@@ -1565,13 +1579,34 @@ func cleanupBatchDeleteSQL(table string) string {
 	`, table, table)
 }
 
-func (s *Storage) cleanupOldRowsInBatches(table string, cutoff time.Time, batchSize int) (int64, error) {
+type cleanupRunLimit struct {
+	maxBatches int
+	used       int
+}
+
+func newCleanupRunLimit(maxBatches int) *cleanupRunLimit {
+	return &cleanupRunLimit{maxBatches: maxBatches}
+}
+
+func (l *cleanupRunLimit) allowNextBatch() bool {
+	if l.maxBatches <= 0 {
+		return false
+	}
+	if l.used >= l.maxBatches {
+		return false
+	}
+	l.used++
+	return true
+}
+
+func (s *Storage) cleanupOldRowsInBatches(table string, cutoff time.Time, batchSize int, maxBatches int) (int64, error) {
 	if batchSize <= 0 {
 		return 0, fmt.Errorf("cleanup batch size must be positive")
 	}
+	limit := newCleanupRunLimit(maxBatches)
 
 	var total int64
-	for {
+	for limit.allowNextBatch() {
 		result := s.postgres.Exec(cleanupBatchDeleteSQL(table), cutoff, batchSize)
 		if result.Error != nil {
 			return total, result.Error
@@ -1582,6 +1617,7 @@ func (s *Storage) cleanupOldRowsInBatches(table string, cutoff time.Time, batchS
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	return total, nil
 }
 
 func serviceStatusCutoff(now time.Time) time.Time {

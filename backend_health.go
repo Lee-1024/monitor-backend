@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"monitor-backend/alerter"
 	"sync"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 type BackendHealthChecker struct {
 	storage        *Storage
 	recoveryGrace  time.Duration
+	startupGrace   time.Duration
+	startedAt      time.Time
 	now            func() time.Time
 	mu             sync.Mutex
 	unhealthySince *time.Time
@@ -22,21 +25,43 @@ func NewBackendHealthChecker(storage *Storage) *BackendHealthChecker {
 	return &BackendHealthChecker{
 		storage:       storage,
 		recoveryGrace: 2 * time.Minute,
+		startupGrace:  time.Duration(storage.config.Retention.EffectiveBackendStartupGraceSeconds()) * time.Second,
+		startedAt:     time.Now(),
 		now:           time.Now,
 	}
 }
 
 func (h *BackendHealthChecker) Healthy() error {
-	if h == nil || h.storage == nil {
+	status := h.Status()
+	if status.Healthy {
 		return nil
+	}
+	return fmt.Errorf("%s", status.Reason)
+}
+
+func (h *BackendHealthChecker) Status() alerter.HealthStatus {
+	if h == nil || h.storage == nil {
+		return alerter.HealthStatus{Healthy: true}
+	}
+
+	now := h.now()
+	if !h.startedAt.IsZero() && h.startupGrace > 0 && now.Sub(h.startedAt) < h.startupGrace {
+		return alerter.HealthStatus{
+			Healthy: false,
+			Reason:  fmt.Sprintf("backend startup grace period active for %s", h.startupGrace-now.Sub(h.startedAt)),
+			Kind:    "startup_grace",
+		}
 	}
 
 	if err := h.checkDependencies(); err != nil {
 		h.markUnhealthy()
-		return err
+		return alerter.HealthStatus{Healthy: false, Reason: err.Error(), Kind: "dependency"}
 	}
 
-	return h.markHealthy()
+	if err := h.markHealthy(); err != nil {
+		return alerter.HealthStatus{Healthy: false, Reason: err.Error(), Kind: "recovery_grace"}
+	}
+	return alerter.HealthStatus{Healthy: true}
 }
 
 func (h *BackendHealthChecker) checkDependencies() error {

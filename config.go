@@ -104,8 +104,12 @@ type RedisConfig struct {
 }
 
 type RetentionConfig struct {
-	ProcessSnapshotDays int `yaml:"process_snapshot_days"`
-	DockerSnapshotDays  int `yaml:"docker_snapshot_days"`
+	ProcessSnapshotDays        int `yaml:"process_snapshot_days"`
+	DockerSnapshotDays         int `yaml:"docker_snapshot_days"`
+	CleanupBatchSize           int `yaml:"cleanup_batch_size"`
+	CleanupMaxBatchesPerRun    int `yaml:"cleanup_max_batches_per_run"`
+	CleanupIntervalSeconds     int `yaml:"cleanup_interval_seconds"`
+	BackendStartupGraceSeconds int `yaml:"backend_startup_grace_seconds"`
 }
 
 func (c RetentionConfig) EffectiveProcessSnapshotDays() int {
@@ -120,6 +124,34 @@ func (c RetentionConfig) EffectiveDockerSnapshotDays() int {
 		return c.DockerSnapshotDays
 	}
 	return 30
+}
+
+func (c RetentionConfig) EffectiveCleanupBatchSize() int {
+	if c.CleanupBatchSize > 0 {
+		return c.CleanupBatchSize
+	}
+	return 500
+}
+
+func (c RetentionConfig) EffectiveCleanupMaxBatchesPerRun() int {
+	if c.CleanupMaxBatchesPerRun > 0 {
+		return c.CleanupMaxBatchesPerRun
+	}
+	return 1
+}
+
+func (c RetentionConfig) EffectiveCleanupIntervalSeconds() int {
+	if c.CleanupIntervalSeconds > 0 {
+		return c.CleanupIntervalSeconds
+	}
+	return 60
+}
+
+func (c RetentionConfig) EffectiveBackendStartupGraceSeconds() int {
+	if c.BackendStartupGraceSeconds > 0 {
+		return c.BackendStartupGraceSeconds
+	}
+	return 180
 }
 
 type LLMConfig struct {
@@ -159,8 +191,12 @@ func LoadConfig() *Config {
 			DB:       0,
 		},
 		Retention: RetentionConfig{
-			ProcessSnapshotDays: 30,
-			DockerSnapshotDays:  30,
+			ProcessSnapshotDays:        30,
+			DockerSnapshotDays:         30,
+			CleanupBatchSize:           500,
+			CleanupMaxBatchesPerRun:    1,
+			CleanupIntervalSeconds:     60,
+			BackendStartupGraceSeconds: 180,
 		},
 	}
 

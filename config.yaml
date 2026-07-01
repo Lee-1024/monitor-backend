@@ -25,6 +25,10 @@ redis:
 retention:
   process_snapshot_days: 7
   docker_snapshot_days: 7
+  cleanup_batch_size: 500
+  cleanup_max_batches_per_run: 1
+  cleanup_interval_seconds: 60
+  backend_startup_grace_seconds: 180
 
 logging:
   level: "info"                 # debug, info, warn, error

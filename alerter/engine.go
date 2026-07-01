@@ -31,9 +31,20 @@ type AlertEngine struct {
 }
 
 const defaultHostDownRecoveryConfirmDuration = 60 * time.Second
+const backendHealthHostID = "monitor-backend"
 
 type HealthChecker interface {
 	Healthy() error
+}
+
+type HealthStatus struct {
+	Healthy bool
+	Reason  string
+	Kind    string
+}
+
+type HealthStatusProvider interface {
+	Status() HealthStatus
 }
 
 // AlertState 告警状态
@@ -216,11 +227,12 @@ func serverProbeAlertHostID(targetID uint) string {
 
 // checkHostDownRule 检查主机宕机规则
 func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.AgentInfo) {
-	if e.healthChecker != nil {
-		if err := e.healthChecker.Healthy(); err != nil {
-			log.Printf("[AlertEngine] Backend unhealthy, skipping host_down rule %s to avoid false mass alerts: %v", rule.Name, err)
-			return
-		}
+	if status := e.backendHealthStatus(); !status.Healthy {
+		log.Printf("[AlertEngine] Backend unhealthy, skipping host_down rule %s to avoid false mass alerts: %s", rule.Name, status.Reason)
+		e.ensureBackendHealthAlert(rule, status)
+		return
+	} else {
+		e.resolveBackendHealthAlert(rule)
 	}
 
 	// 获取需要检查的主机列表
@@ -427,6 +439,119 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 
 	e.sendAggregatedHostDownNotifications(rule, firingNotifications, "firing")
 	e.sendAggregatedHostDownNotifications(rule, resolvedNotifications, "resolved")
+}
+
+func (e *AlertEngine) backendHealthStatus() HealthStatus {
+	if e.healthChecker == nil {
+		return HealthStatus{Healthy: true}
+	}
+	if provider, ok := e.healthChecker.(HealthStatusProvider); ok {
+		status := provider.Status()
+		if status.Reason == "" && !status.Healthy {
+			status.Reason = "backend health check failed"
+		}
+		if status.Kind == "" && !status.Healthy {
+			status.Kind = "unknown"
+		}
+		return status
+	}
+	if err := e.healthChecker.Healthy(); err != nil {
+		return HealthStatus{Healthy: false, Reason: err.Error(), Kind: "dependency"}
+	}
+	return HealthStatus{Healthy: true}
+}
+
+func (e *AlertEngine) ensureBackendHealthAlert(rule api.AlertRuleInfo, status HealthStatus) {
+	if e.storage == nil {
+		return
+	}
+	if e.storage.IsRuleSilenced(rule.ID, backendHealthHostID) {
+		return
+	}
+	historyList, err := e.storage.ListAlertHistory(&rule.ID, backendHealthHostID, "firing", 1)
+	if err != nil {
+		log.Printf("[BackendHealth] Failed to list backend health alerts: %v", err)
+		return
+	}
+
+	message := backendHealthAlertMessage(status)
+	if len(historyList) > 0 {
+		existing := &historyList[0]
+		if updateErr := e.storage.UpdateAlertHistoryMetricValue(existing.ID, 0, message); updateErr != nil {
+			log.Printf("[BackendHealth] Failed to update backend health alert message: %v", updateErr)
+		}
+		return
+	}
+
+	now := time.Now()
+	history := &api.AlertHistoryInfo{
+		RuleID:       rule.ID,
+		RuleName:     "后台服务健康异常",
+		RuleDesc:     "后台服务重启或依赖异常时抑制主机宕机告警",
+		HostID:       backendHealthHostID,
+		Hostname:     "monitor-backend",
+		Severity:     rule.Severity,
+		Status:       "firing",
+		FiredAt:      now,
+		MetricType:   "backend_health",
+		MetricValue:  0,
+		Threshold:    1,
+		Message:      message,
+		Labels:       map[string]string{"kind": status.Kind},
+		NotifyStatus: "pending",
+	}
+	createdHistory, err := e.storage.CreateAlertHistory(history)
+	if err != nil {
+		log.Printf("[BackendHealth] Failed to create backend health alert: %v", err)
+		return
+	}
+	e.notifySpecialAlert(rule, api.AgentInfo{HostID: backendHealthHostID, Hostname: "monitor-backend"}, createdHistory, fmt.Sprintf("%d:%s:backend_health", rule.ID, backendHealthHostID))
+}
+
+func (e *AlertEngine) resolveBackendHealthAlert(rule api.AlertRuleInfo) {
+	if e.storage == nil {
+		return
+	}
+	historyList, err := e.storage.ListAlertHistory(&rule.ID, backendHealthHostID, "firing", 1)
+	if err != nil || len(historyList) == 0 {
+		return
+	}
+
+	now := time.Now()
+	existing := &historyList[0]
+	if err := e.storage.UpdateAlertHistory(existing.ID, "resolved", &now); err != nil {
+		log.Printf("[BackendHealth] Failed to resolve backend health alert: %v", err)
+		return
+	}
+
+	message := "后台服务健康检查已恢复，主机宕机告警恢复正常检查"
+	if err := e.storage.UpdateAlertHistoryMetricValue(existing.ID, 1, message); err != nil {
+		log.Printf("[BackendHealth] Failed to update resolved backend health alert message: %v", err)
+	}
+	existing.Status = "resolved"
+	existing.ResolvedAt = &now
+	existing.MetricValue = 1
+	existing.Message = message
+	if e.notifier != nil {
+		go e.notifier.Send(rule.NotifyChannels, existing, rule.Receivers)
+	}
+}
+
+func backendHealthAlertMessage(status HealthStatus) string {
+	reason := strings.TrimSpace(status.Reason)
+	if reason == "" {
+		reason = "后台服务健康检查未通过"
+	}
+	switch status.Kind {
+	case "startup_grace":
+		return fmt.Sprintf("后台服务刚启动或重启，处于恢复保护期：%s。主机宕机告警已临时抑制。", reason)
+	case "recovery_grace":
+		return fmt.Sprintf("后台服务依赖刚恢复，处于恢复保护期：%s。主机宕机告警已临时抑制。", reason)
+	case "dependency":
+		return fmt.Sprintf("后台服务依赖异常：%s。主机宕机告警已临时抑制。", reason)
+	default:
+		return fmt.Sprintf("后台服务健康异常：%s。主机宕机告警已临时抑制。", reason)
+	}
 }
 
 func hostDownExceededDuration(rule api.AlertRuleInfo, lastSeen time.Time, now time.Time) bool {
@@ -1630,6 +1755,10 @@ func (e *AlertEngine) sendRepeatedSpecialNotification(rule api.AlertRuleInfo, ho
 }
 
 func (e *AlertEngine) notifySpecialAlert(rule api.AlertRuleInfo, host api.AgentInfo, history *api.AlertHistoryInfo, inhibitKey string) {
+	if e.notifier == nil {
+		return
+	}
+
 	e.notifyMu.RLock()
 	lastNotify, exists := e.lastNotifyTime[inhibitKey]
 	e.notifyMu.RUnlock()
