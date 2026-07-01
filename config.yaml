@@ -23,11 +23,17 @@ redis:
   db: 0
 
 retention:
+  # 进程快照历史保留天数；超过该天数的数据会被后台清理任务删除。
   process_snapshot_days: 7
+  # Docker 容器快照历史保留天数；超过该天数的数据会被后台清理任务删除。
   docker_snapshot_days: 7
+  # 单次 SQL 最多删除多少条过期快照。数据量大时不要调太高，避免 PostgreSQL 事务/WAL/IO 压力过大。
   cleanup_batch_size: 500
+  # 每一轮清理最多执行多少个删除批次。默认 1 表示每轮最多删除 cleanup_batch_size 条，慢慢清理历史欠账。
   cleanup_max_batches_per_run: 1
+  # 清理任务执行间隔，单位秒。配合上面两个参数控制后台删除速度。
   cleanup_interval_seconds: 60
+  # 后台服务启动/重启后的保护期，单位秒。保护期内只触发后台健康告警，不触发所有主机的宕机告警。
   backend_startup_grace_seconds: 180
 
 logging:
