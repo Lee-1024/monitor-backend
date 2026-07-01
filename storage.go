@@ -1461,6 +1461,8 @@ func SetLogRetentionDays(days int) {
 
 var processSnapshotRetentionDays = 30
 
+const processSnapshotCleanupBatchSize = 5000
+
 func SetProcessSnapshotRetentionDays(days int) {
 	if days > 0 && days <= 365 {
 		processSnapshotRetentionDays = days
@@ -1492,19 +1494,22 @@ func (s *Storage) StartProcessSnapshotCleanup() {
 
 func (s *Storage) cleanupOldProcessSnapshots() {
 	cutoff := processSnapshotCutoff(time.Now())
-	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&ProcessSnapshot{})
-	if result.Error != nil {
-		log.Printf("[ProcessCleanup] Failed to cleanup old process snapshots: %v", result.Error)
+
+	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", cutoff, processSnapshotCleanupBatchSize)
+	if err != nil {
+		log.Printf("[ProcessCleanup] Failed to cleanup old process snapshots: %v", err)
 		return
 	}
-	if result.RowsAffected > 0 {
-		log.Printf("[ProcessCleanup] Cleaned up %d process snapshots older than %d days", result.RowsAffected, processSnapshotRetentionDays)
+	if deleted > 0 {
+		log.Printf("[ProcessCleanup] Cleaned up %d process snapshots older than %d days", deleted, processSnapshotRetentionDays)
 	}
 }
 
 var serviceStatusRetentionDays = 30
 
 var dockerSnapshotRetentionDays = 30
+
+const dockerSnapshotCleanupBatchSize = 5000
 
 func SetDockerSnapshotRetentionDays(days int) {
 	if days > 0 && days <= 365 {
@@ -1537,13 +1542,45 @@ func (s *Storage) StartDockerSnapshotCleanup() {
 
 func (s *Storage) cleanupOldDockerSnapshots() {
 	cutoff := dockerSnapshotCutoff(time.Now())
-	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&DockerContainerSnapshot{})
-	if result.Error != nil {
-		log.Printf("[DockerCleanup] Failed to cleanup old docker snapshots: %v", result.Error)
+
+	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", cutoff, dockerSnapshotCleanupBatchSize)
+	if err != nil {
+		log.Printf("[DockerCleanup] Failed to cleanup old docker snapshots: %v", err)
 		return
 	}
-	if result.RowsAffected > 0 {
-		log.Printf("[DockerCleanup] Cleaned up %d docker snapshots older than %d days", result.RowsAffected, dockerSnapshotRetentionDays)
+	if deleted > 0 {
+		log.Printf("[DockerCleanup] Cleaned up %d docker snapshots older than %d days", deleted, dockerSnapshotRetentionDays)
+	}
+}
+
+func cleanupBatchDeleteSQL(table string) string {
+	return fmt.Sprintf(`
+		DELETE FROM %s
+		WHERE id IN (
+			SELECT id FROM %s
+			WHERE timestamp < ?
+			ORDER BY id
+			LIMIT ?
+		)
+	`, table, table)
+}
+
+func (s *Storage) cleanupOldRowsInBatches(table string, cutoff time.Time, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("cleanup batch size must be positive")
+	}
+
+	var total int64
+	for {
+		result := s.postgres.Exec(cleanupBatchDeleteSQL(table), cutoff, batchSize)
+		if result.Error != nil {
+			return total, result.Error
+		}
+		total += result.RowsAffected
+		if result.RowsAffected < int64(batchSize) {
+			return total, nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

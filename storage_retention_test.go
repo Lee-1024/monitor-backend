@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,5 +46,19 @@ func TestRetentionConfigKeepsExplicitProcessSnapshotDays(t *testing.T) {
 
 	if got := cfg.EffectiveProcessSnapshotDays(); got != 14 {
 		t.Fatalf("EffectiveProcessSnapshotDays() = %d, want 14", got)
+	}
+}
+
+func TestProcessSnapshotCleanupUsesBatches(t *testing.T) {
+	if processSnapshotCleanupBatchSize <= 0 {
+		t.Fatalf("processSnapshotCleanupBatchSize = %d, want positive", processSnapshotCleanupBatchSize)
+	}
+
+	if got := cleanupBatchDeleteSQL("process_snapshots"); got == "" {
+		t.Fatal("cleanupBatchDeleteSQL returned empty SQL")
+	} else if !strings.Contains(got, "LIMIT ?") {
+		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
+	} else if !strings.Contains(got, "process_snapshots") {
+		t.Fatalf("cleanup SQL = %q, want process_snapshots table", got)
 	}
 }

@@ -23,8 +23,8 @@ redis:
   db: 0
 
 retention:
-  process_snapshot_days: 30
-  docker_snapshot_days: 30
+  process_snapshot_days: 7
+  docker_snapshot_days: 7
 
 logging:
   level: "info"                 # debug, info, warn, error

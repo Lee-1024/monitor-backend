@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,5 +61,19 @@ func TestDockerContainerTotalUsesLatestDistinctIDs(t *testing.T) {
 
 	if got := dockerContainerTotalFromLatestIDs(ids); got != 2 {
 		t.Fatalf("dockerContainerTotalFromLatestIDs() = %d, want 2", got)
+	}
+}
+
+func TestDockerSnapshotCleanupUsesBatches(t *testing.T) {
+	if dockerSnapshotCleanupBatchSize <= 0 {
+		t.Fatalf("dockerSnapshotCleanupBatchSize = %d, want positive", dockerSnapshotCleanupBatchSize)
+	}
+
+	if got := cleanupBatchDeleteSQL("docker_container_snapshots"); got == "" {
+		t.Fatal("cleanupBatchDeleteSQL returned empty SQL")
+	} else if !strings.Contains(got, "LIMIT ?") {
+		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
+	} else if !strings.Contains(got, "docker_container_snapshots") {
+		t.Fatalf("cleanup SQL = %q, want docker_container_snapshots table", got)
 	}
 }
