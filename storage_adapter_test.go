@@ -60,3 +60,23 @@ func TestChunkUintIDsSplitsLargeBatches(t *testing.T) {
 		t.Fatalf("chunk sizes = %d,%d,%d; want 2,2,1", len(chunks[0]), len(chunks[1]), len(chunks[2]))
 	}
 }
+
+func TestValidateServiceStatusDeleteIDsRejectsEmpty(t *testing.T) {
+	if err := validateServiceStatusDeleteIDs(nil); err == nil {
+		t.Fatal("expected empty ids to be rejected")
+	}
+	if err := validateServiceStatusDeleteIDs([]uint{}); err == nil {
+		t.Fatal("expected empty ids to be rejected")
+	}
+}
+
+func TestValidateServiceStatusDeleteIDsRejectsTooMany(t *testing.T) {
+	ids := make([]uint, maxServiceStatusDeleteIDs+1)
+	for i := range ids {
+		ids[i] = uint(i + 1)
+	}
+
+	if err := validateServiceStatusDeleteIDs(ids); err == nil {
+		t.Fatal("expected too many ids to be rejected")
+	}
+}

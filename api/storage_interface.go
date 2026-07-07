@@ -78,6 +78,7 @@ type StorageInterface interface {
 	// 服务状态相关
 	GetServiceStatus(hostID string) ([]ServiceInfo, error)
 	DeleteServiceStatus(hostID string) (int64, error)
+	DeleteServiceStatuses(ids []uint) (int64, error)
 
 	// 服务端探测相关
 	ListServerProbeTargets() ([]ServerProbeTargetInfo, error)

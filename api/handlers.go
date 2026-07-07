@@ -895,12 +895,25 @@ func (s *APIServer) getServiceStatus(c *gin.Context) {
 }
 
 func (s *APIServer) deleteServiceStatus(c *gin.Context) {
-	hostID := c.Query("host_id")
+	var req struct {
+		IDs []uint `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: "Invalid request: " + err.Error(),
+		})
+		return
+	}
 
-	deleted, err := s.storage.DeleteServiceStatus(hostID)
+	deleted, err := s.storage.DeleteServiceStatuses(req.IDs)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, Response{
-			Code:    500,
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "IDs") || strings.Contains(err.Error(), "too many") || strings.Contains(err.Error(), "positive") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, Response{
+			Code:    status,
 			Message: "Failed to delete service status: " + err.Error(),
 		})
 		return

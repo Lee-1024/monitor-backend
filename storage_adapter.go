@@ -31,6 +31,7 @@ const (
 	defaultHistoryQueryLimit = 1000
 	maxHistoryQueryLimit     = 5000
 	bulkDeleteChunkSize      = 1000
+	maxServiceStatusDeleteIDs = 1000
 )
 
 func boundedQueryLimit(limit int) int {
@@ -56,6 +57,21 @@ func chunkUintIDs(ids []uint, chunkSize int) [][]uint {
 		chunks = append(chunks, ids[start:end])
 	}
 	return chunks
+}
+
+func validateServiceStatusDeleteIDs(ids []uint) error {
+	if len(ids) == 0 {
+		return fmt.Errorf("no service status IDs provided")
+	}
+	if len(ids) > maxServiceStatusDeleteIDs {
+		return fmt.Errorf("too many service status IDs: %d, max %d", len(ids), maxServiceStatusDeleteIDs)
+	}
+	for _, id := range ids {
+		if id == 0 {
+			return fmt.Errorf("service status ID must be positive")
+		}
+	}
+	return nil
 }
 
 func agentListOrderExpr() clause.Expr {
@@ -2586,6 +2602,22 @@ func (s *StorageAdapter) DeleteServiceStatus(hostID string) (int64, error) {
 		return result.RowsAffected, result.Error
 	}
 	return s.storage.deleteAllRowsInBatches("service_statuses", bulkDeleteChunkSize)
+}
+
+func (s *StorageAdapter) DeleteServiceStatuses(ids []uint) (int64, error) {
+	if err := validateServiceStatusDeleteIDs(ids); err != nil {
+		return 0, err
+	}
+
+	var deleted int64
+	for _, chunk := range chunkUintIDs(ids, bulkDeleteChunkSize) {
+		result := s.storage.postgres.Where("id IN ?", chunk).Delete(&ServiceStatus{})
+		if result.Error != nil {
+			return deleted, result.Error
+		}
+		deleted += result.RowsAffected
+	}
+	return deleted, nil
 }
 
 func (s *StorageAdapter) ListServerProbeTargets() ([]api.ServerProbeTargetInfo, error) {
