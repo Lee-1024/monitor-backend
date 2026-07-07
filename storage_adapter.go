@@ -2459,6 +2459,13 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 	if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil {
 		result := serviceStatusesToAPI(cached)
 		if serviceInfosHaveIDs(result) {
+			if hostID == "" {
+				activeHosts, err := s.activeAgentHostIDs()
+				if err != nil {
+					return nil, err
+				}
+				result = filterServiceInfosByActiveHosts(result, activeHosts)
+			}
 			agentStatuses, err := s.getAgentStatusesForServices(result)
 			if err != nil {
 				return nil, err
@@ -2503,6 +2510,13 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 			return nil, err
 		}
 	} else {
+		activeHosts, err := s.activeAgentHostIDs()
+		if err != nil {
+			return nil, err
+		}
+		if len(activeHosts) == 0 {
+			return []api.ServiceInfo{}, nil
+		}
 		// 获取所有主机的最新服务状态
 		// 对于每个(host_id, name)组合，只取最新的记录
 		// 使用子查询获取每个主机每个服务的最新ID
@@ -2513,8 +2527,9 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 		}
 
 		var serviceIDs []ServiceID
-		err := s.storage.postgres.Table("service_statuses").
+		err = s.storage.postgres.Table("service_statuses").
 			Select("host_id, name, MAX(id) as max_id").
+			Where("host_id IN ?", mapKeys(activeHosts)).
 			Group("host_id, name").
 			Scan(&serviceIDs).Error
 
@@ -2537,6 +2552,13 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 		}
 	}
 
+	if hostID == "" {
+		activeHosts, err := s.activeAgentHostIDs()
+		if err != nil {
+			return nil, err
+		}
+		services = filterServiceStatusesByActiveHosts(services, activeHosts)
+	}
 	result := serviceStatusesToAPI(services)
 	agentStatuses, err := s.getAgentStatusesForServices(result)
 	if err != nil {
@@ -2544,6 +2566,48 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 	}
 
 	return applyAgentStatusToServiceInfos(result, agentStatuses), nil
+}
+
+func (s *StorageAdapter) activeAgentHostIDs() (map[string]struct{}, error) {
+	var agents []Agent
+	if err := s.storage.postgres.Select("host_id").Find(&agents).Error; err != nil {
+		return nil, err
+	}
+	hosts := make(map[string]struct{}, len(agents))
+	for _, agent := range agents {
+		if agent.HostID != "" {
+			hosts[agent.HostID] = struct{}{}
+		}
+	}
+	return hosts, nil
+}
+
+func mapKeys(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func filterServiceStatusesByActiveHosts(services []ServiceStatus, activeHosts map[string]struct{}) []ServiceStatus {
+	filtered := make([]ServiceStatus, 0, len(services))
+	for _, service := range services {
+		if _, ok := activeHosts[service.HostID]; ok {
+			filtered = append(filtered, service)
+		}
+	}
+	return filtered
+}
+
+func filterServiceInfosByActiveHosts(services []api.ServiceInfo, activeHosts map[string]struct{}) []api.ServiceInfo {
+	filtered := make([]api.ServiceInfo, 0, len(services))
+	for _, service := range services {
+		if _, ok := activeHosts[service.HostID]; ok {
+			filtered = append(filtered, service)
+		}
+	}
+	return filtered
 }
 
 func serviceInfosHaveIDs(services []api.ServiceInfo) bool {

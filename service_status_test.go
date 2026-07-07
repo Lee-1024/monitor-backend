@@ -54,3 +54,21 @@ func TestServiceStatusesToAPIDetectsMissingDatabaseID(t *testing.T) {
 		t.Fatalf("service id = %d, want 0 for missing database id", result[0].ID)
 	}
 }
+
+func TestFilterServiceStatusesByActiveHostsRemovesDeletedHosts(t *testing.T) {
+	services := []ServiceStatus{
+		{ID: 1, HostID: "active-host", Name: "nginx"},
+		{ID: 2, HostID: "deleted-host", Name: "mysql"},
+	}
+
+	result := filterServiceStatusesByActiveHosts(services, map[string]struct{}{
+		"active-host": {},
+	})
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].HostID != "active-host" {
+		t.Fatalf("host_id = %q, want active-host", result[0].HostID)
+	}
+}

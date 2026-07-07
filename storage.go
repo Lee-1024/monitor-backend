@@ -911,11 +911,39 @@ func (s *Storage) DeleteAgent(hostID string) error {
 		return err
 	}
 
-	// TODO: 可选择删除InfluxDB中的历史数据
-	// 这需要根据实际需求决定是否保留历史数据
+	if err := s.deleteAgentPostgresData(hostID); err != nil {
+		return err
+	}
+	if err := s.deleteAgentLatestCaches(hostID); err != nil {
+		log.Printf("Failed to delete latest caches for agent %s: %v", hostID, err)
+	}
 
 	log.Printf("Agent deleted: %s", hostID)
 	return nil
+}
+
+func (s *Storage) deleteAgentPostgresData(hostID string) error {
+	if strings.TrimSpace(hostID) == "" {
+		return fmt.Errorf("host_id is required")
+	}
+	if err := s.postgres.Where("host_id = ?", hostID).Delete(&ServiceStatus{}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Storage) deleteAgentLatestCaches(hostID string) error {
+	if strings.TrimSpace(hostID) == "" {
+		return fmt.Errorf("host_id is required")
+	}
+	ctx := context.Background()
+	pipe := s.redis.Pipeline()
+	pipe.Del(ctx, serviceLatestCachePrefix+hostID, processLatestCachePrefix+hostID, dockerLatestCachePrefix+hostID, fmt.Sprintf("metrics:latest:%s", hostID))
+	pipe.SRem(ctx, serviceLatestHostsKey, hostID)
+	pipe.SRem(ctx, processLatestHostsKey, hostID)
+	pipe.SRem(ctx, dockerLatestHostsKey, hostID)
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 // CleanupOldMetrics 清理旧的指标数据（保留策略）
