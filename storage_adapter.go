@@ -2458,11 +2458,14 @@ func (s *StorageAdapter) GetScriptExecutions(hostID, scriptID string, limit int)
 func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, error) {
 	if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil {
 		result := serviceStatusesToAPI(cached)
-		agentStatuses, err := s.getAgentStatusesForServices(result)
-		if err != nil {
-			return nil, err
+		if serviceInfosHaveIDs(result) {
+			agentStatuses, err := s.getAgentStatusesForServices(result)
+			if err != nil {
+				return nil, err
+			}
+			return applyAgentStatusToServiceInfos(result, agentStatuses), nil
 		}
-		return applyAgentStatusToServiceInfos(result, agentStatuses), nil
+		log.Printf("[Storage] Cached service statuses missing database IDs, falling back to PostgreSQL")
 	}
 
 	var services []ServiceStatus
@@ -2541,6 +2544,15 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 	}
 
 	return applyAgentStatusToServiceInfos(result, agentStatuses), nil
+}
+
+func serviceInfosHaveIDs(services []api.ServiceInfo) bool {
+	for _, service := range services {
+		if service.ID == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func serviceStatusesToAPI(services []ServiceStatus) []api.ServiceInfo {

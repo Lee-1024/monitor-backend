@@ -30,3 +30,27 @@ func TestApplyAgentStatusToServiceInfosMarksOfflineHostServicesOffline(t *testin
 		t.Fatalf("expected online host service to keep original status, got %q", result[1].Status)
 	}
 }
+
+func TestServiceStatusesToAPIIncludesDatabaseID(t *testing.T) {
+	services := []ServiceStatus{
+		{ID: 42, HostID: "host-1", Name: "nginx", Status: "running"},
+	}
+
+	result := serviceStatusesToAPI(services)
+
+	if result[0].ID != 42 {
+		t.Fatalf("service id = %d, want 42", result[0].ID)
+	}
+}
+
+func TestServiceStatusesToAPIDetectsMissingDatabaseID(t *testing.T) {
+	services := []ServiceStatus{
+		{HostID: "host-1", Name: "nginx", Status: "running"},
+	}
+
+	result := serviceStatusesToAPI(services)
+
+	if result[0].ID != 0 {
+		t.Fatalf("service id = %d, want 0 for missing database id", result[0].ID)
+	}
+}

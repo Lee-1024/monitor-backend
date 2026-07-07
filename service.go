@@ -379,7 +379,6 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 			status.Port = int(svc.Port)
 			status.PortAccessible = svc.PortAccessible
 		}
-		latest = append(latest, *status)
 		if err := s.storage.postgres.Create(status).Error; err != nil {
 			log.Printf("Failed to save service status: %v", err)
 			return &pb.MetricsResponse{
@@ -387,6 +386,7 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 				Message: "Failed to save service status",
 			}, err
 		}
+		latest = append(latest, *status)
 		savedCount++
 	}
 
