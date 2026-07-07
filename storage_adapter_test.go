@@ -29,8 +29,34 @@ func TestAgentListOrderExprUsesStableDisplayOrder(t *testing.T) {
 
 func TestProcessHistorySelectColumnsOnlyIncludesChartFields(t *testing.T) {
 	got := processHistorySelectColumns()
-	want := "timestamp, name, cpu_percent, memory_percent, memory_bytes"
+	want := "timestamp, name, pid, cpu_percent, memory_percent, memory_bytes"
 	if got != want {
 		t.Fatalf("processHistorySelectColumns() = %q, want %q", got, want)
+	}
+}
+
+func TestBoundedQueryLimitDefaultsAndCaps(t *testing.T) {
+	if got := boundedQueryLimit(0); got != defaultHistoryQueryLimit {
+		t.Fatalf("boundedQueryLimit(0) = %d, want %d", got, defaultHistoryQueryLimit)
+	}
+	if got := boundedQueryLimit(-10); got != defaultHistoryQueryLimit {
+		t.Fatalf("boundedQueryLimit(-10) = %d, want %d", got, defaultHistoryQueryLimit)
+	}
+	if got := boundedQueryLimit(42); got != 42 {
+		t.Fatalf("boundedQueryLimit(42) = %d, want 42", got)
+	}
+	if got := boundedQueryLimit(maxHistoryQueryLimit + 1); got != maxHistoryQueryLimit {
+		t.Fatalf("boundedQueryLimit(max+1) = %d, want %d", got, maxHistoryQueryLimit)
+	}
+}
+
+func TestChunkUintIDsSplitsLargeBatches(t *testing.T) {
+	chunks := chunkUintIDs([]uint{1, 2, 3, 4, 5}, 2)
+
+	if len(chunks) != 3 {
+		t.Fatalf("len(chunks) = %d, want 3", len(chunks))
+	}
+	if len(chunks[0]) != 2 || len(chunks[1]) != 2 || len(chunks[2]) != 1 {
+		t.Fatalf("chunk sizes = %d,%d,%d; want 2,2,1", len(chunks[0]), len(chunks[1]), len(chunks[2]))
 	}
 }

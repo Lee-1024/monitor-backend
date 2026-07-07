@@ -60,6 +60,29 @@ type serverProbeSummary struct {
 	FailedTargets []string
 }
 
+const inspectionRecordDeleteBatchSize = 1000
+
+func deleteInspectionRecordsByReportIDInBatches(db *gorm.DB, reportID uint) error {
+	for {
+		result := db.Exec(`
+			DELETE FROM inspection_records
+			WHERE id IN (
+				SELECT id FROM inspection_records
+				WHERE report_id = ?
+				ORDER BY id
+				LIMIT ?
+			)
+		`, reportID, inspectionRecordDeleteBatchSize)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected < inspectionRecordDeleteBatchSize {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // InspectionReportInfo 巡检日报信息
 type InspectionReportInfo struct {
 	ID              uint                   `json:"id"`
@@ -183,7 +206,14 @@ func (s *APIServer) runInspection(c *gin.Context) {
 		}
 		log.Printf("[Inspection] Reusing existing report ID: %d", reportID)
 		// 删除旧的巡检记录，以便重新生成
-		db.Table("inspection_records").Where("report_id = ?", reportID).Delete(nil)
+		if err := deleteInspectionRecordsByReportIDInBatches(db, reportID); err != nil {
+			log.Printf("[Inspection] Failed to delete old records for report %d: %v", reportID, err)
+			c.JSON(http.StatusInternalServerError, Response{
+				Code:    500,
+				Message: "Failed to delete old inspection records: " + err.Error(),
+			})
+			return
+		}
 		// 更新报告状态和时间
 		db.Table("inspection_reports").Where("id = ?", reportID).Updates(map[string]interface{}{
 			"start_time":      time.Now(),

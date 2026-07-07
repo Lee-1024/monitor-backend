@@ -54,12 +54,69 @@ func TestProcessSnapshotCleanupUsesBatches(t *testing.T) {
 		t.Fatalf("processSnapshotCleanupBatchSize = %d, want positive", processSnapshotCleanupBatchSize)
 	}
 
-	if got := cleanupBatchDeleteSQL("process_snapshots"); got == "" {
+	if got := cleanupBatchDeleteSQL("process_snapshots", "timestamp"); got == "" {
 		t.Fatal("cleanupBatchDeleteSQL returned empty SQL")
 	} else if !strings.Contains(got, "LIMIT ?") {
 		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
 	} else if !strings.Contains(got, "process_snapshots") {
 		t.Fatalf("cleanup SQL = %q, want process_snapshots table", got)
+	} else if !strings.Contains(got, "timestamp < ?") {
+		t.Fatalf("cleanup SQL = %q, want timestamp cutoff", got)
+	}
+}
+
+func TestCleanupBatchDeleteSQLSupportsCustomCutoffColumn(t *testing.T) {
+	got := cleanupBatchDeleteSQL("server_probe_results", "checked_at")
+
+	if !strings.Contains(got, "server_probe_results") {
+		t.Fatalf("cleanup SQL = %q, want server_probe_results table", got)
+	}
+	if !strings.Contains(got, "checked_at < ?") {
+		t.Fatalf("cleanup SQL = %q, want checked_at cutoff", got)
+	}
+	if !strings.Contains(got, "LIMIT ?") {
+		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
+	}
+}
+
+func TestCleanupAllBatchDeleteSQLUsesLimit(t *testing.T) {
+	got := cleanupAllBatchDeleteSQL("service_statuses")
+
+	if !strings.Contains(got, "service_statuses") {
+		t.Fatalf("cleanup SQL = %q, want service_statuses table", got)
+	}
+	if !strings.Contains(got, "ORDER BY id") {
+		t.Fatalf("cleanup SQL = %q, want stable id order", got)
+	}
+	if !strings.Contains(got, "LIMIT ?") {
+		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
+	}
+}
+
+func TestStorageIndexStatementsCoverHighVolumeQueries(t *testing.T) {
+	statements := storageIndexStatements()
+	want := []string{
+		"idx_logs_host_time_level",
+		"idx_logs_time_level",
+		"idx_service_status_host_name_id",
+		"idx_service_status_host_time",
+		"idx_script_executions_host_time",
+		"idx_anomaly_events_host_time",
+		"idx_inspection_records_report_id",
+		"idx_inspection_reports_date_created",
+	}
+
+	for _, indexName := range want {
+		found := false
+		for _, statement := range statements {
+			if strings.Contains(statement, indexName) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("storageIndexStatements() missing %s", indexName)
+		}
 	}
 }
 

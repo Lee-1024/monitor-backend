@@ -69,11 +69,13 @@ func TestDockerSnapshotCleanupUsesBatches(t *testing.T) {
 		t.Fatalf("dockerSnapshotCleanupBatchSize = %d, want positive", dockerSnapshotCleanupBatchSize)
 	}
 
-	if got := cleanupBatchDeleteSQL("docker_container_snapshots"); got == "" {
+	if got := cleanupBatchDeleteSQL("docker_container_snapshots", "timestamp"); got == "" {
 		t.Fatal("cleanupBatchDeleteSQL returned empty SQL")
 	} else if !strings.Contains(got, "LIMIT ?") {
 		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
 	} else if !strings.Contains(got, "docker_container_snapshots") {
 		t.Fatalf("cleanup SQL = %q, want docker_container_snapshots table", got)
+	} else if !strings.Contains(got, "timestamp < ?") {
+		t.Fatalf("cleanup SQL = %q, want timestamp cutoff", got)
 	}
 }

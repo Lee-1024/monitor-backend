@@ -27,6 +27,37 @@ type StorageAdapter struct {
 
 const agentOnlineTimeout = 30 * time.Second
 
+const (
+	defaultHistoryQueryLimit = 1000
+	maxHistoryQueryLimit     = 5000
+	bulkDeleteChunkSize      = 1000
+)
+
+func boundedQueryLimit(limit int) int {
+	if limit <= 0 {
+		return defaultHistoryQueryLimit
+	}
+	if limit > maxHistoryQueryLimit {
+		return maxHistoryQueryLimit
+	}
+	return limit
+}
+
+func chunkUintIDs(ids []uint, chunkSize int) [][]uint {
+	if chunkSize <= 0 {
+		chunkSize = bulkDeleteChunkSize
+	}
+	chunks := make([][]uint, 0, (len(ids)+chunkSize-1)/chunkSize)
+	for start := 0; start < len(ids); start += chunkSize {
+		end := start + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunks = append(chunks, ids[start:end])
+	}
+	return chunks
+}
+
 func agentListOrderExpr() clause.Expr {
 	return clause.Expr{
 		SQL:  "CASE WHEN status = 'online' AND last_seen > ? THEN 0 ELSE 1 END ASC, LOWER(COALESCE(NULLIF(hostname, ''), host_id)) ASC, host_id ASC",
@@ -1402,10 +1433,11 @@ func (s *StorageAdapter) DeleteCrashEvents(ids []uint) error {
 		return fmt.Errorf("no crash event IDs provided")
 	}
 
-	err := s.storage.postgres.Where("id IN ?", ids).Delete(&CrashEvent{}).Error
-	if err != nil {
-		log.Printf("[Storage] Failed to delete crash events: %v", err)
-		return err
+	for _, chunk := range chunkUintIDs(ids, bulkDeleteChunkSize) {
+		if err := s.storage.postgres.Where("id IN ?", chunk).Delete(&CrashEvent{}).Error; err != nil {
+			log.Printf("[Storage] Failed to delete crash events: %v", err)
+			return err
+		}
 	}
 
 	log.Printf("[Storage] Successfully deleted %d crash events", len(ids))
@@ -1970,9 +2002,7 @@ func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames
 	} else {
 		query = query.Where("cpu_percent > 0")
 	}
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
+	query = query.Limit(boundedQueryLimit(limit))
 	if err := query.Order("timestamp DESC").Find(&snapshots).Error; err != nil {
 		return nil, err
 	}
@@ -2034,9 +2064,7 @@ func (s *StorageAdapter) GetLogs(hostID, level string, start, end time.Time, lim
 	if !end.IsZero() {
 		query = query.Where("timestamp <= ?", end)
 	}
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
+	query = query.Limit(boundedQueryLimit(limit))
 
 	err := query.Find(&logs).Error
 	if err != nil {
@@ -2187,9 +2215,7 @@ func (s *StorageAdapter) GetAnomalyEvents(hostID, severity, anomalyType string, 
 	if isResolved != nil {
 		query = query.Where("is_resolved = ?", *isResolved)
 	}
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
+	query = query.Limit(boundedQueryLimit(limit))
 
 	err := query.Find(&events).Error
 	if err != nil {
@@ -2382,9 +2408,7 @@ func (s *StorageAdapter) GetScriptExecutions(hostID, scriptID string, limit int)
 	if scriptID != "" {
 		query = query.Where("script_id = ?", scriptID)
 	}
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
+	query = query.Limit(boundedQueryLimit(limit))
 
 	err := query.Find(&executions).Error
 	if err != nil {
@@ -2557,14 +2581,11 @@ func applyAgentStatusToServiceInfos(services []api.ServiceInfo, agentStatuses ma
 }
 
 func (s *StorageAdapter) DeleteServiceStatus(hostID string) (int64, error) {
-	query := s.storage.postgres
 	if hostID != "" {
-		query = query.Where("host_id = ?", hostID)
-	} else {
-		query = query.Session(&gorm.Session{AllowGlobalUpdate: true})
+		result := s.storage.postgres.Where("host_id = ?", hostID).Delete(&ServiceStatus{})
+		return result.RowsAffected, result.Error
 	}
-	result := query.Delete(&ServiceStatus{})
-	return result.RowsAffected, result.Error
+	return s.storage.deleteAllRowsInBatches("service_statuses", bulkDeleteChunkSize)
 }
 
 func (s *StorageAdapter) ListServerProbeTargets() ([]api.ServerProbeTargetInfo, error) {
@@ -2652,7 +2673,7 @@ func (s *StorageAdapter) ListServerProbeResults(targetID uint, limit int) ([]api
 		limit = 50
 	}
 	var rows []ServerProbeResult
-	if err := s.storage.postgres.Where("target_id = ?", targetID).Order("checked_at DESC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := s.storage.postgres.Where("target_id = ?", targetID).Order("checked_at DESC").Limit(boundedQueryLimit(limit)).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	result := make([]api.ServerProbeResultInfo, 0, len(rows))
@@ -3754,9 +3775,7 @@ func (s *StorageAdapter) ListAlertHistory(ruleID *uint, hostID string, status st
 		query = query.Where("status = ?", status)
 	}
 
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
+	query = query.Limit(boundedQueryLimit(limit))
 
 	if err := query.Order("fired_at DESC").Find(&alertHistories).Error; err != nil {
 		return nil, err
@@ -3789,7 +3808,12 @@ func (s *StorageAdapter) DeleteAlertHistories(ids []uint) error {
 	if len(ids) == 0 {
 		return fmt.Errorf("no ids provided")
 	}
-	return s.storage.postgres.Where("id IN ?", ids).Delete(&AlertHistory{}).Error
+	for _, chunk := range chunkUintIDs(ids, bulkDeleteChunkSize) {
+		if err := s.storage.postgres.Where("id IN ?", chunk).Delete(&AlertHistory{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // alertHistoryToAPI 转换为API格式

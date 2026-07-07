@@ -268,5 +268,6 @@ func (s *Storage) recordServerProbeResult(target ServerProbeTarget, result serve
 }
 
 func (s *Storage) cleanupOldServerProbeResults(ctx context.Context, cutoff time.Time) error {
-	return s.postgres.WithContext(ctx).Where("checked_at < ?", cutoff).Delete(&ServerProbeResult{}).Error
+	_, err := s.cleanupOldRowsInBatchesWithContext(ctx, "server_probe_results", "checked_at", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
+	return err
 }

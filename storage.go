@@ -125,6 +125,7 @@ func NewStorage(config *Config) *Storage {
 	storage.ensureProcessSnapshotIndexes()
 	storage.ensureDockerSnapshotIndexes()
 	storage.ensureServerProbeIndexes()
+	storage.ensureHighVolumeQueryIndexes()
 
 	// 初始化默认管理员用户
 	storage.InitDefaultAdmin()
@@ -208,6 +209,30 @@ func (s *Storage) ensureServerProbeIndexes() {
 		ON server_probe_results (target_id, checked_at DESC)
 	`).Error; err != nil {
 		log.Printf("[Storage] Failed to create server probe result index: %v", err)
+	}
+}
+
+func storageIndexStatements() []string {
+	return []string{
+		`CREATE INDEX IF NOT EXISTS idx_logs_host_time_level ON log_entries (host_id, timestamp DESC, level)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_time_level ON log_entries (timestamp DESC, level)`,
+		`CREATE INDEX IF NOT EXISTS idx_service_status_host_name_id ON service_statuses (host_id, name, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_service_status_host_time ON service_statuses (host_id, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_script_executions_host_time ON script_executions (host_id, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_script_executions_script_time ON script_executions (script_id, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_anomaly_events_host_time ON anomaly_events (host_id, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_anomaly_events_filters_time ON anomaly_events (severity, type, is_resolved, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_inspection_records_report_id ON inspection_records (report_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_inspection_reports_date_created ON inspection_reports (date DESC, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_agents_status_last_seen ON agents (status, last_seen DESC) WHERE deleted_at IS NULL`,
+	}
+}
+
+func (s *Storage) ensureHighVolumeQueryIndexes() {
+	for _, statement := range storageIndexStatements() {
+		if err := s.postgres.Exec(statement).Error; err != nil {
+			log.Printf("[Storage] Failed to create high-volume query index: %v", err)
+		}
 	}
 }
 
@@ -1442,12 +1467,11 @@ func (s *Storage) StartLogCleanup() {
 func (s *Storage) cleanupOldLogs() {
 	cutoff := time.Now().AddDate(0, 0, -logRetentionDays)
 
-	// 清理过期日志
-	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&LogEntry{})
-	if result.Error != nil {
-		log.Printf("[LogCleanup] Failed to cleanup old logs: %v", result.Error)
-	} else if result.RowsAffected > 0 {
-		log.Printf("[LogCleanup] Cleaned up %d old log entries (older than %d days)", result.RowsAffected, logRetentionDays)
+	deleted, err := s.cleanupOldRowsInBatches("log_entries", "timestamp", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
+	if err != nil {
+		log.Printf("[LogCleanup] Failed to cleanup old logs: %v", err)
+	} else if deleted > 0 {
+		log.Printf("[LogCleanup] Cleaned up %d old log entries (older than %d days)", deleted, logRetentionDays)
 	}
 
 	// 记录日志总数和大小
@@ -1515,7 +1539,7 @@ func (s *Storage) StartProcessSnapshotCleanup() {
 func (s *Storage) cleanupOldProcessSnapshots() {
 	cutoff := processSnapshotCutoff(time.Now())
 
-	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
+	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", "timestamp", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
 	if err != nil {
 		log.Printf("[ProcessCleanup] Failed to cleanup old process snapshots: %v", err)
 		return
@@ -1557,7 +1581,7 @@ func (s *Storage) StartDockerSnapshotCleanup() {
 func (s *Storage) cleanupOldDockerSnapshots() {
 	cutoff := dockerSnapshotCutoff(time.Now())
 
-	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", cutoff, dockerSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
+	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", "timestamp", cutoff, dockerSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
 	if err != nil {
 		log.Printf("[DockerCleanup] Failed to cleanup old docker snapshots: %v", err)
 		return
@@ -1567,12 +1591,23 @@ func (s *Storage) cleanupOldDockerSnapshots() {
 	}
 }
 
-func cleanupBatchDeleteSQL(table string) string {
+func cleanupBatchDeleteSQL(table, cutoffColumn string) string {
 	return fmt.Sprintf(`
 		DELETE FROM %s
 		WHERE id IN (
 			SELECT id FROM %s
-			WHERE timestamp < ?
+			WHERE %s < ?
+			ORDER BY id
+			LIMIT ?
+		)
+	`, table, table, cutoffColumn)
+}
+
+func cleanupAllBatchDeleteSQL(table string) string {
+	return fmt.Sprintf(`
+		DELETE FROM %s
+		WHERE id IN (
+			SELECT id FROM %s
 			ORDER BY id
 			LIMIT ?
 		)
@@ -1599,7 +1634,11 @@ func (l *cleanupRunLimit) allowNextBatch() bool {
 	return true
 }
 
-func (s *Storage) cleanupOldRowsInBatches(table string, cutoff time.Time, batchSize int, maxBatches int) (int64, error) {
+func (s *Storage) cleanupOldRowsInBatches(table, cutoffColumn string, cutoff time.Time, batchSize int, maxBatches int) (int64, error) {
+	return s.cleanupOldRowsInBatchesWithContext(context.Background(), table, cutoffColumn, cutoff, batchSize, maxBatches)
+}
+
+func (s *Storage) cleanupOldRowsInBatchesWithContext(ctx context.Context, table, cutoffColumn string, cutoff time.Time, batchSize int, maxBatches int) (int64, error) {
 	if batchSize <= 0 {
 		return 0, fmt.Errorf("cleanup batch size must be positive")
 	}
@@ -1607,7 +1646,7 @@ func (s *Storage) cleanupOldRowsInBatches(table string, cutoff time.Time, batchS
 
 	var total int64
 	for limit.allowNextBatch() {
-		result := s.postgres.Exec(cleanupBatchDeleteSQL(table), cutoff, batchSize)
+		result := s.postgres.WithContext(ctx).Exec(cleanupBatchDeleteSQL(table, cutoffColumn), cutoff, batchSize)
 		if result.Error != nil {
 			return total, result.Error
 		}
@@ -1618,6 +1657,25 @@ func (s *Storage) cleanupOldRowsInBatches(table string, cutoff time.Time, batchS
 		time.Sleep(100 * time.Millisecond)
 	}
 	return total, nil
+}
+
+func (s *Storage) deleteAllRowsInBatches(table string, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("delete batch size must be positive")
+	}
+
+	var total int64
+	for {
+		result := s.postgres.Exec(cleanupAllBatchDeleteSQL(table), batchSize)
+		if result.Error != nil {
+			return total, result.Error
+		}
+		total += result.RowsAffected
+		if result.RowsAffected < int64(batchSize) {
+			return total, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func serviceStatusCutoff(now time.Time) time.Time {
@@ -1644,12 +1702,12 @@ func (s *Storage) StartServiceStatusCleanup() {
 
 func (s *Storage) cleanupOldServiceStatuses() {
 	cutoff := serviceStatusCutoff(time.Now())
-	result := s.postgres.Where("timestamp < ?", cutoff).Delete(&ServiceStatus{})
-	if result.Error != nil {
-		log.Printf("[ServiceCleanup] Failed to cleanup old service statuses: %v", result.Error)
+	deleted, err := s.cleanupOldRowsInBatches("service_statuses", "timestamp", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
+	if err != nil {
+		log.Printf("[ServiceCleanup] Failed to cleanup old service statuses: %v", err)
 		return
 	}
-	if result.RowsAffected > 0 {
-		log.Printf("[ServiceCleanup] Cleaned up %d service statuses older than %d days", result.RowsAffected, serviceStatusRetentionDays)
+	if deleted > 0 {
+		log.Printf("[ServiceCleanup] Cleaned up %d service statuses older than %d days", deleted, serviceStatusRetentionDays)
 	}
 }
