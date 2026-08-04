@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type APIServer struct {
@@ -58,6 +59,11 @@ func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManag
 		taskManager = NewLLMTaskManagerFromInterface(redisClient)
 	}
 
+	sessionStore := memory.Store(memory.NewMemoryStore())
+	if db, ok := storage.GetDB().(*gorm.DB); ok && db != nil {
+		sessionStore = newOpsAssistantDBSessionStore(db)
+	}
+
 	server := &APIServer{
 		router:               router,
 		storage:              storage,
@@ -67,7 +73,7 @@ func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManag
 		llmManager:           llmManager,
 		taskManager:          taskManager,
 		anomalyDetector:      anomalyDetector,
-		opsAssistantSessions: memory.NewMemoryStore(),
+		opsAssistantSessions: sessionStore,
 	}
 
 	server.setupRoutes()

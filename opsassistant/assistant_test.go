@@ -154,6 +154,31 @@ func TestAssistantStreamEmitsGraphWorkflowEvents(t *testing.T) {
 	}
 }
 
+func TestAssistantStreamUsesEinoCallbacksForIntentAndPlanner(t *testing.T) {
+	model := &fakeModel{answer: `{"title":"Global health report","summary":"No critical risk found.","risk_level":"low","confidence":0.8,"evidence":[],"possible_causes":[],"recommendations":[],"related_entities":{}}`}
+	assistant := NewAssistant(model, []Tool{
+		{
+			Name: "list_agents",
+			Run: func(ctx context.Context, req ChatRequest) (ToolResult, error) {
+				return ToolResult{Name: "list_agents", Summary: "listed agents", Content: "host-01 online"}, nil
+			},
+		},
+	})
+
+	var events []StreamEvent
+	err := assistant.Stream(context.Background(), ChatRequest{Message: "Show global health"}, func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream failed: %v", err)
+	}
+
+	assertHasGraphNodeStatus(t, events, "intent_classifier", "running")
+	assertHasGraphNodeStatus(t, events, "tool_planner", "running")
+	assertHasGraphNodeStatus(t, events, "diagnostic_workflow", "running")
+}
+
 func TestAssistantStreamEmitsContentBeforeFinalReport(t *testing.T) {
 	model := &fakeModel{answer: `{"title":"Global health report","summary":"No critical risk found.","risk_level":"low","confidence":0.8,"evidence":[],"possible_causes":[],"recommendations":[],"related_entities":{}}`}
 	assistant := NewAssistant(model, nil)
@@ -250,6 +275,64 @@ func TestHostPerformancePlanRunsHostDetailBeforeMetrics(t *testing.T) {
 	}
 	if calls[0] != "get_agent_detail" || calls[1] != "get_latest_metrics" {
 		t.Fatalf("unexpected host performance order: %#v", calls)
+	}
+}
+
+func TestAssistantRoutesHostPerformanceToSpecialistWorkflow(t *testing.T) {
+	model := &fakeModel{answer: `{"title":"Host report","summary":"ok","risk_level":"low","confidence":0.8,"evidence":[],"possible_causes":[],"recommendations":[],"related_entities":{}}`}
+	assistant := NewAssistant(model, []Tool{
+		{Name: "get_latest_metrics", Run: func(ctx context.Context, req ChatRequest) (ToolResult, error) {
+			return ToolResult{Name: "get_latest_metrics", Summary: "latest metrics", Content: "cpu=10"}, nil
+		}},
+		{Name: "get_history_metrics", Run: func(ctx context.Context, req ChatRequest) (ToolResult, error) {
+			return ToolResult{Name: "get_history_metrics", Summary: "history metrics", Content: "cpu trend stable"}, nil
+		}},
+	})
+
+	var events []StreamEvent
+	err := assistant.Stream(context.Background(), ChatRequest{Message: "check CPU status", HostID: "master"}, func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream failed: %v", err)
+	}
+	assertHasGraphNodeStatus(t, events, "host_performance_workflow", "running")
+}
+
+func TestAssistantRoutesAnalysisIntentsToSpecialistWorkflows(t *testing.T) {
+	tests := []struct {
+		name         string
+		intentJSON   string
+		message      string
+		toolName     string
+		workflowNode string
+	}{
+		{name: "capacity", intentJSON: `{"intent":"capacity_planning","confidence":0.9}`, message: "容量预测", toolName: "get_capacity_prediction", workflowNode: "capacity_planning_workflow"},
+		{name: "cost", intentJSON: `{"intent":"cost_optimization","confidence":0.9}`, message: "成本优化", toolName: "get_cost_optimization", workflowNode: "cost_optimization_workflow"},
+		{name: "anomaly", intentJSON: `{"intent":"anomaly_analysis","confidence":0.9}`, message: "异常分析", toolName: "detect_anomalies", workflowNode: "anomaly_analysis_workflow"},
+		{name: "alert", intentJSON: `{"intent":"alert_root_cause","confidence":0.9}`, message: "告警根因", toolName: "get_recent_alerts", workflowNode: "alert_root_cause_workflow"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := &fakeModel{answer: tt.intentJSON}
+			assistant := NewAssistant(model, []Tool{
+				{Name: tt.toolName, Run: func(ctx context.Context, req ChatRequest) (ToolResult, error) {
+					return ToolResult{Name: tt.toolName, Summary: tt.toolName, Content: "evidence"}, nil
+				}},
+			})
+			model.answer = `{"title":"Report","summary":"ok","risk_level":"low","confidence":0.8,"evidence":[],"possible_causes":[],"recommendations":[],"related_entities":{}}`
+
+			var events []StreamEvent
+			err := assistant.Stream(context.Background(), ChatRequest{Message: tt.message, HostID: "master"}, func(event StreamEvent) error {
+				events = append(events, event)
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("stream failed: %v", err)
+			}
+			assertHasGraphNodeStatus(t, events, tt.workflowNode, "running")
+		})
 	}
 }
 
@@ -522,6 +605,15 @@ func assertHasEventType(t *testing.T, events []StreamEvent, eventType string) {
 		}
 	}
 	t.Fatalf("expected event type %s in %#v", eventType, events)
+}
+
+func assertHasGraphNodeStatus(t *testing.T, events []StreamEvent, node string, status string) {
+	for _, event := range events {
+		if event.Type == EventGraphNode && event.Node == node && event.Status == status {
+			return
+		}
+	}
+	panic("missing graph node status " + node + ":" + status)
 }
 
 func indexOfEventType(events []StreamEvent, eventType string) int {

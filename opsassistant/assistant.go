@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/compose"
+
 	"monitor-backend/opsassistant/core"
 	"monitor-backend/opsassistant/knowledge"
 	"monitor-backend/opsassistant/memory"
@@ -180,43 +183,18 @@ func (a *Assistant) saveSession(ctx context.Context, session *memory.Session) er
 }
 
 func (a *Assistant) runWorkflow(ctx context.Context, req ChatRequest, emit func(StreamEvent) error) (workflowDiagnosis, []ToolExecutionResult, error) {
+	runnable, err := a.compileAssistantGraph(ctx)
+	if err != nil {
+		return workflowDiagnosis{}, nil, err
+	}
 	if err := emitIfPresent(emit, StreamEvent{Type: EventStatus, Content: "identifying intent..."}); err != nil {
 		return workflowDiagnosis{}, nil, err
 	}
-	intent := a.classifyIntent(ctx, req)
-	if err := emitIfPresent(emit, StreamEvent{Type: EventGraphNode, Node: "intent_classifier", Status: "completed", Summary: "intent: " + intent.Intent, Data: intent}); err != nil {
-		return workflowDiagnosis{}, nil, err
-	}
-	if len(intent.MissingContext) > 0 {
-		content := intent.Clarification
-		if content == "" {
-			content = "Please select a host before continuing."
-		}
-		if err := emitIfPresent(emit, StreamEvent{Type: EventContent, Content: content}); err != nil {
-			return workflowDiagnosis{}, nil, err
-		}
-		return workflowDiagnosis{Content: content}, nil, nil
-	}
-
-	plan := planTools(intent, req)
-	if err := emitIfPresent(emit, StreamEvent{Type: EventGraphNode, Node: "tool_planner", Status: "completed", Summary: fmt.Sprintf("planned %d read-only tools", len(plan.Calls)), Data: plan}); err != nil {
-		return workflowDiagnosis{}, nil, err
-	}
-
-	result, err := workflow.NewGenericRunner(a.model).Run(ctx, workflow.Input{
-		Request:  core.ChatRequest(req),
-		Intent:   core.IntentResult(intent),
-		Plan:     core.ToolPlan(plan),
-		Tools:    coreTools(a.tools),
-		Model:    a.model,
-		Evidence: coreEvidence(a.retrieveKnowledgeEvidence(ctx, req, intent)),
-	}, func(event core.StreamEvent) error {
-		return emitIfPresent(emit, StreamEvent(event))
-	})
-	if err != nil {
-		return workflowDiagnosis{}, toolExecutionResults(result.Tools), err
-	}
-	return workflowDiagnosis{Content: result.Content, Report: result.Report}, toolExecutionResults(result.Tools), nil
+	state, err := runnable.Invoke(ctx, assistantGraphState{
+		Request: req,
+		Emit:    emit,
+	}, compose.WithCallbacks(newAssistantTimelineCallback(emit)))
+	return state.Diagnosis, state.ToolResults, err
 }
 
 func (a *Assistant) retrieveKnowledgeEvidence(ctx context.Context, req ChatRequest, intent IntentResult) []Evidence {
@@ -254,6 +232,15 @@ func (a *Assistant) retrieveKnowledgeEvidence(ctx context.Context, req ChatReque
 type workflowDiagnosis struct {
 	Content string
 	Report  *DiagnosisReport
+}
+
+type assistantGraphState struct {
+	Request     ChatRequest
+	Intent      IntentResult
+	Plan        ToolPlan
+	Diagnosis   workflowDiagnosis
+	ToolResults []ToolExecutionResult
+	Emit        func(StreamEvent) error
 }
 
 func (a *Assistant) classifyIntent(ctx context.Context, req ChatRequest) IntentResult {
@@ -299,8 +286,20 @@ func fallbackAssistantIntent(req ChatRequest) IntentResult {
 	if intent == "global_health" && (strings.Contains(message, "cpu") || strings.Contains(message, "memory") || strings.Contains(message, "disk") || strings.Contains(message, "mem") || strings.Contains(message, "内存") || strings.Contains(message, "磁盘") || strings.Contains(message, "性能")) {
 		intent = "host_performance"
 	}
-	if strings.Contains(message, "alert") || strings.Contains(message, "alarm") {
+	if strings.Contains(message, "alert") || strings.Contains(message, "alarm") || strings.Contains(message, "告警") {
 		intent = "alert_root_cause"
+	}
+	if strings.Contains(message, "anomaly") || strings.Contains(message, "异常") {
+		intent = "anomaly_analysis"
+	}
+	if strings.Contains(message, "inspection") || strings.Contains(message, "巡检") {
+		intent = "inspection_summary"
+	}
+	if strings.Contains(message, "knowledge") || strings.Contains(message, "知识") {
+		intent = "knowledge_troubleshooting"
+	}
+	if strings.Contains(message, "log") || strings.Contains(message, "日志") {
+		intent = "log_investigation"
 	}
 	return IntentResult{Intent: intent, Confidence: 0.55}
 }
@@ -419,6 +418,131 @@ func emitIfPresent(emit func(StreamEvent) error, event StreamEvent) error {
 		return nil
 	}
 	return emit(event)
+}
+
+func (a *Assistant) compileAssistantGraph(ctx context.Context) (compose.Runnable[assistantGraphState, assistantGraphState], error) {
+	graph := compose.NewGraph[assistantGraphState, assistantGraphState]()
+	if err := graph.AddLambdaNode("intent_classifier", compose.InvokableLambda(a.runIntentClassifierNode), compose.WithNodeName("intent_classifier")); err != nil {
+		return nil, err
+	}
+	if err := graph.AddLambdaNode("context_guard", compose.InvokableLambda(a.runContextGuardNode), compose.WithNodeName("context_guard")); err != nil {
+		return nil, err
+	}
+	if err := graph.AddLambdaNode("tool_planner", compose.InvokableLambda(a.runToolPlannerNode), compose.WithNodeName("tool_planner")); err != nil {
+		return nil, err
+	}
+	if err := graph.AddLambdaNode("diagnostic_workflow", compose.InvokableLambda(a.runDiagnosticWorkflowNode), compose.WithNodeName("diagnostic_workflow")); err != nil {
+		return nil, err
+	}
+	for _, edge := range [][2]string{
+		{compose.START, "intent_classifier"},
+		{"intent_classifier", "context_guard"},
+		{"context_guard", "tool_planner"},
+		{"tool_planner", "diagnostic_workflow"},
+		{"diagnostic_workflow", compose.END},
+	} {
+		if err := graph.AddEdge(edge[0], edge[1]); err != nil {
+			return nil, err
+		}
+	}
+	return graph.Compile(ctx, compose.WithGraphName("ops_assistant"))
+}
+
+func (a *Assistant) runIntentClassifierNode(ctx context.Context, state assistantGraphState) (assistantGraphState, error) {
+	if err := emitIfPresent(state.Emit, StreamEvent{Type: EventStatus, Content: "identifying intent..."}); err != nil {
+		return state, err
+	}
+	state.Intent = a.classifyIntent(ctx, state.Request)
+	if err := emitIfPresent(state.Emit, StreamEvent{Type: EventGraphNode, Node: "intent_classifier", Status: "completed", Summary: "intent: " + state.Intent.Intent, Data: state.Intent}); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+func (a *Assistant) runContextGuardNode(ctx context.Context, state assistantGraphState) (assistantGraphState, error) {
+	if len(state.Intent.MissingContext) == 0 {
+		return state, nil
+	}
+	content := state.Intent.Clarification
+	if content == "" {
+		content = "Please select a host before continuing."
+	}
+	state.Diagnosis = workflowDiagnosis{Content: content}
+	if err := emitIfPresent(state.Emit, StreamEvent{Type: EventContent, Content: content}); err != nil {
+		return state, err
+	}
+	if err := emitIfPresent(state.Emit, StreamEvent{Type: EventGraphNode, Node: "context_guard", Status: "completed", Summary: "missing context: " + strings.Join(state.Intent.MissingContext, ","), Data: state.Intent.MissingContext}); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+func (a *Assistant) runToolPlannerNode(ctx context.Context, state assistantGraphState) (assistantGraphState, error) {
+	if len(state.Intent.MissingContext) > 0 {
+		return state, nil
+	}
+	state.Plan = planTools(state.Intent, state.Request)
+	if err := emitIfPresent(state.Emit, StreamEvent{Type: EventGraphNode, Node: "tool_planner", Status: "completed", Summary: fmt.Sprintf("planned %d read-only tools", len(state.Plan.Calls)), Data: state.Plan}); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+func (a *Assistant) runDiagnosticWorkflowNode(ctx context.Context, state assistantGraphState) (assistantGraphState, error) {
+	if len(state.Intent.MissingContext) > 0 {
+		return state, nil
+	}
+	runner := workflow.Runner(workflow.NewGenericRunner(a.model))
+	switch state.Intent.Intent {
+	case "host_performance":
+		runner = workflow.NewHostPerformanceRunner(a.model)
+	case "capacity_planning":
+		runner = workflow.NewCapacityPlanningRunner(a.model)
+	case "cost_optimization":
+		runner = workflow.NewCostOptimizationRunner(a.model)
+	case "anomaly_analysis":
+		runner = workflow.NewAnomalyAnalysisRunner(a.model)
+	case "alert_root_cause":
+		runner = workflow.NewAlertRootCauseRunner(a.model)
+	}
+	result, err := runner.Run(ctx, workflow.Input{
+		Request:  core.ChatRequest(state.Request),
+		Intent:   core.IntentResult(state.Intent),
+		Plan:     core.ToolPlan(state.Plan),
+		Tools:    coreTools(a.tools),
+		Model:    a.model,
+		Evidence: coreEvidence(a.retrieveKnowledgeEvidence(ctx, state.Request, state.Intent)),
+	}, func(event core.StreamEvent) error {
+		return emitIfPresent(state.Emit, StreamEvent(event))
+	})
+	state.ToolResults = toolExecutionResults(result.Tools)
+	state.Diagnosis = workflowDiagnosis{Content: result.Content, Report: result.Report}
+	return state, err
+}
+
+func newAssistantTimelineCallback(emit func(StreamEvent) error) callbacks.Handler {
+	graphNodes := map[string]bool{
+		"intent_classifier":   true,
+		"context_guard":       true,
+		"tool_planner":        true,
+		"diagnostic_workflow": true,
+	}
+	return callbacks.NewHandlerBuilder().
+		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+			if emit == nil || info == nil || !graphNodes[info.Name] {
+				return ctx
+			}
+			_ = emit(StreamEvent{Type: EventGraphNode, Node: info.Name, Status: "running", Summary: info.Name + " started"})
+			return ctx
+		}).
+		OnErrorFn(func(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
+			if emit == nil || info == nil || !graphNodes[info.Name] {
+				return ctx
+			}
+			_ = emit(StreamEvent{Type: EventGraphNode, Node: info.Name, Status: "failed", Summary: err.Error()})
+			return ctx
+		}).
+		Build()
 }
 
 func toolCallsFromExecutionResults(results []ToolExecutionResult) []ToolCall {
