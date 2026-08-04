@@ -1,98 +1,77 @@
 # Monitor Backend
 
-监控系统后端服务，提供数据存储、API接口、异常检测、智能分析和告警通知功能。
+监控系统后端服务，负责接收 Agent 数据、存储指标和元数据、提供 HTTP API、执行告警引擎，并为前端运维助手提供基于 CloudWeGo Eino 的 AI 诊断编排。
 
-## 📋 目录
+## 当前能力
 
-- [概述](#概述)
-- [技术栈](#技术栈)
-- [功能特性](#功能特性)
-- [快速开始](#快速开始)
-- [项目结构](#项目结构)
-- [配置说明](#配置说明)
-- [API接口](#api接口)
-- [开发指南](#开发指南)
-- [部署](#部署)
+- gRPC 采集入口：接收主机注册、心跳、指标、进程、日志、服务、脚本结果、Docker 容器数据。
+- HTTP API：为前端提供主机、指标、告警、日志、进程、服务、Docker、GPU、巡检、知识库、用户和 LLM 配置接口。
+- 时序存储：InfluxDB 存储 CPU、内存、磁盘、网络、GPU、Docker 等指标。
+- 元数据存储：PostgreSQL 存储主机、用户、告警、知识库、巡检报告、运维助手会话等。
+- 缓存：Redis 可选，用于最新指标、任务状态等运行态数据。
+- 告警引擎：支持阈值告警、主机宕机、服务端口、GPU 不可用、静默和多渠道通知。
+- 异常检测：异常事件查询、统计、解决状态维护和 LLM 总结。
+- 容量预测与成本优化：基于历史数据做资源趋势预测，并可结合 LLM 输出建议。
+- 知识库与巡检：故障知识、最佳实践、案例库、巡检执行和流式巡检日报。
+- 运维助手：统一承载 AI 运维分析能力，使用 Eino Graph、ToolsNode、Tool 和 callbacks 实现可观测的诊断流程。
 
-## 🎯 概述
+## 运维助手与 Eino
 
-Monitor Backend 是监控系统的核心服务，负责：
+运维助手代码位于 `opsassistant/` 和 `api/ops_assistant_*.go`。当前实现不是手写“类 Eino”流程，而是直接使用 CloudWeGo Eino：
 
-- 接收Agent上报的监控数据
-- 存储指标数据（InfluxDB）和元数据（PostgreSQL）
-- 提供RESTful API接口
-- 异常检测和智能分析
-- 告警规则匹配和通知
-- LLM集成（智能分析和报告生成）
+- ChatModel：`api/ops_assistant_eino_model.go` 使用 Eino OpenAI 兼容模型组件。
+- 顶层编排：`opsassistant/assistant.go` 使用 `compose.Graph` 串联意图识别、上下文保护、工具规划和诊断 workflow。
+- 工具执行：`opsassistant/workflow/eino_tool.go` 将系统内只读工具适配为 Eino `tool.InvokableTool`。
+- ToolsNode：`opsassistant/workflow/generic.go` 通过 Eino `compose.NewToolNode` 执行工具调用。
+- workflow：通用诊断和专项诊断均通过 Eino Graph 编排。
+- callbacks：Eino 节点生命周期映射为 SSE `graph_node` 时间线事件。
+- 会话：`api/ops_assistant_session_store.go` 提供 DB 优先的会话存储，列表、恢复、删除接口供前端历史会话使用。
 
-## 🛠️ 技术栈
+当前支持的诊断意图包括：
 
-- **语言**: Go 1.21+
-- **Web框架**: Gin
-- **gRPC**: Google gRPC
-- **数据库**: 
-  - PostgreSQL (元数据、配置、用户)
-  - InfluxDB (时序指标数据)
-  - Redis (缓存，可选)
-- **ORM**: GORM
-- **认证**: JWT
-- **其他**: 
-  - LLM集成 (OpenAI/Claude/DeepSeek/Zhipu等)
-  - 异常检测算法
-  - 预测分析
+- `global_health`
+- `host_performance`
+- `capacity_planning`
+- `cost_optimization`
+- `alert_root_cause`
+- `anomaly_analysis`
+- `inspection_summary`
+- `knowledge_troubleshooting`
+- `log_investigation`
 
-## ✨ 功能特性
+专项 workflow 包括主机性能、容量规划、成本优化、异常分析和告警根因分析。所有工具保持只读，不直接执行变更操作。
 
-### 核心功能
+## 技术栈
 
-- ✅ **数据接收**: gRPC接收Agent上报的监控数据
-- ✅ **数据存储**: 时序数据存储到InfluxDB，元数据存储到PostgreSQL
-- ✅ **RESTful API**: 提供完整的HTTP API接口
-- ✅ **用户认证**: JWT认证和授权
-- ✅ **异常检测**: 基于统计和机器学习的异常检测
-- ✅ **智能分析**: 集成LLM的智能分析和预测
-- ✅ **告警引擎**: 告警规则匹配和多渠道通知
-- ✅ **知识库**: 故障处理知识库管理
-- ✅ **智能巡检**: 自动化巡检和日报生成
+- Go 1.21+
+- Gin
+- gRPC / Protobuf
+- GORM
+- PostgreSQL
+- InfluxDB 2.x
+- Redis，可选
+- CloudWeGo Eino
+- JWT
 
-### 详细功能
+## 快速开始
 
-1. **主机管理**: 主机注册、查询、删除
-2. **指标查询**: 实时指标、历史指标、聚合指标
-3. **异常检测**: CPU/内存/磁盘异常检测，日志异常检测
-4. **容量预测**: 基于历史数据的资源使用趋势预测
-5. **成本优化**: LLM生成的成本优化建议
-6. **性能分析**: 性能瓶颈分析和优化建议
-7. **宕机分析**: 宕机事件记录和分析
-8. **日志管理**: 日志收集、查询、分页
-9. **进程监控**: 进程资源使用监控
-10. **服务监控**: 系统服务状态监控
-11. **脚本执行**: 远程脚本执行记录
-12. **告警管理**: 告警规则配置和历史查询
-13. **用户管理**: 用户认证、权限管理
+### 依赖
 
-## 🚀 快速开始
+- Go 1.21+
+- PostgreSQL 12+
+- InfluxDB 2.x
+- Redis，可选
 
-### 环境要求
-
-- Go >= 1.21
-- PostgreSQL >= 12
-- InfluxDB >= 2.0
-- Redis >= 6.0 (可选)
-
-### 1. 安装依赖
+### 安装依赖
 
 ```bash
+cd monitor-backend
 go mod download
 ```
 
-### 2. 配置数据库
+### 配置
 
-确保PostgreSQL和InfluxDB已启动并配置正确。
-
-### 3. 配置文件
-
-编辑 `config.yaml`:
+编辑 `config.yaml`：
 
 ```yaml
 grpc_addr: ":50051"
@@ -111,418 +90,234 @@ influxdb:
   org: "monitor"
   bucket: "metrics"
 
-jwt_secret: "your-secret-key"
-auth_required: true
-```
-
-### 4. 生成Protobuf代码
-
-```bash
-protoc --go_out=. --go_opt=paths=source_relative \
-    --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-    proto/collector.proto
-```
-
-### 5. 运行
-
-```bash
-go run .
-```
-
-服务将在以下端口启动：
-- HTTP API: `http://localhost:8080`
-- gRPC: `localhost:50051`
-
-## 当前架构补充
-
-### 数据流
-
-1. Agent 通过 gRPC 注册主机并上报指标、进程、服务、Docker、日志和 GPU 数据。
-2. Backend 将时序指标写入 InfluxDB，将主机、规则、历史、用户、巡检、知识库等元数据写入 PostgreSQL。
-3. Redis 用于缓存最新指标和部分运行态数据；没有 Redis 时核心查询仍以数据库和 InfluxDB 为准。
-4. HTTP API 为前端提供主机、指标、告警、分析、巡检、知识库、LLM 配置等能力。
-5. 告警引擎定时读取启用规则，按规则类型检查目标主机，生成告警历史并通过通知渠道发送消息。
-
-### 在线状态口径
-
-系统当前默认使用 `30s` 作为前端展示和后端状态查询的在线判定窗口：
-
-- `last_seen` 在 Agent 上报指标、心跳、进程、日志、服务、Docker 等数据时更新。
-- `last_seen` 超过 30 秒未更新时，主机列表、概览统计和 `GetAgentStatus` 会视为离线。
-- 后台离线标记任务也使用相同的 30 秒阈值，避免页面在线主机数和告警判断不一致。
-
-### 告警规则类型
-
-当前支持以下规则类型：
-
-- `cpu`：CPU 使用率阈值告警。
-- `memory`：内存使用率阈值告警。
-- `disk`：磁盘使用率阈值告警，支持指定挂载点。
-- `network`：网络相关阈值告警。
-- `host_down`：主机宕机告警，按规则持续时间检查 `last_seen`，不再等待固定 2 分钟离线状态。
-- `service_port`：服务端口不可访问告警，按规则持续时间进入 firing。
-- `gpu_unavailable`：GPU 不可用告警，当最新 GPU 指标中没有可用设备并持续达到规则时间后触发。
-
-普通阈值类规则使用 `pending -> firing -> resolved` 状态机。`host_down`、`service_port`、`gpu_unavailable` 是特殊规则，也复用持续时间和抑制通知逻辑，避免瞬时异常立即通知。
-
-### 多主机关联
-
-告警规则支持关联多个主机：
-
-- API 字段为 `host_ids`，空数组表示全部主机。
-- 数据库存储使用 `alert_rule_hosts` 关联表，不再把多个主机拼接进 `alert_rules.host_id`。
-- `alert_rules.host_id` 仍保留，用于兼容旧版单主机规则。
-- 告警引擎优先使用 `host_ids`，没有 `host_ids` 时回退到旧 `host_id`。
-
-### 通知模板
-
-通知渠道包括邮件、钉钉、企业微信和飞书。通知内容已统一补充：
-
-- `通知时间`：发送通知时的服务器时间，格式为 `YYYY-MM-DD HH:mm:ss`。
-- `指标类型`：中文显示，例如 `CPU使用率`、`主机宕机`、`服务端口`、`GPU不可用`。
-- 告警恢复通知沿用同一通知通道。
-
-### GPU 数据
-
-Backend 接收 Agent 归一化后的 GPU 指标，写入 InfluxDB 和最新指标缓存。GPU 设备数据结构包含：
-
-- index、name、vendor、model、uuid、driver_version
-- utilization_percent、memory_total、memory_used、memory_used_percent
-- temperature、power_watts、fan_speed_percent
-
-GPU 厂商适配逻辑在 Agent 侧完成，Backend 只处理统一结构。
-
-### 6. 测试
-
-```bash
-# 健康检查
-curl http://localhost:8080/health
-
-# 获取主机列表（需要认证）
-curl -H "Authorization: Bearer <token>" http://localhost:8080/api/v1/agents
-```
-
-## 📁 项目结构
-
-```
-monitor-backend/
-├── main.go                    # 入口文件
-├── config.go                  # 配置加载
-├── service.go                 # gRPC服务
-├── storage.go                 # 存储层（PostgreSQL + InfluxDB）
-├── storage_adapter.go         # 存储适配器（实现StorageInterface）
-├── models.go                  # 数据模型
-│
-├── api/                       # API层
-│   ├── server.go              # HTTP服务器
-│   ├── handlers.go             # 请求处理器
-│   ├── auth.go                # 认证中间件
-│   ├── auth_handlers.go       # 认证相关处理器
-│   ├── user_handlers.go       # 用户管理处理器
-│   ├── anomaly_handlers.go    # 异常检测处理器
-│   ├── performance_handlers.go # 性能分析处理器
-│   ├── inspection_handlers.go  # 巡检处理器
-│   ├── knowledge_handlers.go   # 知识库处理器
-│   ├── storage_interface.go   # 存储接口定义
-│   ├── predictor_interface.go # 预测器接口
-│   └── anomaly_interface.go   # 异常检测接口
-│
-├── analyzer/                  # 分析器
-│   ├── predictor.go           # 预测分析
-│   ├── anomaly_detector.go    # 异常检测
-│   ├── adapter.go             # 适配器
-│   └── anomaly_adapter.go     # 异常检测适配器
-│
-├── llm/                       # LLM集成
-│   ├── client.go              # LLM客户端
-│   ├── manager.go             # LLM管理器
-│   ├── adapter.go              # LLM适配器
-│   └── streaming.go           # 流式输出
-│
-├── notifier/                  # 通知器
-│   ├── notifier.go            # 通知接口
-│   ├── email.go               # 邮件通知
-│   ├── dingtalk.go            # 钉钉通知
-│   ├── feishu.go              # 飞书通知
-│   ├── wechat.go              # 企业微信通知
-│   └── loader.go              # 通知器加载
-│
-├── alerter/                   # 告警引擎
-│   └── engine.go              # 告警规则引擎
-│
-├── proto/                     # Protobuf定义
-│   ├── collector.proto        # 数据采集协议
-│   ├── collector.pb.go        # 生成的代码
-│   └── collector_grpc.pb.go   # 生成的gRPC代码
-│
-├── config.yaml                # 配置文件
-├── go.mod                     # Go模块定义
-└── go.sum                     # 依赖校验和
-```
-
-## ⚙️ 配置说明
-
-### 配置文件: config.yaml
-
-```yaml
-# gRPC服务地址
-grpc_addr: ":50051"
-
-# HTTP服务地址
-http_addr: ":8080"
-
-# PostgreSQL配置
-postgresql:
-  host: "localhost"
-  port: 5433
-  user: "monitor"
-  password: "monitor123"
-  database: "monitor"
-
-# InfluxDB配置
-influxdb:
-  url: "http://localhost:8086"
-  token: "your-token"
-  org: "monitor"
-  bucket: "metrics"
-
-# Redis配置（可选）
 redis:
   addr: "localhost:6379"
   password: ""
   db: 0
 
-# JWT配置
-jwt_secret: "your-secret-key"
-auth_required: true  # 是否要求认证
-
-# LLM配置（可选）
-llm:
-  enabled: false
-  provider: "openai"  # openai, claude, deepseek, zhipu, custom
-  api_key: "your-api-key"
-  base_url: ""  # 自定义API地址（用于custom provider）
-  model: "gpt-3.5-turbo"
-  temperature: 0.7
-  max_tokens: 8000  # 默认8000，确保巡检日报等长文本生成完整
-  timeout: 30
+jwt_secret: "change-me"
+auth_required: true
 ```
 
-### 环境变量
+LLM 模型配置主要通过前端 `/llm-config` 写入数据库并设置默认模型。运维助手启动时会读取默认 LLM 配置。
 
-可以通过环境变量覆盖配置：
-
-```bash
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5433
-export INFLUXDB_URL=http://localhost:8086
-```
-
-## 📡 API接口
-
-### 认证
-
-所有API请求（除登录外）需要在Header中携带JWT Token：
-
-```
-Authorization: Bearer <token>
-```
-
-### 主要API端点
-
-#### 认证相关
-- `POST /api/v1/auth/register` - 用户注册
-- `POST /api/v1/auth/login` - 用户登录
-- `POST /api/v1/auth/refresh` - 刷新Token
-- `GET /api/v1/user/me` - 获取当前用户信息
-
-#### 主机相关
-- `GET /api/v1/agents` - 获取主机列表（支持分页）
-- `GET /api/v1/agents/:id` - 获取主机详情
-- `DELETE /api/v1/agents/:id` - 删除主机
-
-#### 指标相关
-- `GET /api/v1/metrics/latest` - 获取最新指标
-- `GET /api/v1/metrics/history` - 获取历史指标
-- `GET /api/v1/metrics/aggregate` - 获取聚合指标
-
-#### 统计相关
-- `GET /api/v1/stats/overview` - 获取统计概览
-- `GET /api/v1/stats/top` - 获取Top指标
-
-#### 异常检测
-- `POST /api/v1/anomalies/detect` - 检测异常
-- `GET /api/v1/anomalies/events` - 获取异常事件列表
-- `GET /api/v1/anomalies/events/:id` - 获取异常事件详情
-- `POST /api/v1/anomalies/events/:id/resolve` - 标记异常已解决
-- `GET /api/v1/anomalies/statistics` - 获取异常统计
-- `GET /api/v1/anomalies/detect/stream` - 流式获取异常分析（SSE）
-
-#### 预测分析
-- `GET /api/v1/predictions/capacity` - 容量预测
-- `GET /api/v1/predictions/capacity/stream` - 流式获取容量分析（SSE）
-- `GET /api/v1/predictions/cost-optimization` - 成本优化建议
-- `GET /api/v1/predictions/cost-optimization/stream` - 流式获取成本优化建议（SSE）
-
-#### 性能分析
-- `GET /api/v1/performance/analysis/stream` - 流式获取性能分析（SSE）
-
-#### 宕机分析
-- `GET /api/v1/crash/events` - 获取宕机事件列表（支持分页）
-- `GET /api/v1/crash/events/:id` - 获取宕机事件详情
-- `DELETE /api/v1/crash/events` - 批量删除宕机事件
-- `GET /api/v1/crash/analysis/:host_id` - 获取主机宕机分析
-
-#### 日志相关
-- `GET /api/v1/logs` - 获取日志列表（支持分页）
-
-#### 进程监控
-- `GET /api/v1/processes` - 获取进程列表
-- `GET /api/v1/processes/history` - 获取进程历史数据
-
-#### 服务监控
-- `GET /api/v1/services` - 获取服务状态
-
-#### 脚本执行
-- `GET /api/v1/scripts/executions` - 获取脚本执行记录
-
-#### 告警相关
-- `GET /api/v1/alerts/rules` - 获取告警规则列表
-- `POST /api/v1/alerts/rules` - 创建告警规则
-- `PUT /api/v1/alerts/rules/:id` - 更新告警规则
-- `DELETE /api/v1/alerts/rules/:id` - 删除告警规则
-- `GET /api/v1/alerts/history` - 获取告警历史
-
-#### 知识库
-- `GET /api/v1/knowledge/troubleshooting` - 获取故障处理知识库
-- `POST /api/v1/knowledge/troubleshooting` - 创建故障处理知识
-- `PUT /api/v1/knowledge/troubleshooting/:id` - 更新故障处理知识
-- `DELETE /api/v1/knowledge/troubleshooting/:id` - 删除故障处理知识
-- `GET /api/v1/knowledge/best-practices` - 获取最佳实践文档
-- `GET /api/v1/knowledge/case-studies` - 获取故障案例库
-- `POST /api/v1/knowledge/search/stream` - 流式搜索知识库（SSE）
-
-#### 智能巡检
-- `POST /api/v1/inspection/run` - 执行巡检
-- `GET /api/v1/inspection/reports` - 获取巡检报告列表（支持分页）
-- `GET /api/v1/inspection/reports/:id` - 获取巡检报告详情
-- `GET /api/v1/inspection/reports/:id/stream` - 流式生成巡检日报（SSE）
-
-#### LLM配置
-- `GET /api/v1/llm/models` - 获取LLM模型配置列表
-- `POST /api/v1/llm/models` - 创建LLM模型配置
-- `GET /api/v1/llm/models/:id` - 获取LLM模型配置
-- `PUT /api/v1/llm/models/:id` - 更新LLM模型配置
-- `DELETE /api/v1/llm/models/:id` - 删除LLM模型配置
-- `POST /api/v1/llm/models/:id/set-default` - 设置默认LLM模型配置
-- `POST /api/v1/llm/models/test` - 测试LLM模型配置
-
-#### 用户管理（需要管理员权限）
-- `GET /api/v1/users` - 获取用户列表
-- `GET /api/v1/users/:id` - 获取用户详情
-- `POST /api/v1/users` - 创建用户
-- `PUT /api/v1/users/:id` - 更新用户
-- `DELETE /api/v1/users/:id` - 删除用户
-- `POST /api/v1/users/:id/reset-password` - 重置用户密码
-
-详细API文档请参考 [PREDICTION_FEATURE.md](./PREDICTION_FEATURE.md)
-
-## 💻 开发指南
-
-### 安装依赖
-
-```bash
-go mod download
-```
-
-### 生成Protobuf代码
-
-```bash
-protoc --go_out=. --go_opt=paths=source_relative \
-    --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-    proto/collector.proto
-```
-
-### 运行开发服务器
+### 运行
 
 ```bash
 go run .
 ```
 
-### 代码结构说明
+默认端口：
 
-- **api/**: HTTP API层，处理HTTP请求
-- **analyzer/**: 分析器，包括异常检测和预测分析
-- **llm/**: LLM集成，支持多种LLM提供商
-- **notifier/**: 通知器，支持多种通知渠道
-- **alerter/**: 告警引擎，处理告警规则匹配
-- **storage.go**: 存储层，封装数据库操作
-- **storage_adapter.go**: 存储适配器，实现StorageInterface
+- HTTP API：`http://localhost:8080`
+- gRPC：`localhost:50051`
 
-### 添加新功能
-
-1. 在 `api/storage_interface.go` 中定义接口
-2. 在 `storage_adapter.go` 中实现接口
-3. 在 `api/handlers.go` 中添加处理器
-4. 在 `api/server.go` 中注册路由
-
-## 🚢 部署
-
-### Docker 构建与运行
-
-项目提供 `Dockerfile`，可用于构建 Backend 镜像。运行前需确保 PostgreSQL、InfluxDB（及可选 Redis）已就绪，并通过配置文件或挂载卷提供 `config.yaml`。
-
-**构建镜像：**
+### 健康检查
 
 ```bash
-cd monitor-backend
-docker build -t monitor-backend:latest .
+curl http://localhost:8080/health
 ```
 
-**运行容器：**
+## 项目结构
 
-将 `config.yaml` 放在宿主机某路径（如 `/opt/monitor-backend/config.yaml`），挂载进容器并暴露 gRPC/HTTP 端口：
-
-```bash
-docker run -d --name monitor-backend \
-  -p 50051:50051 -p 8080:8080 \
-  -v /opt/monitor-backend/config.yaml:/app/config.yaml \
-  -e CONFIG_PATH=config.yaml \
-  monitor-backend:latest
+```text
+monitor-backend/
+├── main.go                         # 程序入口
+├── config.go                       # 配置加载
+├── service.go                      # gRPC 采集服务
+├── storage.go                      # PostgreSQL / InfluxDB 存储
+├── storage_adapter.go              # API 存储适配
+├── models.go                       # GORM 模型
+├── server_probe.go                 # 服务端口探测
+├── api/                            # HTTP API
+│   ├── server.go                   # 路由注册
+│   ├── handlers.go                 # 主机、指标、预测等处理器
+│   ├── ops_assistant_handlers.go   # 运维助手接口和工具
+│   ├── ops_assistant_eino_model.go # Eino ChatModel 适配
+│   ├── ops_assistant_session_store.go
+│   ├── knowledge_handlers.go
+│   ├── inspection_handlers.go
+│   └── ...
+├── opsassistant/                   # Eino 运维助手核心
+│   ├── assistant.go                # 顶层 Eino Graph
+│   ├── workflow/                   # 通用和专项 workflow
+│   ├── graph/                      # 意图、规划、证据等节点逻辑
+│   ├── memory/                     # 会话模型和 Store 接口
+│   ├── knowledge/                  # 知识检索
+│   └── report/                     # 结构化诊断报告
+├── analyzer/                       # 预测和异常检测
+├── alerter/                        # 告警引擎
+├── notifier/                       # 邮件、钉钉、企业微信、飞书通知
+├── llm/                            # 历史 LLM 客户端能力
+├── proto/                          # Protobuf 协议
+├── go.mod
+└── README.md
 ```
 
-**依赖说明：**
+## 主要 API
 
-- **PostgreSQL**：元数据、配置、用户等，需在 `config.yaml` 中配置连接信息。
-- **InfluxDB**：时序指标存储，需在 `config.yaml` 中配置 URL、Token、Org、Bucket。
-- **Redis**（可选）：会话等缓存，按需在配置中启用。
+所有业务接口默认挂在 `/api/v1` 下，除登录注册外需要 JWT：
 
-若使用 Docker Compose，可将上述数据库与 Backend 同网段部署，并确保 `config.yaml` 中的主机名为 Compose 服务名（如 `postgres`、`influxdb`、`redis`）。
+```text
+Authorization: Bearer <token>
+```
 
-### 编译
+### 认证与用户
+
+- `POST /auth/register`
+- `POST /auth/login`
+- `POST /auth/refresh`
+- `GET /user/me`
+- `GET /users`
+- `POST /users`
+- `PUT /users/:id`
+- `DELETE /users/:id`
+- `POST /users/:id/reset-password`
+
+### 主机与指标
+
+- `GET /agents`
+- `GET /agents/:id`
+- `DELETE /agents/:id`
+- `GET /metrics/latest`
+- `GET /metrics/history`
+- `GET /metrics/aggregate`
+- `GET /stats/overview`
+- `GET /stats/top`
+
+### 进程、日志、服务、Docker、GPU
+
+- `GET /processes`
+- `GET /processes/history`
+- `GET /logs`
+- `GET /services`
+- `GET /docker/containers`
+- `GET /docker/history`
+- GPU 指标通过最新指标、历史指标、Top 统计等接口返回。
+
+### 告警
+
+- `GET /alerts/rules`
+- `POST /alerts/rules`
+- `PUT /alerts/rules/:id`
+- `DELETE /alerts/rules/:id`
+- `GET /alerts/history`
+- `DELETE /alerts/history/:id`
+- `DELETE /alerts/history/batch`
+- `GET /alerts/silences`
+- `POST /alerts/silences`
+- `PUT /alerts/silences/:id`
+- `DELETE /alerts/silences/:id`
+- `GET /alerts/channels`
+- `POST /alerts/channels`
+- `POST /alerts/channels/test`
+- `PUT /alerts/channels/:id`
+- `DELETE /alerts/channels/:id`
+
+### 运维助手
+
+- `POST /ops-assistant/chat`
+- `GET /ops-assistant/chat/stream`
+- `GET /ops-assistant/sessions`
+- `GET /ops-assistant/sessions/:id`
+- `DELETE /ops-assistant/sessions/:id`
+
+SSE 事件包含：
+
+- `status`
+- `graph_node`
+- `tool_call`
+- `report_delta`
+- `report`
+- `content`
+- `done`
+- `error`
+
+### 知识库与巡检
+
+- `GET /knowledge/troubleshooting`
+- `POST /knowledge/troubleshooting`
+- `PUT /knowledge/troubleshooting/:id`
+- `DELETE /knowledge/troubleshooting/:id`
+- `GET /knowledge/best-practices`
+- `GET /knowledge/case-studies`
+- `GET /knowledge/search/stream`
+- `POST /inspection/run`
+- `GET /inspection/reports`
+- `GET /inspection/reports/:id`
+- `GET /inspection/reports/:id/stream`
+
+### LLM 配置
+
+- `GET /llm/models`
+- `POST /llm/models`
+- `POST /llm/models/test`
+- `POST /llm/models/:id/test`
+- `POST /llm/models/:id/set-default`
+- `GET /llm/models/:id`
+- `PUT /llm/models/:id`
+- `DELETE /llm/models/:id`
+
+## 告警规则说明
+
+当前支持：
+
+- `cpu`
+- `memory`
+- `disk`
+- `network`
+- `host_down`
+- `service_port`
+- `gpu_unavailable`
+
+规则支持多主机关联：
+
+- `host_ids` 为空表示全部主机。
+- 多主机关系存储在 `alert_rule_hosts`。
+- 旧字段 `host_id` 保留兼容单主机规则。
+
+特殊规则说明：
+
+- `host_down`：按规则持续时间检查 `last_seen`。
+- `service_port`：按服务端口不可访问状态触发。
+- `gpu_unavailable`：最新 GPU 指标无可用设备时触发。
+
+普通阈值类和特殊规则均遵循持续时间、抑制时间和恢复通知逻辑。
+
+## 在线状态口径
+
+Backend 当前默认使用 `30s` 未上报作为离线展示口径。Agent 上报指标、心跳、进程、日志、服务、Docker 等数据时都会更新 `last_seen`。
+
+## 部署
+
+### 构建二进制
 
 ```bash
 go build -o monitor-backend
 ```
 
-### 运行
+### Docker
 
 ```bash
-./monitor-backend
+cd monitor-backend
+docker build -t monitor-backend:latest .
+docker run -d --name monitor-backend \
+  -p 50051:50051 \
+  -p 8080:8080 \
+  -v /opt/monitor-backend/config.yaml:/app/config.yaml \
+  -e CONFIG_PATH=config.yaml \
+  monitor-backend:latest
 ```
 
-### 使用systemd管理（Linux）
-
-创建 `/etc/systemd/system/monitor-backend.service`:
+### systemd
 
 ```ini
 [Unit]
-Description=Monitor Backend Service
-After=network.target postgresql.service
+Description=Monitor Backend
+After=network.target
 
 [Service]
 Type=simple
-User=monitor
 WorkingDirectory=/opt/monitor-backend
 ExecStart=/opt/monitor-backend/monitor-backend
 Restart=always
@@ -532,187 +327,26 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-启动服务：
+## 开发与验证
 
 ```bash
-sudo systemctl enable monitor-backend
-sudo systemctl start monitor-backend
-sudo systemctl status monitor-backend
+go test ./...
 ```
 
-## 📝 依赖说明
+如果修改 Protobuf：
 
-主要依赖：
-
-```go
-require (
-    github.com/gin-gonic/gin v1.9.1
-    google.golang.org/grpc v1.60.0
-    google.golang.org/protobuf v1.31.0
-    github.com/influxdata/influxdb-client-go/v2 v2.13.0
-    gorm.io/gorm v1.25.5
-    gorm.io/driver/postgres v1.5.4
-    github.com/redis/go-redis/v9 v9.3.0
-    gopkg.in/yaml.v3 v3.0.1
-    github.com/golang-jwt/jwt/v5 v5.2.0
-)
+```bash
+protoc --go_out=. --go_opt=paths=source_relative \
+  --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  proto/collector.proto
 ```
 
-## 🔧 故障排查
+## 相关文档
 
-### 数据库连接失败
+- [Frontend README](../monitor-frontend/README.md)
+- [Agent README](../monitor-agent/README.md)
+- [PREDICTION_FEATURE.md](./PREDICTION_FEATURE.md)
 
-- 检查数据库服务是否启动
-- 检查配置文件中的连接信息
-- 检查数据库用户权限
-
-### gRPC连接失败
-
-- 检查gRPC服务是否启动
-- 检查防火墙设置
-- 检查Agent配置中的server_addr
-
-### LLM功能不可用
-
-- 检查LLM配置是否正确
-- 检查API密钥是否有效
-- 检查网络连接
-
-
-## GPU 厂商适配说明
-
-GPU 厂商解析逻辑不放在后端。后端只接收已经归一化后的 GPU 指标，并按统一结构写入 InfluxDB、Redis 和 API 响应。这样新增厂商时不需要改后端存储和查询逻辑，只需要在 `monitor-agent` 中增加 parser。
-
-### 后端接收的通用 GPU 字段
-
-Agent 上报到后端的每块 GPU 都应归一化为以下字段：
-
-```json
-{
-  "index": 0,
-  "name": "GPU name",
-  "vendor": "nvidia|amd|intel|custom",
-  "model": "GPU model",
-  "uuid": "device unique id",
-  "driver_version": "driver version",
-  "utilization_percent": 0,
-  "memory_total": 0,
-  "memory_used": 0,
-  "memory_used_percent": 0,
-  "temperature": 0,
-  "power_watts": 0,
-  "fan_speed_percent": 0
-}
-```
-
-字段要求：
-
-- 百分比字段使用 `0-100` 的数值。
-- 显存字段使用字节数。
-- 厂商工具不支持的字段填 `0` 或空字符串。
-- `vendor` 建议使用稳定小写值，例如 `nvidia`、`amd`、`intel`、`huawei`、`custom`。
-- `uuid` 如果厂商工具无法提供，可以用 `index` 或 `bus_id` 等稳定标识代替，但同一台机器上应尽量保持不变。
-
-### 新增厂商 parser 的推荐方式
-
-在 `monitor-agent/collector_gpu.go` 中新增 provider 分支，例如：
-
-```go
-case "vendor-smi":
-    output, err := c.runCommand("vendor-smi", []string{"--json"})
-    if err != nil {
-        return nil, err
-    }
-    return parseVendorSMIOutput(output)
-```
-
-然后新增解析函数，把厂商命令输出转换成 `GPUMetrics`：
-
-```go
-func parseVendorSMIOutput(output string) (*GPUMetrics, error) {
-    metrics := &GPUMetrics{Devices: []GPUDeviceMetrics{}}
-    // 解析厂商 JSON/CSV/文本输出
-    metrics.Devices = append(metrics.Devices, GPUDeviceMetrics{
-        Index:              0,
-        Name:               "Vendor GPU",
-        Vendor:             "vendor",
-        Model:              "Vendor GPU",
-        UUID:               "stable-device-id",
-        UtilizationPercent: 70,
-        MemoryTotal:        16 * 1024 * 1024 * 1024,
-        MemoryUsed:         8 * 1024 * 1024 * 1024,
-        MemoryUsedPercent:  50,
-        Temperature:        65,
-        PowerWatts:         180,
-    })
-    return metrics, nil
-}
-```
-
-同时添加对应测试文件或测试用例，至少覆盖：
-
-- 正常输出能解析出设备数量和关键字段。
-- 缺失字段时不会报错。
-- 单位转换正确，例如 MiB/MB/GB 转成字节。
-- 多卡输出能稳定生成多条 `GPUDeviceMetrics`。
-
-### 无需改后端的场景
-
-只要新增 parser 输出仍然符合 `GPUDeviceMetrics`，通常不需要修改后端：
-
-- 新增 NVIDIA 之外的厂商。
-- 厂商命令字段名称不同。
-- 厂商只支持部分指标。
-- 使用自定义脚本输出统一 JSON。
-
-### 需要改后端的场景
-
-只有当要新增通用字段或改变 API 语义时才需要改后端，例如：
-
-- 新增所有厂商都需要展示的字段，如 `pcie_rx_bytes`、`encoder_utilization_percent`。
-- 改变 InfluxDB measurement 或 tag 设计。
-- 新增专门的 GPU API，而不是复用 `/api/v1/metrics/latest`、`/api/v1/metrics/history` 和 `/api/v1/stats/top`。
-
-### 自定义命令方式
-
-如果不想改 Go 代码，可以在 agent 配置中使用 `custom_command`，让脚本直接输出后端可识别的统一 JSON：
-
-```yaml
-gpu:
-  enabled: true
-  provider: "custom_command"
-  command: "/opt/monitor-scripts/gpu-metrics.sh"
-  args: []
-  timeout: 5
-```
-
-脚本输出示例：
-
-```json
-{
-  "devices": [
-    {
-      "index": 0,
-      "name": "Custom GPU",
-      "vendor": "custom",
-      "uuid": "gpu-0",
-      "utilization_percent": 45.5,
-      "memory_total": 17179869184,
-      "memory_used": 8589934592,
-      "memory_used_percent": 50,
-      "temperature": 60,
-      "power_watts": 120
-    }
-  ]
-}
-```
-
-
-## 📄 许可证
+## 许可证
 
 MIT license
-
-## 📞 联系方式
-
-WX:Li1024_REBOOT
-
