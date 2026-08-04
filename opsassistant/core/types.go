@@ -24,10 +24,14 @@ type TimeRange struct {
 }
 
 type ChatRequest struct {
-	Message   string     `json:"message"`
-	SessionID string     `json:"session_id,omitempty"`
-	HostID    string     `json:"host_id,omitempty"`
-	TimeRange *TimeRange `json:"time_range,omitempty"`
+	Message      string     `json:"message"`
+	SessionID    string     `json:"session_id,omitempty"`
+	HostID       string     `json:"host_id,omitempty"`
+	TimeRange    *TimeRange `json:"time_range,omitempty"`
+	ResourceType string     `json:"resource_type,omitempty"`
+	Days         int        `json:"days,omitempty"`
+	Threshold    float64    `json:"threshold,omitempty"`
+	Hours        int        `json:"hours,omitempty"`
 }
 
 type ToolCall struct {

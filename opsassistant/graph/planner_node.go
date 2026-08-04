@@ -21,6 +21,25 @@ func PlanTools(intent opsassistant.IntentResult, req opsassistant.ChatRequest) o
 
 func toolsForIntent(intent string, hasHost bool) []opsassistant.PlannedToolCall {
 	switch intent {
+	case IntentCapacityPlanning:
+		return filterHostTools([]opsassistant.PlannedToolCall{
+			toolCall("get_capacity_prediction", true, "查询容量预测和阈值到达时间"),
+			toolCall("get_recent_alerts", false, "查询近期相关告警"),
+			toolCall("search_knowledge", false, "检索容量规划知识"),
+		}, hasHost)
+	case IntentCostOptimization:
+		return filterHostTools([]opsassistant.PlannedToolCall{
+			toolCall("get_cost_optimization", true, "查询资源成本优化证据"),
+			toolCall("get_recent_alerts", false, "查询近期相关告警"),
+			toolCall("search_knowledge", false, "检索成本优化知识"),
+		}, hasHost)
+	case IntentPerformanceAnalysis:
+		return filterHostTools([]opsassistant.PlannedToolCall{
+			toolCall("get_performance_summary", true, "查询主机性能瓶颈和效率摘要"),
+			toolCall("get_recent_alerts", false, "查询近期相关告警"),
+			toolCall("get_anomaly_events", false, "查询近期异常事件"),
+			toolCall("search_knowledge", false, "检索性能排障知识"),
+		}, hasHost)
 	case IntentHostPerformance:
 		return filterHostTools([]opsassistant.PlannedToolCall{
 			toolCall("get_latest_metrics", true, "查询所选主机最新 CPU、内存、磁盘和网络指标"),
@@ -37,7 +56,7 @@ func toolsForIntent(intent string, hasHost bool) []opsassistant.PlannedToolCall 
 		}, hasHost)
 	case IntentAnomalyAnalysis:
 		return filterHostTools([]opsassistant.PlannedToolCall{
-			toolCall("get_anomaly_events", true, "查询异常事件"),
+			toolCall("detect_anomalies", true, "查询异常检测证据"),
 			toolCall("get_history_metrics", false, "查询异常时间附近的指标趋势"),
 			toolCall("search_knowledge", false, "检索异常分析知识"),
 		}, hasHost)
@@ -85,7 +104,7 @@ func filterHostTools(calls []opsassistant.PlannedToolCall, hasHost bool) []opsas
 	}
 	filtered := make([]opsassistant.PlannedToolCall, 0, len(calls))
 	for _, call := range calls {
-		if call.Tool == "get_latest_metrics" || call.Tool == "get_history_metrics" {
+		if call.Tool == "get_latest_metrics" || call.Tool == "get_history_metrics" || call.Tool == "get_capacity_prediction" || call.Tool == "get_cost_optimization" || call.Tool == "get_performance_summary" || call.Tool == "detect_anomalies" {
 			continue
 		}
 		filtered = append(filtered, call)

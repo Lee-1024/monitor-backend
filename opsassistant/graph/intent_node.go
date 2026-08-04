@@ -11,6 +11,9 @@ import (
 const (
 	IntentGlobalHealth             = "global_health"
 	IntentHostPerformance          = "host_performance"
+	IntentCapacityPlanning         = "capacity_planning"
+	IntentCostOptimization         = "cost_optimization"
+	IntentPerformanceAnalysis      = "performance_analysis"
 	IntentAlertRootCause           = "alert_root_cause"
 	IntentAnomalyAnalysis          = "anomaly_analysis"
 	IntentInspectionSummary        = "inspection_summary"
@@ -50,6 +53,12 @@ func fallbackIntent(req opsassistant.ChatRequest) opsassistant.IntentResult {
 	message := strings.ToLower(req.Message)
 	intent := IntentGlobalHealth
 	switch {
+	case strings.Contains(message, "capacity") || strings.Contains(message, "容量") || strings.Contains(message, "预测") || strings.Contains(message, "阈值") || strings.Contains(message, "扩容"):
+		intent = IntentCapacityPlanning
+	case strings.Contains(message, "cost") || strings.Contains(message, "成本") || strings.Contains(message, "降配") || strings.Contains(message, "优化") || strings.Contains(message, "rightsizing"):
+		intent = IntentCostOptimization
+	case strings.Contains(message, "performance") || strings.Contains(message, "性能分析") || strings.Contains(message, "瓶颈"):
+		intent = IntentPerformanceAnalysis
 	case strings.Contains(message, "alert") || strings.Contains(message, "告警"):
 		intent = IntentAlertRootCause
 	case strings.Contains(message, "cpu") || strings.Contains(message, "memory") || strings.Contains(message, "disk") ||
@@ -69,7 +78,7 @@ func fallbackIntent(req opsassistant.ChatRequest) opsassistant.IntentResult {
 
 func normalizeIntent(intent string) string {
 	switch intent {
-	case IntentHostPerformance, IntentAlertRootCause, IntentAnomalyAnalysis, IntentInspectionSummary, IntentKnowledgeTroubleshooting, IntentLogInvestigation:
+	case IntentHostPerformance, IntentCapacityPlanning, IntentCostOptimization, IntentPerformanceAnalysis, IntentAlertRootCause, IntentAnomalyAnalysis, IntentInspectionSummary, IntentKnowledgeTroubleshooting, IntentLogInvestigation:
 		return intent
 	default:
 		return IntentGlobalHealth
@@ -78,7 +87,7 @@ func normalizeIntent(intent string) string {
 
 func requiresHost(intent string) bool {
 	switch intent {
-	case IntentHostPerformance:
+	case IntentHostPerformance, IntentCapacityPlanning, IntentCostOptimization, IntentPerformanceAnalysis, IntentAnomalyAnalysis:
 		return true
 	default:
 		return false

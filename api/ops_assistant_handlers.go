@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,66 @@ func (s *APIServer) newOpsAssistant(userID uint) (*opsassistant.Assistant, error
 
 func (s *APIServer) opsAssistantTools() []opsassistant.Tool {
 	return []opsassistant.Tool{
+		{
+			Name:        "get_capacity_prediction",
+			Description: "查询容量预测和阈值到达时间",
+			Run: func(ctx context.Context, req opsassistant.ChatRequest) (opsassistant.ToolResult, error) {
+				result, err := s.capacityPredictionForAssistant(req)
+				if err != nil {
+					return opsassistant.ToolResult{}, err
+				}
+				return opsassistant.ToolResult{
+					Name:    "get_capacity_prediction",
+					Summary: "查询 " + req.HostID + " 容量预测",
+					Content: mustJSON(result),
+				}, nil
+			},
+		},
+		{
+			Name:        "get_cost_optimization",
+			Description: "查询主机资源成本优化证据",
+			Run: func(ctx context.Context, req opsassistant.ChatRequest) (opsassistant.ToolResult, error) {
+				result, err := s.costOptimizationForAssistant(req)
+				if err != nil {
+					return opsassistant.ToolResult{}, err
+				}
+				return opsassistant.ToolResult{
+					Name:    "get_cost_optimization",
+					Summary: "查询 " + req.HostID + " 成本优化证据",
+					Content: mustJSON(result),
+				}, nil
+			},
+		},
+		{
+			Name:        "get_performance_summary",
+			Description: "查询主机性能瓶颈和资源效率摘要",
+			Run: func(ctx context.Context, req opsassistant.ChatRequest) (opsassistant.ToolResult, error) {
+				result, err := s.performanceSummaryForAssistant(req)
+				if err != nil {
+					return opsassistant.ToolResult{}, err
+				}
+				return opsassistant.ToolResult{
+					Name:    "get_performance_summary",
+					Summary: "查询 " + req.HostID + " 性能分析摘要",
+					Content: mustJSON(result),
+				}, nil
+			},
+		},
+		{
+			Name:        "detect_anomalies",
+			Description: "查询主机异常检测结果和异常统计",
+			Run: func(ctx context.Context, req opsassistant.ChatRequest) (opsassistant.ToolResult, error) {
+				result, err := s.anomalyEvidenceForAssistant(req)
+				if err != nil {
+					return opsassistant.ToolResult{}, err
+				}
+				return opsassistant.ToolResult{
+					Name:    "detect_anomalies",
+					Summary: "查询 " + req.HostID + " 异常检测证据",
+					Content: mustJSON(result),
+				}, nil
+			},
+		},
 		{
 			Name:        "list_agents",
 			Description: "查询主机列表",
@@ -191,6 +252,168 @@ func assistantMetricRange(req opsassistant.ChatRequest) (string, string) {
 	return "-24h", "now"
 }
 
+func (s *APIServer) capacityPredictionForAssistant(req opsassistant.ChatRequest) (map[string]interface{}, error) {
+	if req.HostID == "" {
+		return nil, fmt.Errorf("host_id is required")
+	}
+	if s.predictor == nil {
+		return nil, fmt.Errorf("predictor not initialized")
+	}
+	resourceType := req.ResourceType
+	if resourceType == "" || resourceType == "all" {
+		resourceType = "cpu"
+	}
+	days := req.Days
+	if days <= 0 {
+		days = 30
+	}
+	threshold := req.Threshold
+	if threshold <= 0 || threshold > 100 {
+		threshold = 80
+	}
+	historyDays := days * 2
+	if historyDays < 7 {
+		historyDays = 7
+	}
+	dataPoints, err := s.storage.GetPredictionData(req.HostID, resourceType, historyDays)
+	if err != nil {
+		return nil, err
+	}
+	if len(dataPoints) < 2 {
+		return nil, fmt.Errorf("insufficient historical data for prediction")
+	}
+	points := make([]PredictionMetricPoint, len(dataPoints))
+	for i, point := range dataPoints {
+		points[i] = PredictionMetricPoint{Timestamp: point.Timestamp, Value: point.Value}
+	}
+	prediction, err := s.predictor.Predict(points, days, threshold)
+	if err != nil {
+		return nil, err
+	}
+	capacity, err := s.predictor.PredictCapacityNeeds(points, resourceType, threshold)
+	if err != nil {
+		return nil, err
+	}
+	hostname := req.HostID
+	if agent, err := s.storage.GetAgent(req.HostID); err == nil && agent != nil && agent.Hostname != "" {
+		hostname = agent.Hostname
+	}
+	return map[string]interface{}{
+		"host": map[string]interface{}{
+			"host_id":  req.HostID,
+			"hostname": hostname,
+		},
+		"resource_type": resourceType,
+		"days":          days,
+		"threshold":     threshold,
+		"prediction":    prediction,
+		"capacity":      capacity,
+	}, nil
+}
+
+func (s *APIServer) costOptimizationForAssistant(req opsassistant.ChatRequest) (map[string]interface{}, error) {
+	if req.HostID == "" {
+		return nil, fmt.Errorf("host_id is required")
+	}
+	if s.predictor == nil {
+		return nil, fmt.Errorf("predictor not initialized")
+	}
+	days := req.Days
+	if days <= 0 {
+		days = 30
+	}
+	threshold := req.Threshold
+	if threshold <= 0 || threshold > 100 {
+		threshold = 80
+	}
+	resourceTypes := []string{"cpu", "memory", "disk"}
+	if req.ResourceType != "" && req.ResourceType != "all" {
+		resourceTypes = []string{req.ResourceType}
+	}
+	predictions := make(map[string]interface{})
+	for _, resourceType := range resourceTypes {
+		dataPoints, err := s.storage.GetPredictionData(req.HostID, resourceType, 30)
+		if err != nil || len(dataPoints) < 2 {
+			continue
+		}
+		points := make([]PredictionMetricPoint, len(dataPoints))
+		for i, point := range dataPoints {
+			points[i] = PredictionMetricPoint{Timestamp: point.Timestamp, Value: point.Value}
+		}
+		result, err := s.predictor.Predict(points, days, threshold)
+		if err == nil {
+			predictions[resourceType] = result
+		}
+	}
+	if len(predictions) == 0 {
+		return nil, fmt.Errorf("no prediction data available for cost optimization")
+	}
+	hostname := req.HostID
+	if agent, err := s.storage.GetAgent(req.HostID); err == nil && agent != nil && agent.Hostname != "" {
+		hostname = agent.Hostname
+	}
+	return map[string]interface{}{
+		"host_id":     req.HostID,
+		"hostname":    hostname,
+		"days":        days,
+		"threshold":   threshold,
+		"predictions": predictions,
+		"guidance":    generateSimpleCostOptimization(predictions, hostname),
+	}, nil
+}
+
+func (s *APIServer) performanceSummaryForAssistant(req opsassistant.ChatRequest) (map[string]interface{}, error) {
+	if req.HostID == "" {
+		return nil, fmt.Errorf("host_id is required")
+	}
+	hours := req.Hours
+	if hours <= 0 {
+		hours = 24
+	}
+	performanceData, err := s.collectPerformanceData(req.HostID, hours)
+	if err != nil {
+		return nil, err
+	}
+	bottlenecks := s.analyzeBottlenecks(performanceData)
+	efficiency := s.evaluateEfficiency(performanceData)
+	return map[string]interface{}{
+		"host_id":      req.HostID,
+		"hostname":     performanceData.Hostname,
+		"time_range":   fmt.Sprintf("最近 %d 小时", hours),
+		"cpu":          performanceData.CPU,
+		"memory":       performanceData.Memory,
+		"disk":         performanceData.Disk,
+		"network":      performanceData.Network,
+		"bottlenecks":  bottlenecks,
+		"efficiency":   efficiency,
+		"generated_at": time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+func (s *APIServer) anomalyEvidenceForAssistant(req opsassistant.ChatRequest) (map[string]interface{}, error) {
+	if req.HostID == "" {
+		return nil, fmt.Errorf("host_id is required")
+	}
+	limit := 50
+	resolved := false
+	events, err := s.storage.GetAnomalyEvents(req.HostID, "", req.ResourceType, &resolved, limit)
+	if err != nil {
+		return nil, err
+	}
+	stats, statErr := s.storage.GetAnomalyStatistics(req.HostID)
+	result := map[string]interface{}{
+		"host_id":           req.HostID,
+		"resource_type":     req.ResourceType,
+		"analysis_hours":    req.Hours,
+		"unresolved_events": events,
+		"event_count":       len(events),
+	}
+	if statErr == nil {
+		result["statistics"] = stats
+	}
+	return result, nil
+}
+
 func (s *APIServer) searchKnowledgeForAssistant(message string) ([]map[string]interface{}, error) {
 	db, ok := s.storage.GetDB().(*gorm.DB)
 	if !ok {
@@ -296,6 +519,16 @@ func (s *APIServer) streamOpsAssistant(c *gin.Context) {
 		Message:   c.Query("message"),
 		SessionID: c.Query("session_id"),
 		HostID:    c.Query("host_id"),
+	}
+	req.ResourceType = c.Query("resource_type")
+	if days, err := strconv.Atoi(c.Query("days")); err == nil {
+		req.Days = days
+	}
+	if threshold, err := strconv.ParseFloat(c.Query("threshold"), 64); err == nil {
+		req.Threshold = threshold
+	}
+	if hours, err := strconv.Atoi(c.Query("hours")); err == nil {
+		req.Hours = hours
 	}
 	if fromStr, toStr := c.Query("from"), c.Query("to"); fromStr != "" && toStr != "" {
 		from, fromErr := time.Parse(time.RFC3339, fromStr)

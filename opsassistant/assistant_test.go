@@ -253,6 +253,75 @@ func TestHostPerformancePlanRunsHostDetailBeforeMetrics(t *testing.T) {
 	}
 }
 
+func TestCapacityPlanningIntentRunsCapacityPredictionTool(t *testing.T) {
+	model := &fakeModel{answer: `{"title":"Capacity report","summary":"capacity risk","risk_level":"medium","confidence":0.8,"evidence":[],"possible_causes":[],"recommendations":[],"related_entities":{}}`}
+	called := false
+	assistant := NewAssistant(model, []Tool{
+		{
+			Name: "get_capacity_prediction",
+			Run: func(ctx context.Context, req ChatRequest) (ToolResult, error) {
+				called = true
+				if req.HostID != "master" {
+					t.Fatalf("expected selected host_id, got %q", req.HostID)
+				}
+				return ToolResult{Name: "get_capacity_prediction", Summary: "capacity prediction", Content: "cpu reaches 80% in 12 days"}, nil
+			},
+		},
+	})
+
+	_, err := assistant.Chat(context.Background(), ChatRequest{Message: "做一下容量预测，看看 CPU 什么时候到阈值", HostID: "master"})
+	if err != nil {
+		t.Fatalf("chat failed: %v", err)
+	}
+	if !called {
+		t.Fatal("expected capacity prediction tool to be called")
+	}
+}
+
+func TestCostOptimizationIntentRunsCostOptimizationTool(t *testing.T) {
+	model := &fakeModel{answer: `{"title":"Cost report","summary":"cost opportunity","risk_level":"low","confidence":0.8,"evidence":[],"possible_causes":[],"recommendations":[],"related_entities":{}}`}
+	called := false
+	assistant := NewAssistant(model, []Tool{
+		{
+			Name: "get_cost_optimization",
+			Run: func(ctx context.Context, req ChatRequest) (ToolResult, error) {
+				called = true
+				return ToolResult{Name: "get_cost_optimization", Summary: "cost optimization", Content: "memory can be rightsized"}, nil
+			},
+		},
+	})
+
+	_, err := assistant.Chat(context.Background(), ChatRequest{Message: "帮我做成本优化分析，看看这台机器能不能降配", HostID: "master"})
+	if err != nil {
+		t.Fatalf("chat failed: %v", err)
+	}
+	if !called {
+		t.Fatal("expected cost optimization tool to be called")
+	}
+}
+
+func TestPerformanceAnalysisIntentRunsPerformanceSummaryTool(t *testing.T) {
+	model := &fakeModel{answer: `{"title":"Performance report","summary":"performance ok","risk_level":"low","confidence":0.8,"evidence":[],"possible_causes":[],"recommendations":[],"related_entities":{}}`}
+	called := false
+	assistant := NewAssistant(model, []Tool{
+		{
+			Name: "get_performance_summary",
+			Run: func(ctx context.Context, req ChatRequest) (ToolResult, error) {
+				called = true
+				return ToolResult{Name: "get_performance_summary", Summary: "performance summary", Content: "no bottleneck"}, nil
+			},
+		},
+	})
+
+	_, err := assistant.Chat(context.Background(), ChatRequest{Message: "生成主机性能分析报告，看看有没有瓶颈", HostID: "master"})
+	if err != nil {
+		t.Fatalf("chat failed: %v", err)
+	}
+	if !called {
+		t.Fatal("expected performance summary tool to be called")
+	}
+}
+
 func TestAssistantUsesSessionHostWhenRequestHostMissing(t *testing.T) {
 	store := memory.NewMemoryStore()
 	_ = store.Save(context.Background(), &memory.Session{

@@ -277,7 +277,7 @@ func (a *Assistant) classifyIntent(ctx context.Context, req ChatRequest) IntentR
 			result.Clarification = ""
 		}
 	}
-	if result.Intent == "host_performance" && strings.TrimSpace(req.HostID) == "" {
+	if requiresAssistantHost(result.Intent) && strings.TrimSpace(req.HostID) == "" {
 		result.MissingContext = appendMissing(result.MissingContext, "host_id")
 		result.Clarification = "Please select a host before continuing."
 	}
@@ -287,7 +287,16 @@ func (a *Assistant) classifyIntent(ctx context.Context, req ChatRequest) IntentR
 func fallbackAssistantIntent(req ChatRequest) IntentResult {
 	message := strings.ToLower(req.Message)
 	intent := "global_health"
-	if strings.Contains(message, "cpu") || strings.Contains(message, "memory") || strings.Contains(message, "disk") || strings.Contains(message, "mem") {
+	if strings.Contains(message, "capacity") || strings.Contains(message, "容量") || strings.Contains(message, "预测") || strings.Contains(message, "阈值") || strings.Contains(message, "扩容") {
+		intent = "capacity_planning"
+	}
+	if strings.Contains(message, "cost") || strings.Contains(message, "成本") || strings.Contains(message, "降配") || strings.Contains(message, "优化") || strings.Contains(message, "rightsizing") {
+		intent = "cost_optimization"
+	}
+	if strings.Contains(message, "performance") || strings.Contains(message, "性能分析") || strings.Contains(message, "瓶颈") {
+		intent = "performance_analysis"
+	}
+	if intent == "global_health" && (strings.Contains(message, "cpu") || strings.Contains(message, "memory") || strings.Contains(message, "disk") || strings.Contains(message, "mem") || strings.Contains(message, "内存") || strings.Contains(message, "磁盘") || strings.Contains(message, "性能")) {
 		intent = "host_performance"
 	}
 	if strings.Contains(message, "alert") || strings.Contains(message, "alarm") {
@@ -300,6 +309,31 @@ func planTools(intent IntentResult, req ChatRequest) ToolPlan {
 	hasHost := strings.TrimSpace(req.HostID) != ""
 	var calls []PlannedToolCall
 	switch intent.Intent {
+	case "capacity_planning":
+		if hasHost {
+			calls = append(calls, PlannedToolCall{Tool: "get_capacity_prediction", Required: true, Summary: "query capacity prediction"})
+		}
+		calls = append(calls,
+			PlannedToolCall{Tool: "get_recent_alerts", Required: false, Summary: "query recent alerts"},
+			PlannedToolCall{Tool: "search_knowledge", Required: false, Summary: "search capacity planning knowledge"},
+		)
+	case "cost_optimization":
+		if hasHost {
+			calls = append(calls, PlannedToolCall{Tool: "get_cost_optimization", Required: true, Summary: "query resource cost optimization evidence"})
+		}
+		calls = append(calls,
+			PlannedToolCall{Tool: "get_recent_alerts", Required: false, Summary: "query recent alerts"},
+			PlannedToolCall{Tool: "search_knowledge", Required: false, Summary: "search cost optimization knowledge"},
+		)
+	case "performance_analysis":
+		if hasHost {
+			calls = append(calls, PlannedToolCall{Tool: "get_performance_summary", Required: true, Summary: "query host performance summary"})
+		}
+		calls = append(calls,
+			PlannedToolCall{Tool: "get_recent_alerts", Required: false, Summary: "query recent alerts"},
+			PlannedToolCall{Tool: "get_anomaly_events", Required: false, Summary: "query recent anomaly events"},
+			PlannedToolCall{Tool: "search_knowledge", Required: false, Summary: "search performance troubleshooting knowledge"},
+		)
 	case "host_performance":
 		if hasHost {
 			calls = append(calls,
@@ -321,6 +355,14 @@ func planTools(intent IntentResult, req ChatRequest) ToolPlan {
 			PlannedToolCall{Tool: "get_anomaly_events", Required: false, Summary: "query anomaly events"},
 			PlannedToolCall{Tool: "search_knowledge", Required: false, Summary: "search knowledge base"},
 		)
+	case "anomaly_analysis":
+		if hasHost {
+			calls = append(calls, PlannedToolCall{Tool: "detect_anomalies", Required: true, Summary: "query anomaly detection evidence"})
+		}
+		calls = append(calls,
+			PlannedToolCall{Tool: "get_history_metrics", Required: false, Summary: "query metrics around anomaly time"},
+			PlannedToolCall{Tool: "search_knowledge", Required: false, Summary: "search anomaly troubleshooting knowledge"},
+		)
 	default:
 		calls = append(calls,
 			PlannedToolCall{Tool: "list_agents", Required: true, Summary: "query host online status"},
@@ -333,6 +375,15 @@ func planTools(intent IntentResult, req ChatRequest) ToolPlan {
 		calls = calls[:8]
 	}
 	return ToolPlan{Intent: intent.Intent, Calls: calls}
+}
+
+func requiresAssistantHost(intent string) bool {
+	switch intent {
+	case "host_performance", "capacity_planning", "cost_optimization", "performance_analysis", "anomaly_analysis":
+		return true
+	default:
+		return false
+	}
 }
 
 func extractJSON(value string) string {

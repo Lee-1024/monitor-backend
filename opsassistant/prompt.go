@@ -20,6 +20,18 @@ func BuildPrompt(req ChatRequest, toolResults []ToolResult) string {
 		if req.HostID != "" {
 			b.WriteString(fmt.Sprintf("- 主机: %s\n", req.HostID))
 		}
+		if req.ResourceType != "" {
+			b.WriteString(fmt.Sprintf("- 资源类型: %s\n", req.ResourceType))
+		}
+		if req.Days > 0 {
+			b.WriteString(fmt.Sprintf("- 预测天数: %d\n", req.Days))
+		}
+		if req.Threshold > 0 {
+			b.WriteString(fmt.Sprintf("- 阈值: %.0f%%\n", req.Threshold))
+		}
+		if req.Hours > 0 {
+			b.WriteString(fmt.Sprintf("- 分析小时数: %d\n", req.Hours))
+		}
 		if req.TimeRange != nil {
 			b.WriteString(fmt.Sprintf("- 时间范围: %s 到 %s\n", req.TimeRange.From.Format("2006-01-02T15:04:05Z07:00"), req.TimeRange.To.Format("2006-01-02T15:04:05Z07:00")))
 		}
@@ -40,7 +52,7 @@ func BuildPrompt(req ChatRequest, toolResults []ToolResult) string {
 func BuildIntentPrompt(req ChatRequest) string {
 	var b strings.Builder
 	b.WriteString("Classify the operations question into one intent. Return JSON only.\n")
-	b.WriteString("Supported intents: global_health, host_performance, alert_root_cause, anomaly_analysis, inspection_summary, knowledge_troubleshooting, log_investigation.\n")
+	b.WriteString("Supported intents: global_health, host_performance, capacity_planning, cost_optimization, performance_analysis, alert_root_cause, anomaly_analysis, inspection_summary, knowledge_troubleshooting, log_investigation.\n")
 	b.WriteString("JSON shape: {\"intent\":\"host_performance\",\"confidence\":0.8,\"required_context\":[\"host_id\"],\"missing_context\":[]}.\n")
 	if req.HostID != "" {
 		b.WriteString(fmt.Sprintf("Selected host_id: %s\n", req.HostID))
