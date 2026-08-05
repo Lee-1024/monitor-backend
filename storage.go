@@ -1565,16 +1565,12 @@ func (s *Storage) StartProcessSnapshotCleanup() {
 }
 
 func (s *Storage) cleanupOldProcessSnapshots() {
-	cutoff := processSnapshotCutoff(time.Now())
-
-	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", "timestamp", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
+	err := s.truncateSnapshotTable("process_snapshots")
 	if err != nil {
-		log.Printf("[ProcessCleanup] Failed to cleanup old process snapshots: %v", err)
+		log.Printf("[ProcessCleanup] Failed to truncate process snapshots: %v", err)
 		return
 	}
-	if deleted > 0 {
-		log.Printf("[ProcessCleanup] Cleaned up %d process snapshots older than %d days", deleted, processSnapshotRetentionDays)
-	}
+	log.Printf("[ProcessCleanup] Truncated process_snapshots")
 }
 
 var serviceStatusRetentionDays = 30
@@ -1607,16 +1603,29 @@ func (s *Storage) StartDockerSnapshotCleanup() {
 }
 
 func (s *Storage) cleanupOldDockerSnapshots() {
-	cutoff := dockerSnapshotCutoff(time.Now())
-
-	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", "timestamp", cutoff, dockerSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
+	err := s.truncateSnapshotTable("docker_container_snapshots")
 	if err != nil {
-		log.Printf("[DockerCleanup] Failed to cleanup old docker snapshots: %v", err)
+		log.Printf("[DockerCleanup] Failed to truncate docker snapshots: %v", err)
 		return
 	}
-	if deleted > 0 {
-		log.Printf("[DockerCleanup] Cleaned up %d docker snapshots older than %d days", deleted, dockerSnapshotRetentionDays)
+	log.Printf("[DockerCleanup] Truncated docker_container_snapshots")
+}
+
+func snapshotTruncateSQL(table string) (string, error) {
+	switch table {
+	case "process_snapshots", "docker_container_snapshots":
+		return fmt.Sprintf("TRUNCATE TABLE %s", table), nil
+	default:
+		return "", fmt.Errorf("snapshot truncate table %q is not allowed", table)
 	}
+}
+
+func (s *Storage) truncateSnapshotTable(table string) error {
+	sql, err := snapshotTruncateSQL(table)
+	if err != nil {
+		return err
+	}
+	return s.postgres.Exec(sql).Error
 }
 
 func cleanupBatchDeleteSQL(table, cutoffColumn string) string {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -64,18 +63,12 @@ func TestDockerContainerTotalUsesLatestDistinctIDs(t *testing.T) {
 	}
 }
 
-func TestDockerSnapshotCleanupUsesBatches(t *testing.T) {
-	if dockerSnapshotCleanupBatchSize <= 0 {
-		t.Fatalf("dockerSnapshotCleanupBatchSize = %d, want positive", dockerSnapshotCleanupBatchSize)
+func TestDockerSnapshotCleanupUsesTruncate(t *testing.T) {
+	got, err := snapshotTruncateSQL("docker_container_snapshots")
+	if err != nil {
+		t.Fatalf("snapshotTruncateSQL(docker_container_snapshots) error = %v", err)
 	}
-
-	if got := cleanupBatchDeleteSQL("docker_container_snapshots", "timestamp"); got == "" {
-		t.Fatal("cleanupBatchDeleteSQL returned empty SQL")
-	} else if !strings.Contains(got, "LIMIT ?") {
-		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
-	} else if !strings.Contains(got, "docker_container_snapshots") {
-		t.Fatalf("cleanup SQL = %q, want docker_container_snapshots table", got)
-	} else if !strings.Contains(got, "timestamp < ?") {
-		t.Fatalf("cleanup SQL = %q, want timestamp cutoff", got)
+	if got != "TRUNCATE TABLE docker_container_snapshots" {
+		t.Fatalf("truncate SQL = %q, want docker_container_snapshots truncate only", got)
 	}
 }

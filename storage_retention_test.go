@@ -49,19 +49,19 @@ func TestRetentionConfigKeepsExplicitProcessSnapshotDays(t *testing.T) {
 	}
 }
 
-func TestProcessSnapshotCleanupUsesBatches(t *testing.T) {
-	if processSnapshotCleanupBatchSize <= 0 {
-		t.Fatalf("processSnapshotCleanupBatchSize = %d, want positive", processSnapshotCleanupBatchSize)
+func TestProcessSnapshotCleanupUsesTruncate(t *testing.T) {
+	got, err := snapshotTruncateSQL("process_snapshots")
+	if err != nil {
+		t.Fatalf("snapshotTruncateSQL(process_snapshots) error = %v", err)
 	}
+	if got != "TRUNCATE TABLE process_snapshots" {
+		t.Fatalf("truncate SQL = %q, want process_snapshots truncate only", got)
+	}
+}
 
-	if got := cleanupBatchDeleteSQL("process_snapshots", "timestamp"); got == "" {
-		t.Fatal("cleanupBatchDeleteSQL returned empty SQL")
-	} else if !strings.Contains(got, "LIMIT ?") {
-		t.Fatalf("cleanup SQL = %q, want LIMIT placeholder", got)
-	} else if !strings.Contains(got, "process_snapshots") {
-		t.Fatalf("cleanup SQL = %q, want process_snapshots table", got)
-	} else if !strings.Contains(got, "timestamp < ?") {
-		t.Fatalf("cleanup SQL = %q, want timestamp cutoff", got)
+func TestSnapshotTruncateSQLRejectsTablesOutsideSnapshotWhitelist(t *testing.T) {
+	if got, err := snapshotTruncateSQL("log_entries"); err == nil {
+		t.Fatalf("snapshotTruncateSQL(log_entries) = %q, want error", got)
 	}
 }
 
