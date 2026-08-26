@@ -31,8 +31,8 @@ func (a *Adapter) Get(ctx context.Context, resource string, query url.Values, ta
 	}
 	project := url.PathEscape(a.project)
 	resourcePath := map[string]string{
-		"overview":     fmt.Sprintf("/api/project/%s/overview/health", project),
-		"applications": fmt.Sprintf("/api/project/%s/overview/health", project),
+		"overview":     fmt.Sprintf("/api/project/%s/overview/applications", project),
+		"applications": fmt.Sprintf("/api/project/%s/overview/applications", project),
 		"topology":     fmt.Sprintf("/api/project/%s/overview/map", project),
 		"nodes":        fmt.Sprintf("/api/project/%s/overview/nodes", project),
 		"incidents":    fmt.Sprintf("/api/project/%s/incidents", project),

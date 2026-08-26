@@ -60,7 +60,7 @@ func (s *APIServer) corootResource(resource string, c *gin.Context) {
 		query.Set("page_size", "200")
 	}
 	var data interface{}
-	cacheKey := "project:" + s.config.Coroot.ProjectID + ":" + resource + ":" + query.Encode()
+	cacheKey := "v2:project:" + s.config.Coroot.ProjectID + ":" + resource + ":" + query.Encode()
 	if s.corootCache != nil {
 		var cached interface{}
 		if hit, cachedAt, err := s.corootCache.Get(c.Request.Context(), cacheKey, &cached); err == nil && hit {
