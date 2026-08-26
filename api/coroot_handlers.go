@@ -51,7 +51,7 @@ func (s *APIServer) corootResource(resource string, c *gin.Context) {
 		return
 	}
 	query := url.Values{}
-	for _, key := range []string{"page", "page_size", "search", "namespace", "status", "resolved"} {
+	for _, key := range []string{"page", "page_size", "limit", "offset", "search", "namespace", "status", "resolved", "include_resolved", "sort_by", "sort_desc"} {
 		if value := c.Query(key); value != "" {
 			query.Set(key, value)
 		}
