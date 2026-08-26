@@ -385,10 +385,11 @@ type AlertHistory struct {
 	ResolvedAt *time.Time `gorm:"index" json:"resolved_at,omitempty"` // 恢复时间
 
 	// 告警详情
-	MetricType  string            `gorm:"size:32" json:"metric_type"`    // 指标类型
-	MetricValue float64           `json:"metric_value"`                  // 指标值
-	Threshold   float64           `json:"threshold"`                     // 阈值
-	Message     string            `gorm:"type:text" json:"message"`      // 告警消息
+	MetricType  string            `gorm:"size:32" json:"metric_type"` // 指标类型
+	MetricValue float64           `json:"metric_value"`               // 指标值
+	Threshold   float64           `json:"threshold"`                  // 阈值
+	Message     string            `gorm:"type:text" json:"message"`   // 告警消息
+	CorootID    string            `gorm:"size:128;uniqueIndex" json:"coroot_id,omitempty"`
 	Labels      map[string]string `gorm:"serializer:json" json:"labels"` // 标签
 
 	// 通知状态

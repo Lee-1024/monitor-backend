@@ -34,6 +34,13 @@ func (s *APIServer) newOpsAssistant(userID uint) (*opsassistant.Assistant, error
 
 func (s *APIServer) opsAssistantTools() []opsassistant.Tool {
 	return []opsassistant.Tool{
+		s.corootAssistantTool("get_coroot_overview", "查询 Coroot 应用可观测性总览", "overview"),
+		s.corootAssistantTool("list_coroot_applications", "查询 Coroot 应用列表", "applications"),
+		s.corootAssistantTool("get_coroot_application", "查询 Coroot 应用详情，需要 resource_type 或 host_id 作为应用名", "application"),
+		s.corootAssistantTool("list_coroot_incidents", "查询 Coroot Incident 列表", "incidents"),
+		s.corootAssistantTool("get_coroot_incident", "查询 Coroot Incident 详情，需要 resource_type 或 host_id 作为 Incident ID", "incident"),
+		s.corootAssistantTool("get_coroot_topology", "查询 Coroot 服务拓扑", "topology"),
+		s.corootAssistantTool("get_coroot_node", "查询 Coroot 节点详情，需要 resource_type 或 host_id 作为节点名", "node"),
 		{
 			Name:        "get_capacity_prediction",
 			Description: "查询容量预测和阈值到达时间",
@@ -241,6 +248,34 @@ func (s *APIServer) opsAssistantTools() []opsassistant.Tool {
 					Content: mustJSON(report),
 				}, nil
 			},
+		},
+	}
+}
+
+func (s *APIServer) corootAssistantTool(name, description, resource string) opsassistant.Tool {
+	return opsassistant.Tool{
+		Name:        name,
+		Description: description,
+		Run: func(ctx context.Context, req opsassistant.ChatRequest) (opsassistant.ToolResult, error) {
+			if s.corootAdapter == nil {
+				return opsassistant.ToolResult{Name: name, Summary: "Coroot 当前不可用", Content: mustJSON(map[string]interface{}{"available": false, "error": "Coroot 未启用"})}, nil
+			}
+			resourceName := resource
+			if resource == "application" || resource == "incident" || resource == "node" {
+				id := strings.TrimSpace(req.ResourceType)
+				if id == "" {
+					id = strings.TrimSpace(req.HostID)
+				}
+				if id == "" {
+					return opsassistant.ToolResult{Name: name, Summary: "缺少查询对象", Content: "需要提供应用、Incident 或节点标识"}, nil
+				}
+				resourceName += ":" + id
+			}
+			var data interface{}
+			if err := s.corootAdapter.Get(ctx, resourceName, nil, &data); err != nil {
+				return opsassistant.ToolResult{Name: name, Summary: "Coroot 暂时不可用", Content: mustJSON(map[string]interface{}{"available": false, "error": "Coroot 暂时不可用"})}, nil
+			}
+			return opsassistant.ToolResult{Name: name, Summary: description, Content: mustJSON(map[string]interface{}{"available": true, "checked_at": time.Now(), "data": data})}, nil
 		},
 	}
 }

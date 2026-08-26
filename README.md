@@ -290,6 +290,112 @@ Backend 当前默认使用 `30s` 未上报作为离线展示口径。Agent 上�
 
 ## 部署
 
+### Coroot Community Edition 集成
+
+后端通过 `coroot` 配置访问 Coroot 的 Project API。默认关闭集成；启用前配置项目 ID 和 API Key：
+
+```yaml
+coroot:
+  enabled: true
+  # Coroot 使用 --url-base-path=/coroot/ 时，API 地址要包含 /coroot
+  base_url: "http://coroot:8080/coroot"
+  public_base_url: "/coroot/"
+  project_id: "your-project-id"
+  api_key: ""
+  timeout_seconds: 3
+  cache_enabled: true
+```
+
+推荐通过环境变量传入 API Key：
+
+```bash
+COROOT_API_KEY=... CONFIG_PATH=config.yaml ./monitor-backend
+```
+
+提供只读接口 `/api/v1/coroot/*` 和 Webhook `/api/v1/integrations/coroot/webhook`。Coroot 的完整 Trace、日志和 Profile 页面通过 `/coroot/` 反向代理访问；不要把 Coroot 端口直接暴露到公网。`base_url` 是后端直连地址，Nginx 的 `proxy_pass` 是浏览器代理地址；两者可以位于不同服务器。宿主机端口映射可以使用 `8082:8080`，但容器之间必须使用 `coroot:8080`。
+
+#### Nginx 反向代理
+
+Coroot 建议配置为 `/coroot/` 子路径运行，并通过现有前端域名访问。Coroot Compose 中使用：
+
+```yaml
+coroot:
+  ports:
+    - "127.0.0.1:8082:8080"
+  command:
+    - "--url-base-path=/coroot/"
+```
+
+如果前端 Nginx 在 `10.40.0.20`、Coroot 在 `10.40.0.184`，后端配置为：
+
+```yaml
+coroot:
+  base_url: "http://10.40.0.184:8082/coroot"
+  public_base_url: "/coroot/"
+```
+
+在前端 Nginx 的同一个 `server` 配置中增加：
+
+```nginx
+location /coroot/ {
+    auth_request /_coroot_auth;
+    # 宿主机端口 8082 映射到 Coroot 容器端口 8080
+    proxy_pass http://127.0.0.1:8082;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Coroot 页面和实时数据请求需要保持长连接
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+}
+
+location = /_coroot_auth {
+    internal;
+    proxy_pass http://127.0.0.1:8080/api/v1/integrations/coroot/auth-check;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header Cookie $http_cookie;
+}
+```
+
+前端在打开 `/coroot/` 前先调用 `POST /api/v1/integrations/coroot/session`，后端会签发 10 分钟、仅限 `/coroot` 路径的 HttpOnly Cookie。浏览器不会把现有 JWT 传给 Coroot。
+
+跨服务器时，将 `proxy_pass` 改为 `http://10.40.0.184:8082`；同一 Compose 网络中使用 `http://coroot:8080`。Coroot 服务本身应配置 `--url-base-path=/coroot/`，这样 Nginx 会保留 `/coroot/` 前缀。
+
+验证并重新加载 Nginx：
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+访问地址：
+
+```text
+https://your-domain.com/coroot/
+```
+
+如果 Nginx 与 Coroot 位于不同服务器，将 `proxy_pass` 改为 Coroot 服务器地址，例如 `http://10.40.0.184:8082`。如果 Nginx 与 Coroot 在同一个 Docker Compose 网络中，则应使用容器端口：
+
+```nginx
+proxy_pass http://coroot:8080;
+```
+
+宿主机访问端口和容器间通信端口不能混用：
+
+```text
+浏览器/Nginx -> 127.0.0.1:8082
+Docker 容器 -> coroot:8080
+```
+
 ### 构建二进制
 
 ```bash

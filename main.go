@@ -97,6 +97,7 @@ func main() {
 				"http://127.0.0.1:5173",
 			},
 			AuthRequired: config.AuthRequired,
+			Coroot:       config.Coroot,
 		}
 
 		apiServer := api.NewAPIServer(storageAdapter, apiConfig, notificationManager, predictorAdapter, llmManager, anomalyDetectorAdapter)

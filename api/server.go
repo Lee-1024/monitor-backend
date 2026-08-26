@@ -5,6 +5,7 @@ package api
 
 import (
 	"log"
+	"monitor-backend/coroot"
 	"monitor-backend/opsassistant/memory"
 	"time"
 
@@ -23,12 +24,15 @@ type APIServer struct {
 	taskManager          *LLMTaskManager                             // LLM任务管理器
 	anomalyDetector      interface{}                                 // 异常检测器接口（避免循环依赖）
 	opsAssistantSessions memory.Store
+	corootAdapter        *coroot.Adapter
+	corootCache          *coroot.Cache
 }
 
 type APIConfig struct {
 	Port         string
 	AllowOrigins []string
 	AuthRequired bool // 是否要求认证
+	Coroot       coroot.Config
 }
 
 func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManager interface{}, predictor PredictorInterface, llmManager interface{ GetClient() LLMClientInterface }, anomalyDetector interface{}) *APIServer {
@@ -75,6 +79,14 @@ func NewAPIServer(storage StorageInterface, config *APIConfig, notificationManag
 		anomalyDetector:      anomalyDetector,
 		opsAssistantSessions: sessionStore,
 	}
+	if config.Coroot.Enabled {
+		if client, err := coroot.NewClient(config.Coroot); err != nil {
+			log.Printf("Warning: Coroot disabled: %v", err)
+		} else {
+			server.corootAdapter = coroot.NewAdapter(client, config.Coroot.ProjectID)
+			server.corootCache = coroot.NewCache(storage.GetRedis(), config.Coroot.CacheEnabled)
+		}
+	}
 
 	server.setupRoutes()
 
@@ -95,6 +107,10 @@ func (s *APIServer) setupRoutes() {
 
 	// API v1
 	v1 := s.router.Group("/api/v1")
+	s.router.POST("/api/v1/integrations/coroot/webhook", s.receiveCorootWebhook)
+	s.router.GET("/api/v1/integrations/coroot/auth-check", s.checkCorootSession)
+	s.router.POST("/api/v1/integrations/coroot/session", AuthMiddleware(), s.createCorootSession)
+	s.router.DELETE("/api/v1/integrations/coroot/session", s.clearCorootSession)
 	agentIngest := v1.Group("/agent")
 	{
 		agentIngest.POST("/register", s.agentHTTPRegister)
@@ -106,6 +122,19 @@ func (s *APIServer) setupRoutes() {
 		v1.Use(AuthMiddleware()) // 所有v1路由都需要认证
 	}
 	{
+		coroot := v1.Group("/coroot")
+		{
+			coroot.GET("/status", s.corootStatus)
+			coroot.GET("/applications/:id", func(c *gin.Context) { s.corootResource("application:"+c.Param("id"), c) })
+			coroot.GET("/incidents/:id", func(c *gin.Context) { s.corootResource("incident:"+c.Param("id"), c) })
+			coroot.GET("/nodes/:id", func(c *gin.Context) { s.corootResource("node:"+c.Param("id"), c) })
+			for _, resource := range []string{"overview", "applications", "topology", "incidents", "alerts", "nodes", "metrics", "deep-links"} {
+				coroot.GET("/"+resource, func(resource string) gin.HandlerFunc {
+					return func(c *gin.Context) { s.corootResource(resource, c) }
+				}(resource))
+			}
+		}
+
 		// 当前用户相关
 		user := v1.Group("/user")
 		{

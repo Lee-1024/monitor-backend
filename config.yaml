@@ -45,6 +45,18 @@ jwt_secret: "bbcceewwx1234567890"
 # 是否要求认证，设置为false可以在开发环境中禁用认证
 auth_required: true
 
+coroot:
+  enabled: false
+  # Coroot 使用 --url-base-path=/coroot/ 时，后端地址也要包含 /coroot
+  base_url: "http://10.40.0.184:8082/coroot"
+  public_base_url: "/coroot/"
+  project_id: "92faob1m"
+  api_key: ""
+  webhook_secret: ""
+  timeout_seconds: 3
+  cache_enabled: true
+  verify_tls: true
+
 # LLM配置（可选，用于智能分析和成本优化建议）
 llm:
   enabled: false  # 是否启用LLM功能

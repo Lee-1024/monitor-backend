@@ -5,6 +5,7 @@ package main
 
 import (
 	"log"
+	"monitor-backend/coroot"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -21,6 +22,7 @@ type Config struct {
 	Retention    RetentionConfig  `yaml:"retention"`
 	Logging      LoggingConfig    `yaml:"logging"`
 	LLM          LLMConfig        `yaml:"llm"`
+	Coroot       coroot.Config    `yaml:"coroot"`
 }
 
 type LoggingConfig struct {
@@ -198,6 +200,11 @@ func LoadConfig() *Config {
 			CleanupIntervalSeconds:     60,
 			BackendStartupGraceSeconds: 180,
 		},
+		Coroot: coroot.Config{
+			TimeoutSeconds: 3,
+			CacheEnabled:   true,
+			VerifyTLS:      true,
+		},
 	}
 
 	configPath := os.Getenv("CONFIG_PATH")
@@ -209,6 +216,9 @@ func LoadConfig() *Config {
 		if err := yaml.Unmarshal(data, config); err != nil {
 			log.Printf("Failed to parse config: %v", err)
 		}
+	}
+	if apiKey := os.Getenv("COROOT_API_KEY"); apiKey != "" {
+		config.Coroot.APIKey = apiKey
 	}
 
 	return config
