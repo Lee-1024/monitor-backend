@@ -33,6 +33,7 @@ func (a *Adapter) Get(ctx context.Context, resource string, query url.Values, ta
 	resourcePath := map[string]string{
 		"overview":     fmt.Sprintf("/api/project/%s/overview/applications", project),
 		"applications": fmt.Sprintf("/api/project/%s/overview/applications", project),
+		"topology":     fmt.Sprintf("/api/project/%s/overview/topology", project),
 		"nodes":        fmt.Sprintf("/api/project/%s/overview/nodes", project),
 		"incidents":    fmt.Sprintf("/api/project/%s/incidents", project),
 		"alerts":       fmt.Sprintf("/api/project/%s/alerts", project),
