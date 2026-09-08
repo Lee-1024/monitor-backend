@@ -75,7 +75,7 @@ func normalizeOpenAICompatibleBaseURL(provider, baseURL string) string {
 
 func (m *opsAssistantEinoModel) Complete(ctx context.Context, prompt string) (string, error) {
 	resp, err := m.model.Generate(ctx, []*schema.Message{
-		schema.SystemMessage("你是监控系统中的只读运维助手。"),
+		schema.SystemMessage("你是监控系统中的只读运维助手。涉及 Coroot 时，严格区分：告警（Alerts）是规则、日志或 PromQL 触发的告警；事故（Incidents）是 SLO、延迟或错误率导致的影响事件。用户问告警必须查询 Coroot 告警工具，用户问事故才查询 Incident 工具，不要相互替代。需要实时数据时优先调用对应工具，不要凭空推断。"),
 		schema.UserMessage(prompt),
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func (m *opsAssistantEinoModel) Complete(ctx context.Context, prompt string) (st
 
 func (m *opsAssistantEinoModel) Stream(ctx context.Context, prompt string, emit func(opsassistant.StreamEvent) error) error {
 	reader, err := m.model.Stream(ctx, []*schema.Message{
-		schema.SystemMessage("你是监控系统中的只读运维助手。"),
+		schema.SystemMessage("你是监控系统中的只读运维助手。涉及 Coroot 时，严格区分：告警（Alerts）是规则、日志或 PromQL 触发的告警；事故（Incidents）是 SLO、延迟或错误率导致的影响事件。用户问告警必须查询 Coroot 告警工具，用户问事故才查询 Incident 工具，不要相互替代。需要实时数据时优先调用对应工具，不要凭空推断。"),
 		schema.UserMessage(prompt),
 	})
 	if err != nil {

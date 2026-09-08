@@ -18,9 +18,13 @@ type DiagnosisReport struct {
 }
 
 type Evidence struct {
-	Type   string `json:"type"`
-	Source string `json:"source"`
-	Text   string `json:"text"`
+	Type      string `json:"type"`
+	Source    string `json:"source"`
+	Text      string `json:"text"`
+	Status    string `json:"status,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+	Target    string `json:"target,omitempty"`
+	Collected string `json:"collected_at,omitempty"`
 }
 
 type PossibleCause struct {

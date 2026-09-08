@@ -141,11 +141,41 @@ func (a *Assistant) loadSession(ctx context.Context, req ChatRequest) *memory.Se
 }
 
 func (a *Assistant) mergeSessionContext(req ChatRequest, session *memory.Session) ChatRequest {
+	req.HostID = strings.TrimSpace(req.HostID)
+	req.Scope = strings.TrimSpace(strings.ToLower(req.Scope))
+	req.TargetType = strings.TrimSpace(strings.ToLower(req.TargetType))
+	req.Target = strings.TrimSpace(req.Target)
 	if session == nil {
+		if req.Scope == "" {
+			if req.HostID != "" {
+				req.Scope = "host"
+			} else {
+				req.Scope = "global"
+			}
+		}
+		if req.TargetType == "" && req.HostID != "" {
+			req.TargetType = "host"
+		}
+		if req.Target == "" && req.TargetType == "host" {
+			req.Target = req.HostID
+		}
 		return req
 	}
 	if req.HostID == "" {
-		req.HostID = session.Context.HostID
+		req.HostID = strings.TrimSpace(session.Context.HostID)
+	}
+	if req.Scope == "" {
+		if req.HostID != "" {
+			req.Scope = "host"
+		} else {
+			req.Scope = "global"
+		}
+	}
+	if req.Target == "" && req.TargetType == "host" {
+		req.Target = req.HostID
+	}
+	if req.TargetType == "" && req.HostID != "" {
+		req.TargetType = "host"
 	}
 	if req.TimeRange == nil && session.Context.TimeRange != nil {
 		req.TimeRange = &TimeRange{From: session.Context.TimeRange.From, To: session.Context.TimeRange.To}
@@ -326,13 +356,17 @@ func planTools(intent IntentResult, req ChatRequest) ToolPlan {
 		)
 	case "performance_analysis":
 		if hasHost {
-			calls = append(calls, PlannedToolCall{Tool: "get_performance_summary", Required: true, Summary: "query host performance summary"})
+			calls = append(calls,
+				PlannedToolCall{Tool: "get_performance_summary", Required: true, Summary: "query selected host performance summary"},
+				PlannedToolCall{Tool: "get_anomaly_events", Required: false, Summary: "query selected host anomaly events"},
+			)
+		} else {
+			calls = append(calls,
+				PlannedToolCall{Tool: "get_recent_alerts", Required: false, Summary: "query global recent alerts"},
+				PlannedToolCall{Tool: "get_anomaly_events", Required: false, Summary: "query global anomaly events"},
+			)
 		}
-		calls = append(calls,
-			PlannedToolCall{Tool: "get_recent_alerts", Required: false, Summary: "query recent alerts"},
-			PlannedToolCall{Tool: "get_anomaly_events", Required: false, Summary: "query recent anomaly events"},
-			PlannedToolCall{Tool: "search_knowledge", Required: false, Summary: "search performance troubleshooting knowledge"},
-		)
+		calls = append(calls, PlannedToolCall{Tool: "search_knowledge", Required: false, Summary: "search performance troubleshooting knowledge"})
 	case "host_performance":
 		if hasHost {
 			calls = append(calls,

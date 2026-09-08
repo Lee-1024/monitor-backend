@@ -1565,12 +1565,13 @@ func (s *Storage) StartProcessSnapshotCleanup() {
 }
 
 func (s *Storage) cleanupOldProcessSnapshots() {
-	err := s.truncateSnapshotTable("process_snapshots")
+	cutoff := processSnapshotCutoff(time.Now())
+	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", "timestamp", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
 	if err != nil {
-		log.Printf("[ProcessCleanup] Failed to truncate process snapshots: %v", err)
+		log.Printf("[ProcessCleanup] Failed to cleanup process snapshots: %v", err)
 		return
 	}
-	log.Printf("[ProcessCleanup] Truncated process_snapshots")
+	log.Printf("[ProcessCleanup] Deleted %d expired process snapshots (cutoff=%s)", deleted, cutoff.Format(time.RFC3339))
 }
 
 var serviceStatusRetentionDays = 30
@@ -1603,12 +1604,13 @@ func (s *Storage) StartDockerSnapshotCleanup() {
 }
 
 func (s *Storage) cleanupOldDockerSnapshots() {
-	err := s.truncateSnapshotTable("docker_container_snapshots")
+	cutoff := dockerSnapshotCutoff(time.Now())
+	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", "timestamp", cutoff, dockerSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
 	if err != nil {
-		log.Printf("[DockerCleanup] Failed to truncate docker snapshots: %v", err)
+		log.Printf("[DockerCleanup] Failed to cleanup docker snapshots: %v", err)
 		return
 	}
-	log.Printf("[DockerCleanup] Truncated docker_container_snapshots")
+	log.Printf("[DockerCleanup] Deleted %d expired docker snapshots (cutoff=%s)", deleted, cutoff.Format(time.RFC3339))
 }
 
 func snapshotTruncateSQL(table string) (string, error) {

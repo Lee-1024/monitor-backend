@@ -49,13 +49,10 @@ func TestRetentionConfigKeepsExplicitProcessSnapshotDays(t *testing.T) {
 	}
 }
 
-func TestProcessSnapshotCleanupUsesTruncate(t *testing.T) {
-	got, err := snapshotTruncateSQL("process_snapshots")
-	if err != nil {
-		t.Fatalf("snapshotTruncateSQL(process_snapshots) error = %v", err)
-	}
-	if got != "TRUNCATE TABLE process_snapshots" {
-		t.Fatalf("truncate SQL = %q, want process_snapshots truncate only", got)
+func TestProcessSnapshotCleanupUsesTimestampCutoff(t *testing.T) {
+	got := cleanupBatchDeleteSQL("process_snapshots", "timestamp")
+	if !strings.Contains(got, "timestamp < ?") {
+		t.Fatalf("cleanup SQL = %q, want timestamp cutoff", got)
 	}
 }
 

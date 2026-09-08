@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,12 +64,9 @@ func TestDockerContainerTotalUsesLatestDistinctIDs(t *testing.T) {
 	}
 }
 
-func TestDockerSnapshotCleanupUsesTruncate(t *testing.T) {
-	got, err := snapshotTruncateSQL("docker_container_snapshots")
-	if err != nil {
-		t.Fatalf("snapshotTruncateSQL(docker_container_snapshots) error = %v", err)
-	}
-	if got != "TRUNCATE TABLE docker_container_snapshots" {
-		t.Fatalf("truncate SQL = %q, want docker_container_snapshots truncate only", got)
+func TestDockerSnapshotCleanupUsesTimestampCutoff(t *testing.T) {
+	got := cleanupBatchDeleteSQL("docker_container_snapshots", "timestamp")
+	if !strings.Contains(got, "timestamp < ?") {
+		t.Fatalf("cleanup SQL = %q, want timestamp cutoff", got)
 	}
 }

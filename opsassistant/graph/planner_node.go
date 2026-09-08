@@ -80,6 +80,25 @@ func toolsForIntent(intent string, hasHost bool) []opsassistant.PlannedToolCall 
 			toolCall("get_anomaly_events", false, "查询日志时间附近的异常事件"),
 			toolCall("search_knowledge", false, "检索日志排障知识"),
 		}, hasHost)
+	case IntentServiceUnavailable, IntentContainerFailure, IntentNetworkConnectivity, IntentDatabaseConnectivity:
+		return filterHostTools([]opsassistant.PlannedToolCall{
+			toolCall("get_server_probe_status", false, "查询端口、HTTP 和服务连通性"),
+			toolCall("get_host_services", false, "查询主机服务状态"),
+			toolCall("get_host_containers", false, "查询容器状态"),
+			toolCall("get_host_processes", false, "查询相关进程"),
+			toolCall("get_host_logs", false, "查询最近日志"),
+			toolCall("get_latest_metrics", false, "查询关联主机最新指标"),
+			toolCall("get_recent_alerts", true, "查询相关告警"),
+			toolCall("get_anomaly_events", false, "查询相关异常事件"),
+			toolCall("search_knowledge", false, "检索服务故障排障知识"),
+		}, hasHost)
+	case IntentDiskCapacity, IntentMemoryPressure:
+		return filterHostTools([]opsassistant.PlannedToolCall{
+			toolCall("get_latest_metrics", true, "查询主机资源指标"),
+			toolCall("get_history_metrics", true, "查询资源历史趋势"),
+			toolCall("get_recent_alerts", false, "查询相关告警"),
+			toolCall("get_anomaly_events", false, "查询相关异常事件"),
+		}, hasHost)
 	default:
 		return []opsassistant.PlannedToolCall{
 			toolCall("list_agents", true, "查询主机在线状态"),

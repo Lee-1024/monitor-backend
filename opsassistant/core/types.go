@@ -27,6 +27,9 @@ type ChatRequest struct {
 	Message      string     `json:"message"`
 	SessionID    string     `json:"session_id,omitempty"`
 	HostID       string     `json:"host_id,omitempty"`
+	Scope        string     `json:"scope,omitempty"`
+	TargetType   string     `json:"target_type,omitempty"`
+	Target       string     `json:"target,omitempty"`
 	TimeRange    *TimeRange `json:"time_range,omitempty"`
 	ResourceType string     `json:"resource_type,omitempty"`
 	Days         int        `json:"days,omitempty"`
@@ -68,6 +71,9 @@ type RelatedEntities = report.RelatedEntities
 
 type IntentResult struct {
 	Intent          string   `json:"intent"`
+	Scope           string   `json:"scope,omitempty"`
+	TargetType      string   `json:"target_type,omitempty"`
+	Target          string   `json:"target,omitempty"`
 	Confidence      float64  `json:"confidence"`
 	RequiredContext []string `json:"required_context,omitempty"`
 	MissingContext  []string `json:"missing_context,omitempty"`

@@ -19,6 +19,12 @@ const (
 	IntentInspectionSummary        = "inspection_summary"
 	IntentKnowledgeTroubleshooting = "knowledge_troubleshooting"
 	IntentLogInvestigation         = "log_investigation"
+	IntentServiceUnavailable       = "service_unavailable"
+	IntentContainerFailure         = "container_failure"
+	IntentNetworkConnectivity      = "network_connectivity"
+	IntentDatabaseConnectivity     = "database_connectivity"
+	IntentDiskCapacity             = "disk_capacity"
+	IntentMemoryPressure           = "memory_pressure"
 )
 
 func ClassifyIntent(ctx context.Context, model opsassistant.Model, req opsassistant.ChatRequest) opsassistant.IntentResult {
@@ -37,6 +43,26 @@ func ClassifyIntent(ctx context.Context, model opsassistant.Model, req opsassist
 
 func normalizeIntentContext(result opsassistant.IntentResult, req opsassistant.ChatRequest) opsassistant.IntentResult {
 	result.Intent = normalizeIntent(result.Intent)
+	result.Scope = strings.ToLower(strings.TrimSpace(result.Scope))
+	result.TargetType = strings.ToLower(strings.TrimSpace(result.TargetType))
+	result.Target = strings.TrimSpace(result.Target)
+	if req.HostID != "" {
+		result.Scope = "host"
+		result.TargetType = "host"
+		result.Target = req.HostID
+	}
+	if result.Scope == "" {
+		result.Scope = req.Scope
+		if result.Scope == "" {
+			result.Scope = "global"
+		}
+	}
+	if result.TargetType == "" && result.Scope == "host" {
+		result.TargetType = "host"
+	}
+	if result.Target == "" && result.TargetType == "host" {
+		result.Target = req.HostID
+	}
 	if result.Confidence <= 0 {
 		result.Confidence = 0.5
 	}
@@ -72,13 +98,25 @@ func fallbackIntent(req opsassistant.ChatRequest) opsassistant.IntentResult {
 		intent = IntentLogInvestigation
 	case strings.Contains(message, "knowledge") || strings.Contains(message, "知识"):
 		intent = IntentKnowledgeTroubleshooting
+	case strings.Contains(message, "service") || strings.Contains(message, "服务") || strings.Contains(message, "systemd") || strings.Contains(message, "端口"):
+		intent = IntentServiceUnavailable
+	case strings.Contains(message, "container") || strings.Contains(message, "docker") || strings.Contains(message, "容器"):
+		intent = IntentContainerFailure
+	case strings.Contains(message, "dns") || strings.Contains(message, "网络") || strings.Contains(message, "连接失败") || strings.Contains(message, "丢包"):
+		intent = IntentNetworkConnectivity
+	case strings.Contains(message, "database") || strings.Contains(message, "数据库") || strings.Contains(message, "redis") || strings.Contains(message, "mongodb"):
+		intent = IntentDatabaseConnectivity
+	case strings.Contains(message, "磁盘空间") || strings.Contains(message, "disk space") || strings.Contains(message, "磁盘满"):
+		intent = IntentDiskCapacity
+	case strings.Contains(message, "内存不足") || strings.Contains(message, "memory pressure") || strings.Contains(message, "内存压力"):
+		intent = IntentMemoryPressure
 	}
 	return opsassistant.IntentResult{Intent: intent, Confidence: 0.55}
 }
 
 func normalizeIntent(intent string) string {
 	switch intent {
-	case IntentHostPerformance, IntentCapacityPlanning, IntentCostOptimization, IntentPerformanceAnalysis, IntentAlertRootCause, IntentAnomalyAnalysis, IntentInspectionSummary, IntentKnowledgeTroubleshooting, IntentLogInvestigation:
+	case IntentHostPerformance, IntentCapacityPlanning, IntentCostOptimization, IntentPerformanceAnalysis, IntentAlertRootCause, IntentAnomalyAnalysis, IntentInspectionSummary, IntentKnowledgeTroubleshooting, IntentLogInvestigation, IntentServiceUnavailable, IntentContainerFailure, IntentNetworkConnectivity, IntentDatabaseConnectivity, IntentDiskCapacity, IntentMemoryPressure:
 		return intent
 	default:
 		return IntentGlobalHealth

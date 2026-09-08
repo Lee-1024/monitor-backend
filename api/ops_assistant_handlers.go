@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,8 @@ func (s *APIServer) opsAssistantTools() []opsassistant.Tool {
 		s.corootAssistantTool("get_coroot_application", "查询 Coroot 应用详情，需要 resource_type 或 host_id 作为应用名", "application"),
 		s.corootAssistantTool("list_coroot_incidents", "查询 Coroot Incident 列表", "incidents"),
 		s.corootAssistantTool("get_coroot_incident", "查询 Coroot Incident 详情，需要 resource_type 或 host_id 作为 Incident ID", "incident"),
+		s.corootAssistantTool("list_coroot_alerts", "查询 Coroot 告警列表。用户询问告警、检查项、日志告警或 PromQL 告警时使用，不要用 Incident 工具替代", "alerts"),
+		s.corootAssistantTool("get_coroot_alert", "查询 Coroot 单条告警详情，需要 resource_type 或 host_id 作为告警 ID", "alert"),
 		s.corootAssistantTool("get_coroot_topology", "查询 Coroot 服务拓扑", "topology"),
 		s.corootAssistantTool("get_coroot_node", "查询 Coroot 节点详情，需要 resource_type 或 host_id 作为节点名", "node"),
 		{
@@ -249,6 +252,60 @@ func (s *APIServer) opsAssistantTools() []opsassistant.Tool {
 				}, nil
 			},
 		},
+		assistantHostDataTool("get_host_services", "查询指定主机上的服务状态", func(ctx context.Context, hostID string) (interface{}, error) {
+			return s.storage.GetServiceStatus(hostID)
+		}),
+		assistantHostDataTool("get_host_containers", "查询指定主机上的 Docker 容器状态和资源", func(ctx context.Context, hostID string) (interface{}, error) {
+			items, _, err := s.storage.GetDockerContainersWithPagination(hostID, 1, 200)
+			return items, err
+		}),
+		assistantHostDataTool("get_host_processes", "查询指定主机上的进程列表", func(ctx context.Context, hostID string) (interface{}, error) {
+			return s.storage.GetProcesses(hostID, 200)
+		}),
+		assistantHostDataTool("get_host_logs", "查询指定主机最近的日志", func(ctx context.Context, hostID string) (interface{}, error) {
+			end := time.Now()
+			start := end.Add(-time.Duration(24) * time.Hour)
+			return s.storage.GetLogs(hostID, "", start, end, 200)
+		}),
+		{
+			Name: "get_server_probe_status", Description: "查询服务端探测目标最近的连通性、延迟和 HTTP 状态",
+			Run: func(ctx context.Context, req opsassistant.ChatRequest) (opsassistant.ToolResult, error) {
+				targets, err := s.storage.ListServerProbeTargets()
+				if err != nil {
+					return opsassistant.ToolResult{}, err
+				}
+				name := strings.TrimSpace(req.Target)
+				result := make([]map[string]interface{}, 0)
+				for _, target := range targets {
+					if name != "" && !strings.Contains(strings.ToLower(target.Name+" "+target.Host+" "+target.URL), strings.ToLower(name)) {
+						continue
+					}
+					results, resultErr := s.storage.ListServerProbeResults(target.ID, 5)
+					if resultErr != nil {
+						continue
+					}
+					result = append(result, map[string]interface{}{"target": target, "recent_results": results})
+				}
+				return opsassistant.ToolResult{Name: "get_server_probe_status", Summary: "查询服务端探测状态", Content: mustJSON(map[string]interface{}{"scope": req.Scope, "target": name, "data": result})}, nil
+			},
+		},
+	}
+}
+
+func assistantHostDataTool(name, description string, query func(context.Context, string) (interface{}, error)) opsassistant.Tool {
+	return opsassistant.Tool{
+		Name: name, Description: description,
+		Run: func(ctx context.Context, req opsassistant.ChatRequest) (opsassistant.ToolResult, error) {
+			hostID := strings.TrimSpace(req.HostID)
+			if hostID == "" {
+				return opsassistant.ToolResult{Name: name, Summary: "缺少主机范围", Content: "该查询必须指定 host_id，不能执行全局查询"}, nil
+			}
+			data, err := query(ctx, hostID)
+			if err != nil {
+				return opsassistant.ToolResult{}, err
+			}
+			return opsassistant.ToolResult{Name: name, Summary: description, Content: mustJSON(map[string]interface{}{"scope": "host", "host_id": hostID, "data": data})}, nil
+		},
 	}
 }
 
@@ -261,18 +318,22 @@ func (s *APIServer) corootAssistantTool(name, description, resource string) opsa
 				return opsassistant.ToolResult{Name: name, Summary: "Coroot 当前不可用", Content: mustJSON(map[string]interface{}{"available": false, "error": "Coroot 未启用"})}, nil
 			}
 			resourceName := resource
-			if resource == "application" || resource == "incident" || resource == "node" {
+			if resource == "application" || resource == "incident" || resource == "node" || resource == "alert" {
 				id := strings.TrimSpace(req.ResourceType)
 				if id == "" {
 					id = strings.TrimSpace(req.HostID)
 				}
 				if id == "" {
-					return opsassistant.ToolResult{Name: name, Summary: "缺少查询对象", Content: "需要提供应用、Incident 或节点标识"}, nil
+					return opsassistant.ToolResult{Name: name, Summary: "缺少查询对象", Content: "需要提供应用、Incident、告警或节点标识"}, nil
 				}
 				resourceName += ":" + id
 			}
 			var data interface{}
-			if err := s.corootAdapter.Get(ctx, resourceName, nil, &data); err != nil {
+			var query url.Values
+			if resource == "alerts" {
+				query = url.Values{"limit": []string{"50"}, "offset": []string{"0"}, "include_resolved": []string{"false"}, "sort_by": []string{"opened_at"}, "sort_desc": []string{"true"}}
+			}
+			if err := s.corootAdapter.Get(ctx, resourceName, query, &data); err != nil {
 				return opsassistant.ToolResult{Name: name, Summary: "Coroot 暂时不可用", Content: mustJSON(map[string]interface{}{"available": false, "error": "Coroot 暂时不可用"})}, nil
 			}
 			return opsassistant.ToolResult{Name: name, Summary: description, Content: mustJSON(map[string]interface{}{"available": true, "checked_at": time.Now(), "data": data})}, nil
@@ -551,9 +612,12 @@ func (s *APIServer) chatOpsAssistant(c *gin.Context) {
 
 func (s *APIServer) streamOpsAssistant(c *gin.Context) {
 	req := opsassistant.ChatRequest{
-		Message:   c.Query("message"),
-		SessionID: c.Query("session_id"),
-		HostID:    c.Query("host_id"),
+		Message:    c.Query("message"),
+		SessionID:  c.Query("session_id"),
+		HostID:     c.Query("host_id"),
+		Scope:      c.Query("scope"),
+		TargetType: c.Query("target_type"),
+		Target:     c.Query("target"),
 	}
 	req.ResourceType = c.Query("resource_type")
 	if days, err := strconv.Atoi(c.Query("days")); err == nil {

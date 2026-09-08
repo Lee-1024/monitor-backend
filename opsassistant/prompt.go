@@ -51,9 +51,13 @@ func BuildPrompt(req ChatRequest, toolResults []ToolResult) string {
 
 func BuildIntentPrompt(req ChatRequest) string {
 	var b strings.Builder
-	b.WriteString("Classify the operations question into one intent. Return JSON only.\n")
-	b.WriteString("Supported intents: global_health, host_performance, capacity_planning, cost_optimization, performance_analysis, alert_root_cause, anomaly_analysis, inspection_summary, knowledge_troubleshooting, log_investigation.\n")
-	b.WriteString("JSON shape: {\"intent\":\"host_performance\",\"confidence\":0.8,\"required_context\":[\"host_id\"],\"missing_context\":[]}.\n")
+	b.WriteString("Classify the operations question and identify its diagnostic scope. Return JSON only.\n")
+	b.WriteString("Supported intents: global_health, host_performance, capacity_planning, cost_optimization, performance_analysis, alert_root_cause, anomaly_analysis, inspection_summary, knowledge_troubleshooting, log_investigation, service_unavailable, container_failure, network_connectivity, database_connectivity, disk_capacity, memory_pressure.\n")
+	b.WriteString("Scopes: global, host, application, service, container. Target types: host, application, service, container, alert, incident, node, none. JSON shape: {\"intent\":\"host_performance\",\"scope\":\"host\",\"target_type\":\"host\",\"target\":\"\",\"confidence\":0.8,\"required_context\":[\"host_id\"],\"missing_context\":[]}.\n")
+	b.WriteString("Never use global scope when the user explicitly names or selects a host, application, service, or container.\n")
+	if req.Scope != "" || req.TargetType != "" || req.Target != "" {
+		b.WriteString(fmt.Sprintf("Selected context: scope=%s target_type=%s target=%s\n", req.Scope, req.TargetType, req.Target))
+	}
 	if req.HostID != "" {
 		b.WriteString(fmt.Sprintf("Selected host_id: %s\n", req.HostID))
 	}

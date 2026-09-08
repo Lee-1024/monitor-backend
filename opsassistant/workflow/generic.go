@@ -93,7 +93,7 @@ func runToolExecutorNode(ctx context.Context, state genericGraphState) (genericG
 }
 
 func runEvidenceBuilderNode(ctx context.Context, state genericGraphState) (genericGraphState, error) {
-	evidence := append(evidenceFromResults(state.Results), state.Input.Evidence...)
+	evidence := append(evidenceFromResults(state.Input.Request, state.Results), state.Input.Evidence...)
 	state.Evidence = evidence
 	if err := emitIfPresent(state.Emit, core.StreamEvent{Type: core.EventGraphNode, Node: "evidence_builder", Status: "completed", Summary: "evidence collected", Data: evidence}); err != nil {
 		return state, err
@@ -213,16 +213,30 @@ func failRunningToolCalls(plan core.ToolPlan, results []core.ToolExecutionResult
 	return results
 }
 
-func evidenceFromResults(results []core.ToolExecutionResult) []core.Evidence {
+func evidenceFromResults(req core.ChatRequest, results []core.ToolExecutionResult) []core.Evidence {
 	evidence := make([]core.Evidence, 0, len(results))
 	for _, result := range results {
 		text := strings.TrimSpace(result.Content)
 		if text == "" {
 			text = result.Error
 		}
-		evidence = append(evidence, core.Evidence{Type: "system", Source: result.Tool, Text: text})
+		status := result.Status
+		if status == "" {
+			status = "unknown"
+		}
+		evidence = append(evidence, core.Evidence{Type: "system", Source: result.Tool, Text: text, Status: status, Scope: req.Scope, Target: evidenceTarget(req), Collected: time.Now().Format(time.RFC3339)})
 	}
 	return evidence
+}
+
+func evidenceTarget(req core.ChatRequest) string {
+	if req.Target != "" {
+		return req.Target
+	}
+	if req.HostID != "" {
+		return req.HostID
+	}
+	return "global"
 }
 
 func generateAnswer(ctx context.Context, model core.Model, prompt string, emit func(core.StreamEvent) error) (string, error) {
@@ -255,12 +269,20 @@ func buildDiagnosisPrompt(req core.ChatRequest, evidence []core.Evidence) string
 	var builder strings.Builder
 	builder.WriteString("You are an operations diagnostic assistant. Return a single JSON object only. Do not output markdown or <think> tags.\n")
 	builder.WriteString("JSON fields: title, summary, risk_level(low|medium|high|critical), confidence(0-1), evidence, possible_causes, recommendations, related_entities.\n")
+	builder.WriteString("Use only the supplied evidence. Distinguish confirmed causes, high-probability causes, hypotheses, and insufficient data. A failed or unknown evidence source is not evidence of normality. Include the scope and target in the summary.\n")
+	builder.WriteString("Correlate evidence only when scope, target, and time window are compatible.\n")
 	builder.WriteString("Question:\n")
 	builder.WriteString(req.Message)
 	builder.WriteString("\n\nEvidence:\n")
 	for _, item := range evidence {
 		builder.WriteString("- [")
 		builder.WriteString(item.Source)
+		builder.WriteString(" status=")
+		builder.WriteString(item.Status)
+		builder.WriteString(" scope=")
+		builder.WriteString(item.Scope)
+		builder.WriteString(" target=")
+		builder.WriteString(item.Target)
 		builder.WriteString("] ")
 		builder.WriteString(item.Text)
 		builder.WriteString("\n")
