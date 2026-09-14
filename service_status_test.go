@@ -1,10 +1,47 @@
 package main
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	"monitor-backend/api"
 )
+
+func TestLatestServiceStatusesByHostUsesSingleDistinctOnQuery(t *testing.T) {
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  "host=localhost user=test dbname=test sslmode=disable",
+		PreferSimpleProtocol: true,
+	}), &gorm.Config{DryRun: true, DisableAutomaticPing: true})
+	if err != nil {
+		t.Fatalf("open dry-run database: %v", err)
+	}
+	query := latestServiceStatusesByHostQuery(db, "host-1").Find(&[]ServiceStatus{})
+
+	sql := query.Statement.SQL.String()
+	if !strings.Contains(sql, "DISTINCT ON (name)") {
+		t.Fatalf("query SQL = %q, want DISTINCT ON latest-row query", sql)
+	}
+	if strings.Contains(sql, "MAX(") {
+		t.Fatalf("query SQL = %q, must not use two-stage MAX query", sql)
+	}
+}
+
+func TestServiceStatusCacheInvalidationTargetsHostKeysAndSetMembers(t *testing.T) {
+	hosts := []string{"host-1", "host-2", "host-1", ""}
+	keys, members := serviceStatusCacheInvalidationTargets(hosts)
+
+	wantKeys := []string{"service:latest:host-1", "service:latest:host-2"}
+	wantMembers := []interface{}{"host-1", "host-2"}
+	if !reflect.DeepEqual(keys, wantKeys) {
+		t.Fatalf("keys = %#v, want %#v", keys, wantKeys)
+	}
+	if !reflect.DeepEqual(members, wantMembers) {
+		t.Fatalf("members = %#v, want %#v", members, wantMembers)
+	}
+}
 
 func TestApplyAgentStatusToServiceInfosMarksOfflineHostServicesOffline(t *testing.T) {
 	services := []api.ServiceInfo{

@@ -399,7 +399,7 @@ Docker 容器 -> coroot:8080
 ### 构建二进制
 
 ```bash
-go build -o monitor-backend
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o monitor-backend
 ```
 
 ### Docker

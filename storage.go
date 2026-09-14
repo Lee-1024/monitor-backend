@@ -367,29 +367,7 @@ func (s *Storage) MarkServicesOffline(hostID string, timestamp time.Time) error 
 
 func (s *Storage) latestServiceStatuses(hostID string) ([]ServiceStatus, error) {
 	var services []ServiceStatus
-	subQuery := s.postgres.Table("service_statuses").
-		Select("MAX(id) as id").
-		Where("host_id = ?", hostID).
-		Group("name")
-
-	var maxIDs []uint
-	rows, err := subQuery.Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id uint
-		if err := rows.Scan(&id); err == nil {
-			maxIDs = append(maxIDs, id)
-		}
-	}
-	if len(maxIDs) == 0 {
-		return services, nil
-	}
-
-	err = s.postgres.Where("id IN ?", maxIDs).Find(&services).Error
+	err := latestServiceStatusesByHostQuery(s.postgres, hostID).Find(&services).Error
 	return services, err
 }
 
@@ -1230,6 +1208,39 @@ func (s *Storage) GetCachedLatestServiceStatuses(hostID string) ([]ServiceStatus
 	var services []ServiceStatus
 	err := s.getCachedLatestList(serviceLatestCachePrefix, serviceLatestHostsKey, hostID, &services)
 	return services, err
+}
+
+func serviceStatusCacheInvalidationTargets(hostIDs []string) ([]string, []interface{}) {
+	seen := make(map[string]struct{}, len(hostIDs))
+	keys := make([]string, 0, len(hostIDs))
+	members := make([]interface{}, 0, len(hostIDs))
+	for _, hostID := range hostIDs {
+		hostID = strings.TrimSpace(hostID)
+		if hostID == "" {
+			continue
+		}
+		if _, exists := seen[hostID]; exists {
+			continue
+		}
+		seen[hostID] = struct{}{}
+		keys = append(keys, serviceLatestCachePrefix+hostID)
+		members = append(members, hostID)
+	}
+	return keys, members
+}
+
+func (s *Storage) InvalidateLatestServiceStatuses(hostIDs []string) error {
+	keys, members := serviceStatusCacheInvalidationTargets(hostIDs)
+	if len(keys) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	pipe := s.redis.Pipeline()
+	pipe.Del(ctx, keys...)
+	pipe.SRem(ctx, serviceLatestHostsKey, members...)
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (s *Storage) cacheLatestList(prefix, hostsKey, hostID string, ttl time.Duration, data interface{}) error {

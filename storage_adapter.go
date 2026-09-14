@@ -28,9 +28,9 @@ type StorageAdapter struct {
 const agentOnlineTimeout = 30 * time.Second
 
 const (
-	defaultHistoryQueryLimit = 1000
-	maxHistoryQueryLimit     = 5000
-	bulkDeleteChunkSize      = 1000
+	defaultHistoryQueryLimit  = 1000
+	maxHistoryQueryLimit      = 5000
+	bulkDeleteChunkSize       = 1000
 	maxServiceStatusDeleteIDs = 1000
 )
 
@@ -2455,6 +2455,13 @@ func (s *StorageAdapter) GetScriptExecutions(hostID, scriptID string, limit int)
 // ============================================
 
 // GetServiceStatus 获取服务状态
+func latestServiceStatusesByHostQuery(db *gorm.DB, hostID string) *gorm.DB {
+	return db.Table("service_statuses").
+		Select("DISTINCT ON (name) service_statuses.*").
+		Where("host_id = ?", hostID).
+		Order("name, id DESC")
+}
+
 func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, error) {
 	if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil {
 		result := serviceStatusesToAPI(cached)
@@ -2478,35 +2485,7 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 	var services []ServiceStatus
 
 	if hostID != "" {
-		// 获取指定主机每个服务的最新状态
-		// 使用窗口函数或子查询获取每个服务的最新记录
-		subQuery := s.storage.postgres.Table("service_statuses").
-			Select("MAX(id) as id").
-			Where("host_id = ?", hostID).
-			Group("name")
-
-		var maxIDs []uint
-		rows, err := subQuery.Rows()
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var id uint
-			if err := rows.Scan(&id); err == nil {
-				maxIDs = append(maxIDs, id)
-			}
-		}
-
-		if len(maxIDs) > 0 {
-			err = s.storage.postgres.Where("id IN ?", maxIDs).Find(&services).Error
-		} else {
-			// 如果没有找到记录，返回空列表
-			return []api.ServiceInfo{}, nil
-		}
-
-		if err != nil {
+		if err := latestServiceStatusesByHostQuery(s.storage.postgres, hostID).Find(&services).Error; err != nil {
 			return nil, err
 		}
 	} else {
@@ -2683,6 +2662,17 @@ func (s *StorageAdapter) DeleteServiceStatus(hostID string) (int64, error) {
 func (s *StorageAdapter) DeleteServiceStatuses(ids []uint) (int64, error) {
 	if err := validateServiceStatusDeleteIDs(ids); err != nil {
 		return 0, err
+	}
+
+	var hostIDs []string
+	if err := s.storage.postgres.Model(&ServiceStatus{}).
+		Distinct("host_id").
+		Where("id IN ?", ids).
+		Pluck("host_id", &hostIDs).Error; err != nil {
+		return 0, err
+	}
+	if err := s.storage.InvalidateLatestServiceStatuses(hostIDs); err != nil {
+		return 0, fmt.Errorf("invalidate service status cache: %w", err)
 	}
 
 	var deleted int64
