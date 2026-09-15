@@ -122,6 +122,7 @@ func NewStorage(config *Config) *Storage {
 		&OpsAssistantSession{},
 		&OpsAssistantMessage{},
 	)
+	storage.ensureAlertHistoryCorootIndex()
 	storage.ensureProcessSnapshotIndexes()
 	storage.ensureDockerSnapshotIndexes()
 	storage.ensureServerProbeIndexes()
@@ -225,6 +226,27 @@ func storageIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_inspection_records_report_id ON inspection_records (report_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_inspection_reports_date_created ON inspection_reports (date DESC, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_agents_status_last_seen ON agents (status, last_seen DESC) WHERE deleted_at IS NULL`,
+	}
+}
+
+func alertHistoryCorootIndexStatements() []string {
+	return []string{
+		`DROP INDEX IF EXISTS idx_alert_histories_coroot_id`,
+		`CREATE UNIQUE INDEX idx_alert_histories_coroot_id ON alert_histories (coroot_id) WHERE coroot_id <> ''`,
+	}
+}
+
+func (s *Storage) ensureAlertHistoryCorootIndex() {
+	err := s.postgres.Transaction(func(tx *gorm.DB) error {
+		for _, statement := range alertHistoryCorootIndexStatements() {
+			if err := tx.Exec(statement).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("[Storage] Failed to create partial Coroot alert index: %v", err)
 	}
 }
 

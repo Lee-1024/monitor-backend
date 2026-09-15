@@ -1,9 +1,12 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm/schema"
 )
 
 func TestProcessSnapshotCutoffUsesThirtyDayDefault(t *testing.T) {
@@ -114,6 +117,31 @@ func TestStorageIndexStatementsCoverHighVolumeQueries(t *testing.T) {
 		if !found {
 			t.Fatalf("storageIndexStatements() missing %s", indexName)
 		}
+	}
+}
+
+func TestAlertHistoryCorootIndexStatementsUsePartialUniqueIndex(t *testing.T) {
+	statements := alertHistoryCorootIndexStatements()
+	if len(statements) != 2 {
+		t.Fatalf("index statements = %d, want drop and create", len(statements))
+	}
+	if !strings.Contains(statements[0], "DROP INDEX IF EXISTS idx_alert_histories_coroot_id") {
+		t.Fatalf("drop statement = %q", statements[0])
+	}
+	if !strings.Contains(statements[1], "CREATE UNIQUE INDEX") ||
+		!strings.Contains(statements[1], "WHERE coroot_id <> ''") {
+		t.Fatalf("create statement = %q, want partial unique index", statements[1])
+	}
+}
+
+func TestAlertHistoryModelDoesNotAutoMigrateGlobalCorootUniqueIndex(t *testing.T) {
+	field, ok := reflect.TypeOf(AlertHistory{}).FieldByName("CorootID")
+	if !ok {
+		t.Fatal("AlertHistory.CorootID field not found")
+	}
+	tag := schema.ParseTagSetting(field.Tag.Get("gorm"), ";")
+	if _, exists := tag["UNIQUEINDEX"]; exists {
+		t.Fatalf("CorootID gorm tag = %q, must not create a global unique index", field.Tag.Get("gorm"))
 	}
 }
 
