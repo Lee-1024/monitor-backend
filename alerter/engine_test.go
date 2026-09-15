@@ -92,9 +92,10 @@ func TestBuildAggregatedHostDownNotificationSummarizesHosts(t *testing.T) {
 	}
 }
 
-func TestHostDownRuleSkipsWhenBackendHealthIsUnhealthy(t *testing.T) {
+func TestHostDownRuleStillCreatesAgentAlertWhenBackendHealthIsUnhealthy(t *testing.T) {
 	checker := &stubHealthChecker{err: errors.New("postgres ping failed")}
-	engine := NewAlertEngine(nil, nil, time.Second)
+	storage := &backendHealthAlertStorage{}
+	engine := NewAlertEngine(storage, nil, time.Second)
 	engine.SetHealthChecker(checker)
 
 	engine.checkHostDownRule(api.AlertRuleInfo{ID: 1, Duration: 30}, []api.AgentInfo{
@@ -104,9 +105,15 @@ func TestHostDownRuleSkipsWhenBackendHealthIsUnhealthy(t *testing.T) {
 	if checker.calls != 1 {
 		t.Fatalf("health checker calls = %d, want 1", checker.calls)
 	}
+	if len(storage.created) != 2 {
+		t.Fatalf("created alerts = %d, want backend health and host_down alerts", len(storage.created))
+	}
+	if storage.created[1].MetricType != "host_down" || storage.created[1].HostID != "host-a" {
+		t.Fatalf("unexpected host_down alert: %#v", storage.created[1])
+	}
 }
 
-func TestHostDownRuleCreatesBackendHealthAlertDuringStartupGrace(t *testing.T) {
+func TestHostDownRuleStillCreatesAgentAlertDuringStartupGrace(t *testing.T) {
 	storage := &backendHealthAlertStorage{}
 	checker := &stubHealthChecker{status: HealthStatus{
 		Healthy: false,
@@ -120,8 +127,8 @@ func TestHostDownRuleCreatesBackendHealthAlertDuringStartupGrace(t *testing.T) {
 		{HostID: "host-a", Hostname: "alpha", LastSeen: time.Now().Add(-time.Hour)},
 	})
 
-	if len(storage.created) != 1 {
-		t.Fatalf("created alerts = %d, want 1 backend health alert", len(storage.created))
+	if len(storage.created) != 2 {
+		t.Fatalf("created alerts = %d, want backend health and host_down alerts", len(storage.created))
 	}
 	if got := storage.created[0].MetricType; got != "backend_health" {
 		t.Fatalf("created metric type = %q, want backend_health", got)
@@ -129,10 +136,11 @@ func TestHostDownRuleCreatesBackendHealthAlertDuringStartupGrace(t *testing.T) {
 	if got := storage.created[0].HostID; got != backendHealthHostID {
 		t.Fatalf("created host id = %q, want %q", got, backendHealthHostID)
 	}
-	for _, history := range storage.created {
-		if history.MetricType == "host_down" {
-			t.Fatal("host_down alert should not be created while backend health is gated")
-		}
+	if got := storage.created[1].MetricType; got != "host_down" {
+		t.Fatalf("created metric type = %q, want host_down", got)
+	}
+	if got := storage.created[1].HostID; got != "host-a" {
+		t.Fatalf("host_down host id = %q, want host-a", got)
 	}
 }
 

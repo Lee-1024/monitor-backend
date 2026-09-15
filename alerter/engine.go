@@ -228,9 +228,8 @@ func serverProbeAlertHostID(targetID uint) string {
 // checkHostDownRule 检查主机宕机规则
 func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.AgentInfo) {
 	if status := e.backendHealthStatus(); !status.Healthy {
-		log.Printf("[AlertEngine] Backend unhealthy, skipping host_down rule %s to avoid false mass alerts: %s", rule.Name, status.Reason)
+		log.Printf("[AlertEngine] Backend unhealthy while checking host_down rule %s: %s", rule.Name, status.Reason)
 		e.ensureBackendHealthAlert(rule, status)
-		return
 	} else {
 		e.resolveBackendHealthAlert(rule)
 	}
