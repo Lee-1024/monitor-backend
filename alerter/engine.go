@@ -8,6 +8,7 @@ import (
 	"log"
 	"monitor-backend/api"
 	"monitor-backend/notifier"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -105,17 +106,29 @@ func (e *AlertEngine) run() {
 	ticker := time.NewTicker(e.checkInterval)
 	defer ticker.Stop()
 
-	// 立即执行一次检查
-	e.checkRules()
+	// 立即执行一次检查。每轮单独恢复 panic，避免单条规则异常导致整个告警
+	// 引擎 goroutine 退出，从而后续永远不再检查新宕机主机。
+	e.runCheckCycle()
 
 	for {
 		select {
 		case <-e.stopChan:
 			return
 		case <-ticker.C:
-			e.checkRules()
+			e.runCheckCycle()
 		}
 	}
+}
+
+func (e *AlertEngine) runCheckCycle() {
+	started := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[AlertEngine] Check cycle panicked: %v\n%s", recovered, debug.Stack())
+		}
+		log.Printf("[AlertEngine] Check cycle finished in %s", time.Since(started))
+	}()
+	e.checkRules()
 }
 
 // checkRules 检查所有规则
