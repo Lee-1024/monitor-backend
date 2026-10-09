@@ -96,8 +96,6 @@ func (s *CollectorService) RegisterAgent(ctx context.Context, req *pb.RegisterRe
 
 // ReportMetrics 接收指标数据（完整版 - 包含磁盘和网络）
 func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsRequest) (*pb.MetricsResponse, error) {
-	log.Printf("Received metrics from: %s", req.HostId)
-
 	// 更新Agent最后上报时间
 	s.storage.UpdateAgentLastSeen(req.HostId)
 
@@ -145,7 +143,6 @@ func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsReq
 				UsedPercent: p.UsedPercent,
 			})
 		}
-		log.Printf("  Disk: %d partitions", len(metrics.Disk.Partitions))
 	}
 
 	// 网络指标 - 新增
@@ -164,7 +161,6 @@ func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsReq
 				Errout:      iface.Errout,
 			})
 		}
-		log.Printf("  Network: %d interfaces", len(metrics.Network.Interfaces))
 	}
 
 	if req.Gpu != nil && len(req.Gpu.Devices) > 0 {
@@ -188,7 +184,6 @@ func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsReq
 				FanSpeedPercent:    device.FanSpeedPercent,
 			})
 		}
-		log.Printf("  GPU: %d devices", len(metrics.GPU.Devices))
 	}
 
 	// 先缓存最新指标。即使 InfluxDB 暂时不可用，前端最新数据页面也能展示刚上报的数据。
@@ -213,8 +208,6 @@ func (s *CollectorService) ReportMetrics(ctx context.Context, req *pb.MetricsReq
 
 // Heartbeat 心跳处理
 func (s *CollectorService) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
-	log.Printf("Heartbeat from: %s", req.HostId)
-
 	// 更新Agent状态
 	s.storage.UpdateAgentLastSeen(req.HostId)
 
@@ -226,8 +219,6 @@ func (s *CollectorService) Heartbeat(ctx context.Context, req *pb.HeartbeatReque
 
 // ReportProcesses 接收进程监控数据
 func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessReportRequest) (*pb.MetricsResponse, error) {
-	log.Printf("Received process data from: %s (%d processes)", req.HostId, len(req.Processes))
-
 	if len(req.Processes) == 0 {
 		log.Printf("Warning: Received empty process list from %s", req.HostId)
 		return &pb.MetricsResponse{
@@ -270,8 +261,6 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 		}, err
 	}
 
-	log.Printf("Saved %d processes for host %s", len(snapshots), req.HostId)
-
 	return &pb.MetricsResponse{
 		Success: true,
 		Message: fmt.Sprintf("Processes saved: %d", len(snapshots)),
@@ -280,8 +269,6 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 
 // ReportLogs 接收日志数据
 func (s *CollectorService) ReportLogs(ctx context.Context, req *pb.LogReportRequest) (*pb.MetricsResponse, error) {
-	log.Printf("Received log data from: %s (%d entries)", req.HostId, len(req.Logs))
-
 	// 更新Agent最后上报时间
 	s.storage.UpdateAgentLastSeen(req.HostId)
 
@@ -316,8 +303,6 @@ func (s *CollectorService) ReportLogs(ctx context.Context, req *pb.LogReportRequ
 
 // ReportScriptResult 接收脚本执行结果
 func (s *CollectorService) ReportScriptResult(ctx context.Context, req *pb.ScriptResultRequest) (*pb.MetricsResponse, error) {
-	log.Printf("Received script result from: %s (script: %s, success: %v)", req.HostId, req.ScriptId, req.Success)
-
 	// 更新Agent最后上报时间
 	s.storage.UpdateAgentLastSeen(req.HostId)
 
@@ -349,7 +334,6 @@ func (s *CollectorService) ReportScriptResult(ctx context.Context, req *pb.Scrip
 
 // ReportServiceStatus 接收服务状态数据
 func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.ServiceStatusRequest) (*pb.MetricsResponse, error) {
-	log.Printf("Received service status from: %s (%d services)", req.HostId, len(req.Services))
 	if len(req.Services) == 0 {
 		return &pb.MetricsResponse{
 			Success: true,
@@ -401,7 +385,6 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 }
 
 func (s *CollectorService) ReportDockerContainers(ctx context.Context, req *pb.LogReportRequest) (*pb.MetricsResponse, error) {
-	log.Printf("Received docker container data from: %s (%d containers)", req.HostId, len(req.Logs))
 	if len(req.Logs) == 0 {
 		return &pb.MetricsResponse{Success: true, Message: "No docker containers to save"}, nil
 	}

@@ -3844,7 +3844,14 @@ func (s *StorageAdapter) UpdateAlertHistory(id uint, status string, resolvedAt *
 		// 当状态更新为 firing 时，清除 resolved_at
 		updates["resolved_at"] = nil
 	}
-	return s.storage.postgres.Model(&AlertHistory{}).Where("id = ?", id).Updates(updates).Error
+	result := s.storage.postgres.Model(&AlertHistory{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("alert history update matched %d rows for id=%d", result.RowsAffected, id)
+	}
+	return nil
 }
 
 // UpdateAlertHistoryFiredAt 更新告警历史的触发时间

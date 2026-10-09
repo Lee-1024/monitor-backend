@@ -249,6 +249,8 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 		}
 
 		isHostDown := hostDownExceededDuration(rule, host.LastSeen, time.Now())
+		log.Printf("[HostDownCheck] Rule=%d Host=%s status=%s last_seen=%s duration=%ds is_down=%v",
+			rule.ID, host.HostID, host.Status, host.LastSeen.Format(time.RFC3339), rule.Duration, isHostDown)
 
 		// 如果主机离线，触发告警
 		if isHostDown {
@@ -369,7 +371,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 			// 主机在线，检查是否有未恢复的告警，如果有则恢复所有未恢复的告警
 			historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 100) // 获取所有未恢复的告警
 			if err != nil {
-				log.Printf("Failed to list alert history for Rule=%s, Host=%s: %v", rule.Name, host.HostID, err)
+				log.Printf("[HostDownRecovery] Failed to list firing history rule_id=%d host_id=%s: %v", rule.ID, host.HostID, err)
 			} else if len(historyList) > 0 {
 				// Agent 列表已将 status/last_seen 标准化为在线状态；数据库中仍有
 				// firing 宕机告警时，立即以本轮在线检查结果恢复。不能依赖进程内
@@ -378,7 +380,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 				now := time.Now()
 				resolvedCount := 0
 
-				log.Printf("Found %d unresolved host down alerts for Rule=%s, Host=%s, resolving them", len(historyList), rule.Name, host.HostID)
+				log.Printf("[HostDownRecovery] Found %d firing histories rule_id=%d host_id=%s, resolving them", len(historyList), rule.ID, host.HostID)
 
 				// 恢复所有未恢复的告警
 				for _, history := range historyList {
@@ -392,7 +394,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 					// 更新告警历史为已恢复
 					err = e.storage.UpdateAlertHistory(history.ID, "resolved", &now)
 					if err != nil {
-						log.Printf("Failed to update alert history (ID=%d): %v", history.ID, err)
+						log.Printf("[HostDownRecovery] Failed to update history id=%d rule_id=%d host_id=%s to resolved: %v", history.ID, rule.ID, host.HostID, err)
 						continue
 					}
 
@@ -407,7 +409,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 					}
 
 					resolvedCount++
-					log.Printf("Host down alert resolved (ID=%d): Rule=%s, Host=%s", history.ID, rule.Name, host.HostID)
+					log.Printf("[HostDownRecovery] Resolved history id=%d rule_id=%d host_id=%s", history.ID, rule.ID, host.HostID)
 
 					// 只对最新的告警发送恢复通知（避免重复通知）
 					if resolvedCount == 1 {
@@ -431,6 +433,7 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 					log.Printf("No alerts were resolved for Rule=%s, Host=%s (all were already resolved)", rule.Name, host.HostID)
 				}
 			} else {
+				log.Printf("[HostDownRecovery] No firing history found rule_id=%d host_id=%s", rule.ID, host.HostID)
 				e.clearHostDownRecoveryState(rule, host.HostID)
 			}
 		}
