@@ -82,8 +82,9 @@ func (e *AlertEngine) Start() {
 	}
 
 	e.running = true
-	e.wg.Add(1)
+	e.wg.Add(2)
 	go e.run()
+	go e.runHostDown()
 	log.Println("Alert engine started")
 }
 
@@ -116,6 +117,51 @@ func (e *AlertEngine) run() {
 			return
 		case <-ticker.C:
 			e.runCheckCycle()
+		}
+	}
+}
+
+// runHostDown keeps the critical liveness check independent from slow rules
+// such as service-port checks. A blocked non-critical rule must not delay
+// host-down detection or recovery.
+func (e *AlertEngine) runHostDown() {
+	defer e.wg.Done()
+	ticker := time.NewTicker(e.checkInterval)
+	defer ticker.Stop()
+	e.runHostDownCycle()
+	for {
+		select {
+		case <-e.stopChan:
+			return
+		case <-ticker.C:
+			e.runHostDownCycle()
+		}
+	}
+}
+
+func (e *AlertEngine) runHostDownCycle() {
+	started := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[AlertEngine] Host-down cycle panicked: %v\n%s", recovered, debug.Stack())
+		}
+		log.Printf("[AlertEngine] Host-down cycle finished in %s", time.Since(started))
+	}()
+
+	rules, err := e.storage.ListAlertRules(boolPtr(true))
+	if err != nil {
+		log.Printf("[AlertEngine] Host-down cycle failed to load rules: %v", err)
+		return
+	}
+	allAgents, _, err := e.storage.ListAgents("", 1, 1000)
+	if err != nil {
+		log.Printf("[AlertEngine] Host-down cycle failed to load agents: %v", err)
+		return
+	}
+	e.checkBackendHealthAlert(rules)
+	for _, rule := range rules {
+		if rule.MetricType == "host_down" {
+			e.checkHostDownRule(rule, allAgents)
 		}
 	}
 }
@@ -159,18 +205,8 @@ func (e *AlertEngine) checkRules() {
 	}
 	log.Printf("[AlertEngine] Found %d online agents", len(onlineAgents))
 
-	// 后台服务健康告警是系统级告警，不应依赖是否存在 host_down 用户规则。
-	// 每轮独立检查，确保依赖恢复后能更新历史并发送恢复通知。
-	e.checkBackendHealthAlert(rules)
-
 	// 主机宕机规则优先执行，不能被慢速服务端口检查阻塞。
 	orderedRules := make([]api.AlertRuleInfo, 0, len(rules))
-	for _, rule := range rules {
-		if rule.MetricType == "host_down" {
-			orderedRules = append(orderedRules, rule)
-		}
-	}
-	log.Printf("[AlertEngine] Found %d enabled host_down rules", len(orderedRules))
 	for _, rule := range rules {
 		if rule.MetricType != "host_down" {
 			orderedRules = append(orderedRules, rule)
@@ -178,6 +214,8 @@ func (e *AlertEngine) checkRules() {
 	}
 
 	// 检查每个规则
+	var servicePortWG sync.WaitGroup
+	servicePortSlots := make(chan struct{}, 4)
 	for _, rule := range orderedRules {
 		log.Printf("[AlertEngine] Checking rule: ID=%d, Name=%s, MetricType=%s, Enabled=%v, NotifyChannels=%v, Receivers=%v",
 			rule.ID, rule.Name, rule.MetricType, rule.Enabled, rule.NotifyChannels, rule.Receivers)
@@ -200,8 +238,20 @@ func (e *AlertEngine) checkRules() {
 		// 服务端口告警特殊处理
 		if rule.MetricType == "service_port" {
 			log.Printf("[AlertEngine] Processing service_port rule: %s, Port: %d", rule.Name, rule.ServicePort)
-			// 服务端口告警应该检查在线主机，因为这些主机可能有服务状态数据
-			e.checkServicePortRule(rule, onlineAgents)
+			// 服务端口检查可能因数据库或服务状态查询变慢，使用有界并发，
+			// 避免一条规则阻塞所有后续规则，也避免一次打满数据库连接池。
+			servicePortWG.Add(1)
+			go func(rule api.AlertRuleInfo) {
+				defer servicePortWG.Done()
+				servicePortSlots <- struct{}{}
+				defer func() { <-servicePortSlots }()
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						log.Printf("[AlertEngine] service_port rule panicked: rule_id=%d name=%s panic=%v\n%s", rule.ID, rule.Name, recovered, debug.Stack())
+					}
+				}()
+				e.checkServicePortRule(rule, onlineAgents)
+			}(rule)
 			continue
 		}
 
@@ -225,6 +275,7 @@ func (e *AlertEngine) checkRules() {
 			e.checkRuleForHost(rule, host)
 		}
 	}
+	servicePortWG.Wait()
 	log.Printf("[AlertEngine] Rule check cycle completed")
 }
 
