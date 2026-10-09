@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
@@ -27,6 +29,16 @@ type Storage struct {
 	postgres     *gorm.DB
 	redis        *redis.Client
 	config       *Config
+	processQueue chan []ProcessSnapshot
+	dockerQueue  chan []DockerContainerSnapshot
+	writerStop   chan struct{}
+	writerWG     sync.WaitGroup
+	writerOnce   sync.Once
+	processDrops atomic.Uint64
+	dockerDrops  atomic.Uint64
+	sampleMu     sync.Mutex
+	processLast  map[string]time.Time
+	dockerLast   map[string]time.Time
 }
 
 const (
@@ -39,11 +51,23 @@ const (
 	processLatestTTL         = 60 * time.Second
 	dockerLatestTTL          = 120 * time.Second
 	serviceLatestTTL         = 120 * time.Second
+	snapshotQueueCapacity    = 128
+	snapshotFlushInterval    = 2 * time.Second
+	snapshotWriteBatchSize   = 2000
+	snapshotCircuitOpen      = 10 * time.Second
+	snapshotWriteTimeout     = 5 * time.Second
+	processHistoryInterval   = 60 * time.Second
+	dockerHistoryInterval    = 30 * time.Second
 )
 
 func NewStorage(config *Config) *Storage {
 	storage := &Storage{
-		config: config,
+		config:       config,
+		processQueue: make(chan []ProcessSnapshot, snapshotQueueCapacity),
+		dockerQueue:  make(chan []DockerContainerSnapshot, snapshotQueueCapacity),
+		writerStop:   make(chan struct{}),
+		processLast:  make(map[string]time.Time),
+		dockerLast:   make(map[string]time.Time),
 	}
 	SetSnapshotCleanupThrottle(
 		config.Retention.EffectiveCleanupBatchSize(),
@@ -135,6 +159,7 @@ func NewStorage(config *Config) *Storage {
 		Password: config.Redis.Password,
 		DB:       config.Redis.DB,
 	})
+	storage.startSnapshotWriters()
 
 	// 启动Agent状态监控
 	storage.StartAgentMonitor()
@@ -261,11 +286,131 @@ func (s *Storage) ensureHighVolumeQueryIndexes() {
 }
 
 func (s *Storage) Close() {
+	s.stopSnapshotWriters()
 	s.influxClient.Close()
 	if sqlDB, err := s.postgres.DB(); err == nil {
 		sqlDB.Close()
 	}
 	s.redis.Close()
+}
+
+func (s *Storage) EnqueueProcessSnapshots(snapshots []ProcessSnapshot) bool {
+	if len(snapshots) == 0 {
+		return true
+	}
+	if !s.allowHistorySample(s.processLast, snapshots[0].HostID, snapshots[0].Timestamp, processHistoryInterval) {
+		return true
+	}
+	select {
+	case s.processQueue <- snapshots:
+		return true
+	default:
+		dropped := s.processDrops.Add(1)
+		if dropped == 1 || dropped%100 == 0 {
+			log.Printf("[SnapshotWriter] Process queue full; dropped_batches=%d queue_capacity=%d", dropped, cap(s.processQueue))
+		}
+		return false
+	}
+}
+
+func (s *Storage) EnqueueDockerSnapshots(snapshots []DockerContainerSnapshot) bool {
+	if len(snapshots) == 0 {
+		return true
+	}
+	if !s.allowHistorySample(s.dockerLast, snapshots[0].HostID, snapshots[0].Timestamp, dockerHistoryInterval) {
+		return true
+	}
+	select {
+	case s.dockerQueue <- snapshots:
+		return true
+	default:
+		dropped := s.dockerDrops.Add(1)
+		if dropped == 1 || dropped%100 == 0 {
+			log.Printf("[SnapshotWriter] Docker queue full; dropped_batches=%d queue_capacity=%d", dropped, cap(s.dockerQueue))
+		}
+		return false
+	}
+}
+
+func (s *Storage) allowHistorySample(lastByHost map[string]time.Time, hostID string, timestamp time.Time, interval time.Duration) bool {
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	s.sampleMu.Lock()
+	defer s.sampleMu.Unlock()
+	last, exists := lastByHost[hostID]
+	if exists && timestamp.Sub(last) < interval {
+		return false
+	}
+	lastByHost[hostID] = timestamp
+	return true
+}
+
+func (s *Storage) startSnapshotWriters() {
+	s.writerWG.Add(2)
+	go s.runProcessSnapshotWriter()
+	go s.runDockerSnapshotWriter()
+}
+
+func (s *Storage) stopSnapshotWriters() {
+	s.writerOnce.Do(func() { close(s.writerStop) })
+	s.writerWG.Wait()
+}
+
+func (s *Storage) runProcessSnapshotWriter() {
+	defer s.writerWG.Done()
+	runSnapshotWriter(s, "process", func(batch []ProcessSnapshot) error {
+		ctx, cancel := context.WithTimeout(context.Background(), snapshotWriteTimeout)
+		defer cancel()
+		return s.postgres.WithContext(ctx).CreateInBatches(batch, 500).Error
+	}, s.processQueue)
+}
+
+func (s *Storage) runDockerSnapshotWriter() {
+	defer s.writerWG.Done()
+	runSnapshotWriter(s, "docker", func(batch []DockerContainerSnapshot) error {
+		ctx, cancel := context.WithTimeout(context.Background(), snapshotWriteTimeout)
+		defer cancel()
+		return s.postgres.WithContext(ctx).CreateInBatches(batch, 500).Error
+	}, s.dockerQueue)
+}
+
+func runSnapshotWriter[T any](s *Storage, name string, write func([]T) error, queue <-chan []T) {
+	ticker := time.NewTicker(snapshotFlushInterval)
+	defer ticker.Stop()
+	batch := make([]T, 0, snapshotWriteBatchSize)
+	circuitUntil := time.Time{}
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if time.Now().Before(circuitUntil) {
+			batch = batch[:0]
+			return
+		}
+		started := time.Now()
+		if err := write(batch); err != nil {
+			circuitUntil = time.Now().Add(snapshotCircuitOpen)
+			log.Printf("[SnapshotWriter] %s batch write failed; rows=%d circuit_open=%s error=%v", name, len(batch), snapshotCircuitOpen, err)
+		} else if elapsed := time.Since(started); elapsed > time.Second {
+			log.Printf("[SnapshotWriter] Slow %s batch write; rows=%d elapsed=%s", name, len(batch), elapsed)
+		}
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case <-s.writerStop:
+			flush()
+			return
+		case items := <-queue:
+			batch = append(batch, items...)
+			if len(batch) >= snapshotWriteBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 // SaveAgent 保存或更新Agent信息（使用Upsert）

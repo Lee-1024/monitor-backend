@@ -253,12 +253,8 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 		log.Printf("Failed to cache latest processes for host %s: %v", req.HostId, err)
 	}
 
-	if err := s.storage.postgres.CreateInBatches(snapshots, 100).Error; err != nil {
-		log.Printf("Failed to save process snapshots for host %s: %v", req.HostId, err)
-		return &pb.MetricsResponse{
-			Success: false,
-			Message: "Failed to save process snapshots",
-		}, err
+	if !s.storage.EnqueueProcessSnapshots(snapshots) {
+		return &pb.MetricsResponse{Success: true, Message: "Process snapshots cached; history queue is full"}, nil
 	}
 
 	return &pb.MetricsResponse{
@@ -349,7 +345,7 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 	savedCount := 0
 	latest := make([]ServiceStatus, 0, len(req.Services))
 	for _, svc := range req.Services {
-		status := &ServiceStatus{
+		status := ServiceStatus{
 			HostID:      req.HostId,
 			Timestamp:   timestamp,
 			Name:        svc.Name,
@@ -363,15 +359,12 @@ func (s *CollectorService) ReportServiceStatus(ctx context.Context, req *pb.Serv
 			status.Port = int(svc.Port)
 			status.PortAccessible = svc.PortAccessible
 		}
-		if err := s.storage.postgres.Create(status).Error; err != nil {
-			log.Printf("Failed to save service status: %v", err)
-			return &pb.MetricsResponse{
-				Success: false,
-				Message: "Failed to save service status",
-			}, err
-		}
-		latest = append(latest, *status)
+		latest = append(latest, status)
 		savedCount++
+	}
+	if err := s.storage.postgres.CreateInBatches(latest, 100).Error; err != nil {
+		log.Printf("Failed to save %d service statuses for host %s: %v", len(latest), req.HostId, err)
+		return &pb.MetricsResponse{Success: false, Message: "Failed to save service status"}, err
 	}
 
 	if err := s.storage.CacheLatestServiceStatuses(req.HostId, latest); err != nil {
@@ -413,9 +406,8 @@ func (s *CollectorService) ReportDockerContainers(ctx context.Context, req *pb.L
 		log.Printf("Failed to cache latest docker containers for host %s: %v", req.HostId, err)
 	}
 
-	if err := s.storage.postgres.CreateInBatches(snapshots, 100).Error; err != nil {
-		log.Printf("Failed to save docker snapshots for host %s: %v", req.HostId, err)
-		return &pb.MetricsResponse{Success: false, Message: "Failed to save docker snapshots"}, err
+	if !s.storage.EnqueueDockerSnapshots(snapshots) {
+		return &pb.MetricsResponse{Success: true, Message: "Docker snapshots cached; history queue is full"}, nil
 	}
 
 	return &pb.MetricsResponse{
