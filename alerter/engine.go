@@ -146,8 +146,22 @@ func (e *AlertEngine) checkRules() {
 	}
 	log.Printf("[AlertEngine] Found %d online agents", len(onlineAgents))
 
-	// 检查每个规则
+	// 主机宕机规则优先执行，不能被慢速服务端口检查阻塞。
+	orderedRules := make([]api.AlertRuleInfo, 0, len(rules))
 	for _, rule := range rules {
+		if rule.MetricType == "host_down" {
+			orderedRules = append(orderedRules, rule)
+		}
+	}
+	log.Printf("[AlertEngine] Found %d enabled host_down rules", len(orderedRules))
+	for _, rule := range rules {
+		if rule.MetricType != "host_down" {
+			orderedRules = append(orderedRules, rule)
+		}
+	}
+
+	// 检查每个规则
+	for _, rule := range orderedRules {
 		log.Printf("[AlertEngine] Checking rule: ID=%d, Name=%s, MetricType=%s, Enabled=%v, NotifyChannels=%v, Receivers=%v",
 			rule.ID, rule.Name, rule.MetricType, rule.Enabled, rule.NotifyChannels, rule.Receivers)
 		// 检查规则是否在静默期
