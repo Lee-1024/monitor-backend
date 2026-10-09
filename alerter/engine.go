@@ -371,10 +371,10 @@ func (e *AlertEngine) checkHostDownRule(rule api.AlertRuleInfo, allAgents []api.
 			if err != nil {
 				log.Printf("Failed to list alert history for Rule=%s, Host=%s: %v", rule.Name, host.HostID, err)
 			} else if len(historyList) > 0 {
-				if !e.hostDownRecoveryConfirmed(rule, host.HostID, time.Now()) {
-					log.Printf("Host down recovery pending for Rule=%s, Host=%s", rule.Name, host.HostID)
-					continue
-				}
+				// Agent 列表已将 status/last_seen 标准化为在线状态；数据库中仍有
+				// firing 宕机告警时，立即以本轮在线检查结果恢复。不能依赖进程内
+				// recoveryStates，因为后端重启会丢失该状态，导致恢复长期卡住。
+				e.clearHostDownRecoveryState(rule, host.HostID)
 				now := time.Now()
 				resolvedCount := 0
 
