@@ -58,6 +58,15 @@ func TestHostDownRecoveryRequiresStableOnlinePeriod(t *testing.T) {
 	}
 }
 
+func TestPersistedFiringAlertCanResolveWithoutInMemoryState(t *testing.T) {
+	if !shouldResolvePersistedAlert([]api.AlertHistoryInfo{{ID: 1, Status: "firing"}}) {
+		t.Fatal("a persisted firing alert should be eligible for recovery after restart")
+	}
+	if shouldResolvePersistedAlert(nil) {
+		t.Fatal("recovery should not run without a persisted alert")
+	}
+}
+
 func TestBuildAggregatedHostDownNotificationSummarizesHosts(t *testing.T) {
 	now := time.Now()
 	rule := api.AlertRuleInfo{

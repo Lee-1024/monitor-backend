@@ -1402,13 +1402,9 @@ func (e *AlertEngine) handleResolved(rule api.AlertRuleInfo, host api.AgentInfo)
 	state, exists := e.alertStates[stateKey]
 	e.mu.Unlock()
 
-	if !exists || state.Status != "firing" {
-		return
-	}
-
 	// 查找未恢复的告警历史
 	historyList, err := e.storage.ListAlertHistory(&rule.ID, host.HostID, "firing", 1)
-	if err != nil || len(historyList) == 0 {
+	if err != nil || !shouldResolvePersistedAlert(historyList) {
 		return
 	}
 
@@ -1422,11 +1418,13 @@ func (e *AlertEngine) handleResolved(rule api.AlertRuleInfo, host api.AgentInfo)
 		return
 	}
 
-	// 更新状态
-	e.mu.Lock()
-	state.Status = "resolved"
-	state.StartTime = time.Now()
-	e.mu.Unlock()
+	// 更新内存状态（后端重启后可能没有对应的状态，数据库状态是权威来源）。
+	if exists {
+		e.mu.Lock()
+		state.Status = "resolved"
+		state.StartTime = time.Now()
+		e.mu.Unlock()
+	}
 
 	log.Printf("Alert resolved: Rule=%s, Host=%s", rule.Name, host.HostID)
 
@@ -1434,6 +1432,10 @@ func (e *AlertEngine) handleResolved(rule api.AlertRuleInfo, host api.AgentInfo)
 	history.Status = "resolved"
 	history.ResolvedAt = &now
 	go e.notifier.Send(rule.NotifyChannels, &history, rule.Receivers)
+}
+
+func shouldResolvePersistedAlert(historyList []api.AlertHistoryInfo) bool {
+	return len(historyList) > 0
 }
 
 // checkAndSendRepeatedNotification 检查并发送重复通知（当抑制时间已过时）
