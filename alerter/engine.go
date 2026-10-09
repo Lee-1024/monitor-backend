@@ -528,28 +528,43 @@ func (e *AlertEngine) resolveBackendHealthAlert(rule api.AlertRuleInfo) {
 	if e.storage == nil {
 		return
 	}
-	historyList, err := e.storage.ListAlertHistory(&rule.ID, backendHealthHostID, "firing", 1)
-	if err != nil || len(historyList) == 0 {
+	// 后台健康告警可能由旧版本或已修改的 host_down 规则创建，不能依赖
+	// 当前规则 ID 查询，否则规则重建后旧的 firing 告警会永久遗留。
+	historyList, err := e.storage.ListAlertHistory(nil, backendHealthHostID, "firing", 100)
+	if err != nil {
+		log.Printf("[BackendHealth] Failed to list firing alerts for host_id=%s: %v", backendHealthHostID, err)
 		return
 	}
+	if len(historyList) == 0 {
+		log.Printf("[BackendHealth] No firing backend health alerts found for host_id=%s", backendHealthHostID)
+		return
+	}
+	log.Printf("[BackendHealth] Resolving %d firing alerts for host_id=%s (current_rule_id=%d)", len(historyList), backendHealthHostID, rule.ID)
 
 	now := time.Now()
-	existing := &historyList[0]
-	if err := e.storage.UpdateAlertHistory(existing.ID, "resolved", &now); err != nil {
-		log.Printf("[BackendHealth] Failed to resolve backend health alert: %v", err)
-		return
-	}
-
 	message := "后台服务健康检查已恢复，主机宕机告警恢复正常检查"
-	if err := e.storage.UpdateAlertHistoryMetricValue(existing.ID, 1, message); err != nil {
-		log.Printf("[BackendHealth] Failed to update resolved backend health alert message: %v", err)
-	}
-	existing.Status = "resolved"
-	existing.ResolvedAt = &now
-	existing.MetricValue = 1
-	existing.Message = message
-	if e.notifier != nil {
-		go e.notifier.Send(rule.NotifyChannels, existing, rule.Receivers)
+	for i := range historyList {
+		existing := &historyList[i]
+		if err := e.storage.UpdateAlertHistory(existing.ID, "resolved", &now); err != nil {
+			log.Printf("[BackendHealth] Failed to resolve history_id=%d rule_id=%d: %v", existing.ID, existing.RuleID, err)
+			continue
+		}
+		if err := e.storage.UpdateAlertHistoryMetricValue(existing.ID, 1, message); err != nil {
+			log.Printf("[BackendHealth] Failed to update resolved history_id=%d message: %v", existing.ID, err)
+		}
+		existing.Status = "resolved"
+		existing.ResolvedAt = &now
+		existing.MetricValue = 1
+		existing.Message = message
+		log.Printf("[BackendHealth] Resolved history_id=%d rule_id=%d", existing.ID, existing.RuleID)
+		if e.notifier != nil {
+			historyCopy := *existing
+			go func() {
+				if err := e.notifier.Send(rule.NotifyChannels, &historyCopy, rule.Receivers); err != nil {
+					log.Printf("[BackendHealth] Failed to send recovery notification history_id=%d: %v", historyCopy.ID, err)
+				}
+			}()
+		}
 	}
 }
 
