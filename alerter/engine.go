@@ -146,6 +146,10 @@ func (e *AlertEngine) checkRules() {
 	}
 	log.Printf("[AlertEngine] Found %d online agents", len(onlineAgents))
 
+	// 后台服务健康告警是系统级告警，不应依赖是否存在 host_down 用户规则。
+	// 每轮独立检查，确保依赖恢复后能更新历史并发送恢复通知。
+	e.checkBackendHealthAlert(rules)
+
 	// 主机宕机规则优先执行，不能被慢速服务端口检查阻塞。
 	orderedRules := make([]api.AlertRuleInfo, 0, len(rules))
 	for _, rule := range rules {
@@ -209,6 +213,24 @@ func (e *AlertEngine) checkRules() {
 		}
 	}
 	log.Printf("[AlertEngine] Rule check cycle completed")
+}
+
+func (e *AlertEngine) checkBackendHealthAlert(rules []api.AlertRuleInfo) {
+	status := e.backendHealthStatus()
+	if !status.Healthy {
+		log.Printf("[BackendHealth] System health is unhealthy: kind=%s reason=%s", status.Kind, status.Reason)
+		return
+	}
+
+	// 选择当前启用规则中的通知配置用于兼容历史系统级告警；状态恢复本身不依赖规则 ID。
+	var notificationRule api.AlertRuleInfo
+	for _, rule := range rules {
+		if rule.MetricType == "host_down" {
+			notificationRule = rule
+			break
+		}
+	}
+	e.resolveBackendHealthAlert(notificationRule)
 }
 
 func (e *AlertEngine) checkServerProbeRule(rule api.AlertRuleInfo) {
