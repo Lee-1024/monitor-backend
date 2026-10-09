@@ -44,6 +44,13 @@ func boundedQueryLimit(limit int) int {
 	return limit
 }
 
+func dockerHistoryQueryLimit(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	return boundedQueryLimit(limit)
+}
+
 func chunkUintIDs(ids []uint, chunkSize int) [][]uint {
 	if chunkSize <= 0 {
 		chunkSize = bulkDeleteChunkSize
@@ -2018,7 +2025,14 @@ func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames
 	} else {
 		query = query.Where("cpu_percent > 0")
 	}
-	query = query.Limit(boundedQueryLimit(limit))
+	// The Docker trend endpoint selects up to ten containers and needs all
+	// samples in the requested time window. Applying the generic 1000-row
+	// default here truncates older points when sampling is frequent, making a
+	// one-hour chart appear to contain only a few minutes of history. Keep an
+	// explicit caller limit, but leave the default query unbounded by time range.
+	if historyLimit := dockerHistoryQueryLimit(limit); historyLimit > 0 {
+		query = query.Limit(historyLimit)
+	}
 	if err := query.Order("timestamp DESC").Find(&snapshots).Error; err != nil {
 		return nil, err
 	}
@@ -2463,6 +2477,13 @@ func latestServiceStatusesByHostQuery(db *gorm.DB, hostID string) *gorm.DB {
 }
 
 func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, error) {
+	if hostID != "" {
+		var services []ServiceStatus
+		if err := latestServiceStatusesByHostQuery(s.storage.postgres, hostID).Find(&services).Error; err != nil {
+			return nil, err
+		}
+		return serviceStatusesToAPI(services), nil
+	}
 	if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil {
 		result := serviceStatusesToAPI(cached)
 		if serviceInfosHaveIDs(result) {
@@ -2484,11 +2505,7 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 
 	var services []ServiceStatus
 
-	if hostID != "" {
-		if err := latestServiceStatusesByHostQuery(s.storage.postgres, hostID).Find(&services).Error; err != nil {
-			return nil, err
-		}
-	} else {
+	if hostID == "" {
 		activeHosts, err := s.activeAgentHostIDs()
 		if err != nil {
 			return nil, err

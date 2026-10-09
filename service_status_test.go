@@ -27,6 +27,9 @@ func TestLatestServiceStatusesByHostUsesSingleDistinctOnQuery(t *testing.T) {
 	if strings.Contains(sql, "MAX(") {
 		t.Fatalf("query SQL = %q, must not use two-stage MAX query", sql)
 	}
+	if strings.Contains(strings.ToUpper(sql), "JOIN AGENTS") {
+		t.Fatalf("query SQL = %q, service status lookup must not join agents", sql)
+	}
 }
 
 func TestServiceStatusCacheInvalidationTargetsHostKeysAndSetMembers(t *testing.T) {

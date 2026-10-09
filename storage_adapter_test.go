@@ -50,6 +50,15 @@ func TestBoundedQueryLimitDefaultsAndCaps(t *testing.T) {
 	}
 }
 
+func TestDockerHistoryQueryLimitDoesNotApplyDefaultCap(t *testing.T) {
+	if got := dockerHistoryQueryLimit(0); got != 0 {
+		t.Fatalf("dockerHistoryQueryLimit(0) = %d, want 0", got)
+	}
+	if got := dockerHistoryQueryLimit(12000); got != maxHistoryQueryLimit {
+		t.Fatalf("dockerHistoryQueryLimit(12000) = %d, want %d", got, maxHistoryQueryLimit)
+	}
+}
+
 func TestChunkUintIDsSplitsLargeBatches(t *testing.T) {
 	chunks := chunkUintIDs([]uint{1, 2, 3, 4, 5}, 2)
 

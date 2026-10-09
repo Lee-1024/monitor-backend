@@ -45,8 +45,6 @@ func NewStorage(config *Config) *Storage {
 	storage := &Storage{
 		config: config,
 	}
-	SetDockerSnapshotRetentionDays(config.Retention.EffectiveDockerSnapshotDays())
-	SetProcessSnapshotRetentionDays(config.Retention.EffectiveProcessSnapshotDays())
 	SetSnapshotCleanupThrottle(
 		config.Retention.EffectiveCleanupBatchSize(),
 		config.Retention.EffectiveCleanupMaxBatchesPerRun(),
@@ -143,8 +141,12 @@ func NewStorage(config *Config) *Storage {
 
 	// 启动日志清理任务
 	storage.StartLogCleanup()
-	storage.StartProcessSnapshotCleanup()
-	storage.StartDockerSnapshotCleanup()
+	if config.Retention.SnapshotCleanupEnabled {
+		storage.StartProcessSnapshotCleanup()
+		storage.StartDockerSnapshotCleanup()
+	} else {
+		log.Println("[SnapshotCleanup] Disabled by configuration")
+	}
 	storage.StartServerProbeWorker()
 	storage.StartServiceStatusCleanup()
 
@@ -1549,18 +1551,9 @@ func SetLogRetentionDays(days int) {
 	}
 }
 
-var processSnapshotRetentionDays = 30
-
 var processSnapshotCleanupBatchSize = 500
 var snapshotCleanupMaxBatchesPerRun = 1
 var snapshotCleanupInterval = time.Minute
-
-func SetProcessSnapshotRetentionDays(days int) {
-	if days > 0 && days <= 365 {
-		processSnapshotRetentionDays = days
-		log.Printf("[ProcessCleanup] Process snapshot retention set to %d days", days)
-	}
-}
 
 func SetSnapshotCleanupThrottle(batchSize int, maxBatchesPerRun int, intervalSeconds int) {
 	if batchSize > 0 && batchSize <= 100000 {
@@ -1581,10 +1574,6 @@ func SetSnapshotCleanupThrottle(batchSize int, maxBatchesPerRun int, intervalSec
 	)
 }
 
-func processSnapshotCutoff(now time.Time) time.Time {
-	return now.AddDate(0, 0, -processSnapshotRetentionDays)
-}
-
 func (s *Storage) StartProcessSnapshotCleanup() {
 	go s.cleanupOldProcessSnapshots()
 
@@ -1598,31 +1587,16 @@ func (s *Storage) StartProcessSnapshotCleanup() {
 }
 
 func (s *Storage) cleanupOldProcessSnapshots() {
-	cutoff := processSnapshotCutoff(time.Now())
-	deleted, err := s.cleanupOldRowsInBatches("process_snapshots", "timestamp", cutoff, processSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
-	if err != nil {
-		log.Printf("[ProcessCleanup] Failed to cleanup process snapshots: %v", err)
+	if err := s.truncateSnapshotTable("process_snapshots"); err != nil {
+		log.Printf("[ProcessCleanup] Failed to truncate process snapshots: %v", err)
 		return
 	}
-	log.Printf("[ProcessCleanup] Deleted %d expired process snapshots (cutoff=%s)", deleted, cutoff.Format(time.RFC3339))
+	log.Printf("[ProcessCleanup] Truncated process snapshots table")
 }
 
 var serviceStatusRetentionDays = 30
 
-var dockerSnapshotRetentionDays = 30
-
 var dockerSnapshotCleanupBatchSize = 500
-
-func SetDockerSnapshotRetentionDays(days int) {
-	if days > 0 && days <= 365 {
-		dockerSnapshotRetentionDays = days
-		log.Printf("[DockerCleanup] Docker snapshot retention set to %d days", days)
-	}
-}
-
-func dockerSnapshotCutoff(now time.Time) time.Time {
-	return now.AddDate(0, 0, -dockerSnapshotRetentionDays)
-}
 
 func (s *Storage) StartDockerSnapshotCleanup() {
 	go s.cleanupOldDockerSnapshots()
@@ -1637,13 +1611,15 @@ func (s *Storage) StartDockerSnapshotCleanup() {
 }
 
 func (s *Storage) cleanupOldDockerSnapshots() {
-	cutoff := dockerSnapshotCutoff(time.Now())
-	deleted, err := s.cleanupOldRowsInBatches("docker_container_snapshots", "timestamp", cutoff, dockerSnapshotCleanupBatchSize, snapshotCleanupMaxBatchesPerRun)
-	if err != nil {
-		log.Printf("[DockerCleanup] Failed to cleanup docker snapshots: %v", err)
+	if err := s.truncateSnapshotTable("docker_container_snapshots"); err != nil {
+		log.Printf("[DockerCleanup] Failed to truncate docker snapshots: %v", err)
 		return
 	}
-	log.Printf("[DockerCleanup] Deleted %d expired docker snapshots (cutoff=%s)", deleted, cutoff.Format(time.RFC3339))
+	log.Printf("[DockerCleanup] Truncated docker container snapshots table")
+}
+
+func snapshotCleanupSQL(table string) (string, error) {
+	return snapshotTruncateSQL(table)
 }
 
 func snapshotTruncateSQL(table string) (string, error) {
@@ -1656,7 +1632,7 @@ func snapshotTruncateSQL(table string) (string, error) {
 }
 
 func (s *Storage) truncateSnapshotTable(table string) error {
-	sql, err := snapshotTruncateSQL(table)
+	sql, err := snapshotCleanupSQL(table)
 	if err != nil {
 		return err
 	}
