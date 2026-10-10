@@ -25,7 +25,7 @@ redis:
 
 # 进程和 Docker 历史快照存储。ClickHouse 已部署时填写实际地址并启用。
 clickhouse:
-  enabled: false
+  enabled: true
   address: "http://10.54.56.59:8123"
   database: "monitor"
   username: "admin"
