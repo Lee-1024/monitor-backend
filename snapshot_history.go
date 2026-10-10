@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -178,55 +179,60 @@ func (s *Storage) clickHouseProcessHistory(ctx context.Context, hostID string, s
 		return nil, err
 	}
 	type row struct {
-		TimestampMS int64   `json:"timestamp_ms"`
-		HostID      string  `json:"host_id"`
-		PID         int32   `json:"pid"`
-		Name        string  `json:"name"`
-		User        string  `json:"user"`
-		CPU         float64 `json:"cpu_percent"`
-		Memory      float64 `json:"memory_percent"`
-		MemoryBytes uint64  `json:"memory_bytes"`
-		Status      string  `json:"status"`
-		Command     string  `json:"command"`
+		TimestampMS json.RawMessage `json:"timestamp_ms"`
+		HostID      string          `json:"host_id"`
+		PID         int32           `json:"pid"`
+		Name        string          `json:"name"`
+		User        string          `json:"user"`
+		CPU         float64         `json:"cpu_percent"`
+		Memory      float64         `json:"memory_percent"`
+		MemoryBytes uint64          `json:"memory_bytes"`
+		Status      string          `json:"status"`
+		Command     string          `json:"command"`
 	}
 	return decodeClickHouseProcessesWithRow(data, row{})
 }
 
 func decodeClickHouseProcesses(data []byte) ([]ProcessSnapshot, error) {
 	return decodeClickHouseProcessesWithRow(data, struct {
-		TimestampMS int64   `json:"timestamp_ms"`
-		HostID      string  `json:"host_id"`
-		PID         int32   `json:"pid"`
-		Name        string  `json:"name"`
-		User        string  `json:"user"`
-		CPU         float64 `json:"cpu_percent"`
-		Memory      float64 `json:"memory_percent"`
-		MemoryBytes uint64  `json:"memory_bytes"`
-		Status      string  `json:"status"`
-		Command     string  `json:"command"`
+		TimestampMS json.RawMessage `json:"timestamp_ms"`
+		HostID      string          `json:"host_id"`
+		PID         int32           `json:"pid"`
+		Name        string          `json:"name"`
+		User        string          `json:"user"`
+		CPU         float64         `json:"cpu_percent"`
+		Memory      float64         `json:"memory_percent"`
+		MemoryBytes uint64          `json:"memory_bytes"`
+		Status      string          `json:"status"`
+		Command     string          `json:"command"`
 	}{})
 }
 
 func decodeClickHouseProcessesWithRow(data []byte, _ interface{}) ([]ProcessSnapshot, error) {
 	type row struct {
-		TimestampMS int64   `json:"timestamp_ms"`
-		HostID      string  `json:"host_id"`
-		PID         int32   `json:"pid"`
-		Name        string  `json:"name"`
-		User        string  `json:"user"`
-		CPU         float64 `json:"cpu_percent"`
-		Memory      float64 `json:"memory_percent"`
-		MemoryBytes uint64  `json:"memory_bytes"`
-		Status      string  `json:"status"`
-		Command     string  `json:"command"`
+		TimestampMS json.RawMessage `json:"timestamp_ms"`
+		HostID      string          `json:"host_id"`
+		PID         int32           `json:"pid"`
+		Name        string          `json:"name"`
+		User        string          `json:"user"`
+		CPU         float64         `json:"cpu_percent"`
+		Memory      float64         `json:"memory_percent"`
+		MemoryBytes uint64          `json:"memory_bytes"`
+		Status      string          `json:"status"`
+		Command     string          `json:"command"`
 	}
 	var out []ProcessSnapshot
 	scan := bufio.NewScanner(bytes.NewReader(data))
 	for scan.Scan() {
 		var r row
-		if json.Unmarshal(scan.Bytes(), &r) == nil {
-			out = append(out, ProcessSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(r.TimestampMS), PID: r.PID, Name: r.Name, User: r.User, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryBytes: r.MemoryBytes, Status: r.Status, Command: r.Command})
+		if err := json.Unmarshal(scan.Bytes(), &r); err != nil {
+			return nil, err
 		}
+		ms, err := clickHouseTimestampMillis(r.TimestampMS)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ProcessSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(ms), PID: r.PID, Name: r.Name, User: r.User, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryBytes: r.MemoryBytes, Status: r.Status, Command: r.Command})
 	}
 	return out, scan.Err()
 }
@@ -242,13 +248,13 @@ func (s *Storage) clickHouseDockerHistory(ctx context.Context, hostID string, st
 		return nil, err
 	}
 	type row struct {
-		TimestampMS int64   `json:"timestamp_ms"`
-		HostID      string  `json:"host_id"`
-		ContainerID string  `json:"container_id"`
-		Name        string  `json:"name"`
-		CPU         float64 `json:"cpu_percent"`
-		Memory      float64 `json:"memory_percent"`
-		MemoryUsage uint64  `json:"memory_usage"`
+		TimestampMS json.RawMessage `json:"timestamp_ms"`
+		HostID      string          `json:"host_id"`
+		ContainerID string          `json:"container_id"`
+		Name        string          `json:"name"`
+		CPU         float64         `json:"cpu_percent"`
+		Memory      float64         `json:"memory_percent"`
+		MemoryUsage uint64          `json:"memory_usage"`
 	}
 	return decodeClickHouseDockerWithRow(data, row{})
 }
@@ -258,21 +264,31 @@ func decodeClickHouseDocker(data []byte) ([]DockerContainerSnapshot, error) {
 }
 func decodeClickHouseDockerWithRow(data []byte, _ interface{}) ([]DockerContainerSnapshot, error) {
 	type row struct {
-		TimestampMS int64   `json:"timestamp_ms"`
-		HostID      string  `json:"host_id"`
-		ContainerID string  `json:"container_id"`
-		Name        string  `json:"name"`
-		CPU         float64 `json:"cpu_percent"`
-		Memory      float64 `json:"memory_percent"`
-		MemoryUsage uint64  `json:"memory_usage"`
+		TimestampMS json.RawMessage `json:"timestamp_ms"`
+		HostID      string          `json:"host_id"`
+		ContainerID string          `json:"container_id"`
+		Name        string          `json:"name"`
+		CPU         float64         `json:"cpu_percent"`
+		Memory      float64         `json:"memory_percent"`
+		MemoryUsage uint64          `json:"memory_usage"`
 	}
 	var out []DockerContainerSnapshot
 	scan := bufio.NewScanner(bytes.NewReader(data))
 	for scan.Scan() {
 		var r row
-		if json.Unmarshal(scan.Bytes(), &r) == nil {
-			out = append(out, DockerContainerSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(r.TimestampMS), ContainerID: r.ContainerID, Name: r.Name, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryUsage: r.MemoryUsage})
+		if err := json.Unmarshal(scan.Bytes(), &r); err != nil {
+			return nil, err
 		}
+		ms, err := clickHouseTimestampMillis(r.TimestampMS)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, DockerContainerSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(ms), ContainerID: r.ContainerID, Name: r.Name, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryUsage: r.MemoryUsage})
 	}
 	return out, scan.Err()
+}
+
+func clickHouseTimestampMillis(raw json.RawMessage) (int64, error) {
+	value := strings.Trim(string(raw), `"`)
+	return strconv.ParseInt(value, 10, 64)
 }
