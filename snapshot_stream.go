@@ -87,6 +87,19 @@ func (s *Storage) appendSnapshotReport(ctx context.Context, stream, historyKey, 
 	// full report again in a ZSET doubled Redis memory and caused timeouts.
 	pipe.XAdd(ctx, &redis.XAddArgs{Stream: stream, MaxLen: s.config.Snapshot.EffectiveStreamMaxLen(), Approx: true, Values: map[string]interface{}{"payload": payload}})
 	_, err = pipe.Exec(ctx)
+	if err == nil {
+		if stream == processSnapshotStream {
+			n := s.processStreamAppends.Add(1)
+			if n == 1 || n%100 == 0 {
+				log.Printf("[SnapshotStream] process reports appended=%d stream=%s", n, stream)
+			}
+		} else {
+			n := s.dockerStreamAppends.Add(1)
+			if n == 1 || n%100 == 0 {
+				log.Printf("[SnapshotStream] docker reports appended=%d stream=%s", n, stream)
+			}
+		}
+	}
 	_ = historyKey
 	_ = hostsKey
 	_ = hostID
@@ -306,6 +319,7 @@ func (s *Storage) consumeSnapshotStream(ctx context.Context, stream string, writ
 			}
 		}
 		if len(payloads) > 0 {
+			log.Printf("[SnapshotStream] batch received stream=%s reports=%d", stream, len(payloads))
 			if err := write(payloads); err != nil {
 				log.Printf("[SnapshotStream] ClickHouse write failed stream=%s reports=%d: %v", stream, len(payloads), err)
 				time.Sleep(10 * time.Second)

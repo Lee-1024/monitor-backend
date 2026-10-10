@@ -24,27 +24,29 @@ import (
 )
 
 type Storage struct {
-	influxClient       influxdb2.Client
-	influxWrite        api.WriteAPIBlocking
-	postgres           *gorm.DB
-	redis              *redis.Client
-	clickhouse         *clickHouseStorage
-	config             *Config
-	processQueue       chan []ProcessSnapshot
-	dockerQueue        chan []DockerContainerSnapshot
-	writerStop         chan struct{}
-	writerWG           sync.WaitGroup
-	writerOnce         sync.Once
-	snapshotCancel     context.CancelFunc
-	snapshotWG         sync.WaitGroup
-	snapshotSampleMu   sync.Mutex
-	processLastHistory map[string]time.Time
-	dockerLastHistory  map[string]time.Time
-	processDrops       atomic.Uint64
-	dockerDrops        atomic.Uint64
-	sampleMu           sync.Mutex
-	processLast        map[string]time.Time
-	dockerLast         map[string]time.Time
+	influxClient         influxdb2.Client
+	influxWrite          api.WriteAPIBlocking
+	postgres             *gorm.DB
+	redis                *redis.Client
+	clickhouse           *clickHouseStorage
+	config               *Config
+	processQueue         chan []ProcessSnapshot
+	dockerQueue          chan []DockerContainerSnapshot
+	writerStop           chan struct{}
+	writerWG             sync.WaitGroup
+	writerOnce           sync.Once
+	snapshotCancel       context.CancelFunc
+	snapshotWG           sync.WaitGroup
+	snapshotSampleMu     sync.Mutex
+	processLastHistory   map[string]time.Time
+	dockerLastHistory    map[string]time.Time
+	processStreamAppends atomic.Uint64
+	dockerStreamAppends  atomic.Uint64
+	processDrops         atomic.Uint64
+	dockerDrops          atomic.Uint64
+	sampleMu             sync.Mutex
+	processLast          map[string]time.Time
+	dockerLast           map[string]time.Time
 }
 
 const (

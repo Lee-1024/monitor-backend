@@ -2383,13 +2383,11 @@ func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, err
 		if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil && len(cached) > 0 {
 			return serviceStatusesToAPI(cached), nil
 		}
-		var services []ServiceStatus
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := latestServiceStatusesByHostQuery(s.storage.postgres.WithContext(ctx), hostID).Find(&services).Error; err != nil {
-			return nil, err
-		}
-		return serviceStatusesToAPI(services), nil
+		// Service-port alert checks run for many rules and hosts. Falling back to
+		// PostgreSQL on every cache miss recreates the shared-memory/parallel-query
+		// failure mode. The next agent service report repopulates Redis.
+		log.Printf("[Storage] Service status cache miss for host=%s; skipping PostgreSQL fallback", hostID)
+		return []api.ServiceInfo{}, nil
 	}
 	if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil {
 		result := serviceStatusesToAPI(cached)
