@@ -214,8 +214,8 @@ func (e *AlertEngine) checkRules() {
 	}
 
 	// 检查每个规则
-	var servicePortWG sync.WaitGroup
 	servicePortSlots := make(chan struct{}, 4)
+	ruleSlots := make(chan struct{}, 8)
 	for _, rule := range orderedRules {
 		log.Printf("[AlertEngine] Checking rule: ID=%d, Name=%s, MetricType=%s, Enabled=%v, NotifyChannels=%v, Receivers=%v",
 			rule.ID, rule.Name, rule.MetricType, rule.Enabled, rule.NotifyChannels, rule.Receivers)
@@ -240,9 +240,7 @@ func (e *AlertEngine) checkRules() {
 			log.Printf("[AlertEngine] Processing service_port rule: %s, Port: %d", rule.Name, rule.ServicePort)
 			// 服务端口检查可能因数据库或服务状态查询变慢，使用有界并发，
 			// 避免一条规则阻塞所有后续规则，也避免一次打满数据库连接池。
-			servicePortWG.Add(1)
 			go func(rule api.AlertRuleInfo) {
-				defer servicePortWG.Done()
 				servicePortSlots <- struct{}{}
 				defer func() { <-servicePortSlots }()
 				defer func() {
@@ -257,28 +255,49 @@ func (e *AlertEngine) checkRules() {
 
 		if rule.MetricType == "server_probe" {
 			log.Printf("[AlertEngine] Processing server_probe rule: %s", rule.Name)
-			e.checkServerProbeRule(rule)
+			e.dispatchRule(ruleSlots, "server_probe", rule, func() { e.checkServerProbeRule(rule) })
 			continue
 		}
 
 		// GPU不可用告警特殊处理
 		if rule.MetricType == "gpu_unavailable" {
 			log.Printf("[AlertEngine] Processing gpu_unavailable rule: %s", rule.Name)
-			e.checkGPUUnavailableRule(rule, onlineAgents)
+			e.dispatchRule(ruleSlots, "gpu_unavailable", rule, func() { e.checkGPUUnavailableRule(rule, onlineAgents) })
 			continue
 		}
 
 		// 常规指标检查（只检查在线主机）
 		hostsToCheck := e.getHostsToCheck(rule, onlineAgents)
 		log.Printf("[AlertEngine] Rule %s: checking %d hosts", rule.Name, len(hostsToCheck))
-		for _, host := range hostsToCheck {
-			e.checkRuleForHost(rule, host)
-		}
+		e.dispatchRule(ruleSlots, "metric", rule, func() {
+			for _, host := range hostsToCheck {
+				e.checkRuleForHost(rule, host)
+			}
+		})
 	}
 	// Service-port workers are intentionally detached from this cycle. Waiting
 	// here would reintroduce the original failure mode: a slow port query would
 	// prevent CPU, memory, disk, and storage rules from being evaluated.
 	log.Printf("[AlertEngine] Rule check cycle dispatched; service_port_workers=%d", len(servicePortSlots))
+}
+
+func (e *AlertEngine) dispatchRule(slots chan struct{}, kind string, rule api.AlertRuleInfo, fn func()) bool {
+	select {
+	case slots <- struct{}{}:
+	default:
+		log.Printf("[AlertEngine] Skipping rule this cycle because worker pool is full: kind=%s rule_id=%d name=%s", kind, rule.ID, rule.Name)
+		return false
+	}
+	go func() {
+		defer func() { <-slots }()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("[AlertEngine] Rule panicked: kind=%s rule_id=%d name=%s panic=%v\n%s", kind, rule.ID, rule.Name, recovered, debug.Stack())
+			}
+		}()
+		fn()
+	}()
+	return true
 }
 
 func (e *AlertEngine) checkBackendHealthAlert(rules []api.AlertRuleInfo) {

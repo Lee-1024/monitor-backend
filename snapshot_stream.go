@@ -34,6 +34,9 @@ func (s *Storage) AppendProcessSnapshotReport(ctx context.Context, rows []Proces
 	}
 	appendCtx, cancel := snapshotAppendContext()
 	defer cancel()
+	if !s.allowSnapshotHistorySample(rows[0].HostID, rows[0].Timestamp, time.Minute, true) {
+		return nil
+	}
 	return s.appendSnapshotReport(appendCtx, processSnapshotStream, processHistoryPrefix+rows[0].HostID, processHistoryHosts, rows[0].HostID, snapshotReport[ProcessSnapshot]{rows[0].HostID, rows[0].Timestamp, rows})
 }
 
@@ -43,7 +46,24 @@ func (s *Storage) AppendDockerSnapshotReport(ctx context.Context, rows []DockerC
 	}
 	appendCtx, cancel := snapshotAppendContext()
 	defer cancel()
+	if !s.allowSnapshotHistorySample(rows[0].HostID, rows[0].Timestamp, 30*time.Second, false) {
+		return nil
+	}
 	return s.appendSnapshotReport(appendCtx, dockerSnapshotStream, dockerHistoryPrefix+rows[0].HostID, dockerHistoryHosts, rows[0].HostID, snapshotReport[DockerContainerSnapshot]{rows[0].HostID, rows[0].Timestamp, rows})
+}
+
+func (s *Storage) allowSnapshotHistorySample(hostID string, timestamp time.Time, interval time.Duration, process bool) bool {
+	s.snapshotSampleMu.Lock()
+	defer s.snapshotSampleMu.Unlock()
+	lastMap := s.dockerLastHistory
+	if process {
+		lastMap = s.processLastHistory
+	}
+	if last, ok := lastMap[hostID]; ok && timestamp.Sub(last) < interval {
+		return false
+	}
+	lastMap[hostID] = timestamp
+	return true
 }
 
 func snapshotAppendContext() (context.Context, context.CancelFunc) {
@@ -85,6 +105,7 @@ func (s *Storage) startSnapshotStreamConsumers() {
 		}
 	}
 	s.snapshotWG.Add(2)
+	log.Printf("[SnapshotStream] Consumers started group=%s process_stream=%s docker_stream=%s", group, processSnapshotStream, dockerSnapshotStream)
 	go s.consumeProcessSnapshots(ctx)
 	go s.consumeDockerSnapshots(ctx)
 }
@@ -262,6 +283,7 @@ func (s *Storage) consumeSnapshotStream(ctx context.Context, stream string, writ
 				time.Sleep(10 * time.Second)
 				continue
 			}
+			log.Printf("[SnapshotStream] ClickHouse batch written stream=%s reports=%d rows=%d", stream, len(payloads), len(payloads))
 		}
 		if len(ids) > 0 {
 			if err := s.redis.XAck(ctx, stream, group, ids...).Err(); err != nil {
