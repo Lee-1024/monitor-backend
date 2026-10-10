@@ -275,8 +275,10 @@ func (e *AlertEngine) checkRules() {
 			e.checkRuleForHost(rule, host)
 		}
 	}
-	servicePortWG.Wait()
-	log.Printf("[AlertEngine] Rule check cycle completed")
+	// Service-port workers are intentionally detached from this cycle. Waiting
+	// here would reintroduce the original failure mode: a slow port query would
+	// prevent CPU, memory, disk, and storage rules from being evaluated.
+	log.Printf("[AlertEngine] Rule check cycle dispatched; service_port_workers=%d", len(servicePortSlots))
 }
 
 func (e *AlertEngine) checkBackendHealthAlert(rules []api.AlertRuleInfo) {

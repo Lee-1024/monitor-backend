@@ -106,13 +106,41 @@ func (s *Storage) consumeProcessSnapshots(ctx context.Context) {
 				return err
 			}
 			for _, row := range r.Rows {
-				data, _ := json.Marshal(row)
+				data, err := json.Marshal(row)
+				if err != nil {
+					return err
+				}
 				body.Write(data)
 				body.WriteByte('\n')
 			}
 		}
 		q := fmt.Sprintf("INSERT INTO %s.process_snapshots SETTINGS input_format_skip_unknown_fields=1, date_time_input_format='best_effort' FORMAT JSONEachRow", sanitizeClickHouseIdentifier(s.config.ClickHouse.EffectiveDatabase()))
 		return s.clickhouse.exec(ctx, q, body.String())
+	})
+}
+
+func marshalDockerSnapshotRow(row DockerContainerSnapshot) ([]byte, error) {
+	// ClickHouse only stores trend fields. In particular, omit zero StartedAt
+	// values: Go's year-1 zero time is outside ClickHouse DateTime64's range.
+	return json.Marshal(map[string]interface{}{
+		"timestamp":      row.Timestamp,
+		"host_id":        row.HostID,
+		"container_id":   row.ContainerID,
+		"name":           row.Name,
+		"image":          row.Image,
+		"state":          row.State,
+		"status":         row.Status,
+		"created_unix":   row.CreatedUnix,
+		"restart_count":  row.RestartCount,
+		"ports":          row.Ports,
+		"cpu_percent":    row.CPUPercent,
+		"memory_usage":   row.MemoryUsage,
+		"memory_limit":   row.MemoryLimit,
+		"memory_percent": row.MemoryPercent,
+		"network_rx":     row.NetworkRx,
+		"network_tx":     row.NetworkTx,
+		"block_read":     row.BlockRead,
+		"block_write":    row.BlockWrite,
 	})
 }
 func (s *Storage) consumeDockerSnapshots(ctx context.Context) {
@@ -125,7 +153,10 @@ func (s *Storage) consumeDockerSnapshots(ctx context.Context) {
 				return err
 			}
 			for _, row := range r.Rows {
-				data, _ := json.Marshal(row)
+				data, err := marshalDockerSnapshotRow(row)
+				if err != nil {
+					return err
+				}
 				body.Write(data)
 				body.WriteByte('\n')
 			}
@@ -136,6 +167,9 @@ func (s *Storage) consumeDockerSnapshots(ctx context.Context) {
 }
 
 func (s *Storage) redisProcessHistory(ctx context.Context, hostID string, start, end time.Time) ([]ProcessSnapshot, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ctx = queryCtx
 	var reports []string
 	hosts := []string{hostID}
 	if hostID == "" {
@@ -164,6 +198,9 @@ func (s *Storage) redisProcessHistory(ctx context.Context, hostID string, start,
 }
 
 func (s *Storage) redisDockerHistory(ctx context.Context, hostID string, start, end time.Time) ([]DockerContainerSnapshot, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ctx = queryCtx
 	var reports []string
 	hosts := []string{hostID}
 	if hostID == "" {
