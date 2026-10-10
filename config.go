@@ -12,17 +12,19 @@ import (
 )
 
 type Config struct {
-	GRPCAddr     string           `yaml:"grpc_addr"`
-	HTTPAddr     string           `yaml:"http_addr"`
-	JWTSecret    string           `yaml:"jwt_secret"`
-	AuthRequired bool             `yaml:"auth_required"` // 是否要求认证，默认true
-	InfluxDB     InfluxDBConfig   `yaml:"influxdb"`
-	PostgreSQL   PostgreSQLConfig `yaml:"postgresql"`
-	Redis        RedisConfig      `yaml:"redis"`
-	Retention    RetentionConfig  `yaml:"retention"`
-	Logging      LoggingConfig    `yaml:"logging"`
-	LLM          LLMConfig        `yaml:"llm"`
-	Coroot       coroot.Config    `yaml:"coroot"`
+	GRPCAddr     string                `yaml:"grpc_addr"`
+	HTTPAddr     string                `yaml:"http_addr"`
+	JWTSecret    string                `yaml:"jwt_secret"`
+	AuthRequired bool                  `yaml:"auth_required"` // 是否要求认证，默认true
+	InfluxDB     InfluxDBConfig        `yaml:"influxdb"`
+	PostgreSQL   PostgreSQLConfig      `yaml:"postgresql"`
+	Redis        RedisConfig           `yaml:"redis"`
+	ClickHouse   ClickHouseConfig      `yaml:"clickhouse"`
+	Snapshot     SnapshotStorageConfig `yaml:"snapshot_storage"`
+	Retention    RetentionConfig       `yaml:"retention"`
+	Logging      LoggingConfig         `yaml:"logging"`
+	LLM          LLMConfig             `yaml:"llm"`
+	Coroot       coroot.Config         `yaml:"coroot"`
 }
 
 type LoggingConfig struct {
@@ -105,12 +107,99 @@ type RedisConfig struct {
 	DB       int    `yaml:"db"`
 }
 
+type ClickHouseConfig struct {
+	Enabled              bool   `yaml:"enabled"`
+	Address              string `yaml:"address"`
+	Database             string `yaml:"database"`
+	Username             string `yaml:"username"`
+	Password             string `yaml:"password"`
+	DialTimeoutSeconds   int    `yaml:"dial_timeout_seconds"`
+	WriteTimeoutSeconds  int    `yaml:"write_timeout_seconds"`
+	BatchRows            int    `yaml:"batch_rows"`
+	FlushIntervalSeconds int    `yaml:"flush_interval_seconds"`
+	RetentionDays        int    `yaml:"retention_days"`
+}
+
+func (c ClickHouseConfig) EffectiveAddress() string {
+	if c.Address != "" {
+		return c.Address
+	}
+	return "http://localhost:8123"
+}
+func (c ClickHouseConfig) EffectiveDatabase() string {
+	if c.Database != "" {
+		return c.Database
+	}
+	return "monitor"
+}
+func (c ClickHouseConfig) EffectiveDialTimeoutSeconds() int {
+	if c.DialTimeoutSeconds > 0 {
+		return c.DialTimeoutSeconds
+	}
+	return 5
+}
+func (c ClickHouseConfig) EffectiveWriteTimeoutSeconds() int {
+	if c.WriteTimeoutSeconds > 0 {
+		return c.WriteTimeoutSeconds
+	}
+	return 30
+}
+func (c ClickHouseConfig) EffectiveBatchRows() int {
+	if c.BatchRows > 0 {
+		return c.BatchRows
+	}
+	return 5000
+}
+func (c ClickHouseConfig) EffectiveFlushIntervalSeconds() int {
+	if c.FlushIntervalSeconds > 0 {
+		return c.FlushIntervalSeconds
+	}
+	return 5
+}
+func (c ClickHouseConfig) EffectiveRetentionDays() int {
+	if c.RetentionDays > 0 {
+		return c.RetentionDays
+	}
+	return 30
+}
+
+type SnapshotStorageConfig struct {
+	RedisHistoryHours int64  `yaml:"redis_history_hours"`
+	StreamMaxLen      int64  `yaml:"stream_max_len"`
+	ConsumerGroup     string `yaml:"consumer_group"`
+	ConsumerName      string `yaml:"consumer_name"`
+}
+
+func (c SnapshotStorageConfig) EffectiveRedisHistoryHours() int64 {
+	if c.RedisHistoryHours > 0 {
+		return c.RedisHistoryHours
+	}
+	return 24
+}
+func (c SnapshotStorageConfig) EffectiveStreamMaxLen() int64 {
+	if c.StreamMaxLen > 0 {
+		return c.StreamMaxLen
+	}
+	return 200000
+}
+func (c SnapshotStorageConfig) EffectiveConsumerGroup() string {
+	if c.ConsumerGroup != "" {
+		return c.ConsumerGroup
+	}
+	return "snapshot-clickhouse"
+}
+func (c SnapshotStorageConfig) EffectiveConsumerName() string {
+	if c.ConsumerName != "" {
+		return c.ConsumerName
+	}
+	return "monitor-backend"
+}
+
 type RetentionConfig struct {
-	SnapshotCleanupEnabled     bool `yaml:"snapshot_cleanup_enabled"`
-	CleanupBatchSize           int  `yaml:"cleanup_batch_size"`
-	CleanupMaxBatchesPerRun    int  `yaml:"cleanup_max_batches_per_run"`
-	CleanupIntervalSeconds     int  `yaml:"cleanup_interval_seconds"`
-	BackendStartupGraceSeconds int  `yaml:"backend_startup_grace_seconds"`
+	CleanupBatchSize           int `yaml:"cleanup_batch_size"`
+	CleanupMaxBatchesPerRun    int `yaml:"cleanup_max_batches_per_run"`
+	CleanupIntervalSeconds     int `yaml:"cleanup_interval_seconds"`
+	BackendStartupGraceSeconds int `yaml:"backend_startup_grace_seconds"`
 }
 
 func (c RetentionConfig) EffectiveCleanupBatchSize() int {
@@ -178,7 +267,6 @@ func LoadConfig() *Config {
 			DB:       0,
 		},
 		Retention: RetentionConfig{
-			SnapshotCleanupEnabled:     false,
 			CleanupBatchSize:           500,
 			CleanupMaxBatchesPerRun:    1,
 			CleanupIntervalSeconds:     60,

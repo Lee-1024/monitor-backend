@@ -24,21 +24,24 @@ import (
 )
 
 type Storage struct {
-	influxClient influxdb2.Client
-	influxWrite  api.WriteAPIBlocking
-	postgres     *gorm.DB
-	redis        *redis.Client
-	config       *Config
-	processQueue chan []ProcessSnapshot
-	dockerQueue  chan []DockerContainerSnapshot
-	writerStop   chan struct{}
-	writerWG     sync.WaitGroup
-	writerOnce   sync.Once
-	processDrops atomic.Uint64
-	dockerDrops  atomic.Uint64
-	sampleMu     sync.Mutex
-	processLast  map[string]time.Time
-	dockerLast   map[string]time.Time
+	influxClient   influxdb2.Client
+	influxWrite    api.WriteAPIBlocking
+	postgres       *gorm.DB
+	redis          *redis.Client
+	clickhouse     *clickHouseStorage
+	config         *Config
+	processQueue   chan []ProcessSnapshot
+	dockerQueue    chan []DockerContainerSnapshot
+	writerStop     chan struct{}
+	writerWG       sync.WaitGroup
+	writerOnce     sync.Once
+	snapshotCancel context.CancelFunc
+	snapshotWG     sync.WaitGroup
+	processDrops   atomic.Uint64
+	dockerDrops    atomic.Uint64
+	sampleMu       sync.Mutex
+	processLast    map[string]time.Time
+	dockerLast     map[string]time.Time
 }
 
 const (
@@ -120,8 +123,6 @@ func NewStorage(config *Config) *Storage {
 		&Agent{},
 		&CrashEvent{},
 		&User{},
-		&ProcessSnapshot{},
-		&DockerContainerSnapshot{},
 		&ServerProbeTarget{},
 		&ServerProbeResult{},
 		&LogEntry{},
@@ -145,8 +146,6 @@ func NewStorage(config *Config) *Storage {
 		&OpsAssistantMessage{},
 	)
 	storage.ensureAlertHistoryCorootIndex()
-	storage.ensureProcessSnapshotIndexes()
-	storage.ensureDockerSnapshotIndexes()
 	storage.ensureServerProbeIndexes()
 	storage.ensureHighVolumeQueryIndexes()
 
@@ -159,19 +158,27 @@ func NewStorage(config *Config) *Storage {
 		Password: config.Redis.Password,
 		DB:       config.Redis.DB,
 	})
-	storage.startSnapshotWriters()
+	if config.ClickHouse.Enabled {
+		storage.clickhouse = newClickHouseStorage(config.ClickHouse)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.ClickHouse.EffectiveDialTimeoutSeconds())*time.Second)
+		if err := storage.clickhouse.initSchema(ctx); err != nil {
+			log.Printf("[ClickHouse] Schema initialization failed; snapshot consumers disabled: %v", err)
+			storage.clickhouse = nil
+		} else {
+			log.Printf("[ClickHouse] Snapshot storage enabled: address=%s database=%s", config.ClickHouse.EffectiveAddress(), config.ClickHouse.EffectiveDatabase())
+			storage.startSnapshotStreamConsumers()
+		}
+		cancel()
+	} else {
+		log.Println("[ClickHouse] Snapshot history persistence disabled; realtime Redis cache remains active")
+	}
 
 	// 启动Agent状态监控
 	storage.StartAgentMonitor()
 
 	// 启动日志清理任务
 	storage.StartLogCleanup()
-	if config.Retention.SnapshotCleanupEnabled {
-		storage.StartProcessSnapshotCleanup()
-		storage.StartDockerSnapshotCleanup()
-	} else {
-		log.Println("[SnapshotCleanup] Disabled by configuration")
-	}
+	log.Println("[SnapshotCleanup] PostgreSQL snapshot cleanup disabled; ClickHouse TTL manages retention")
 	storage.StartServerProbeWorker()
 	storage.StartServiceStatusCleanup()
 
@@ -286,7 +293,7 @@ func (s *Storage) ensureHighVolumeQueryIndexes() {
 }
 
 func (s *Storage) Close() {
-	s.stopSnapshotWriters()
+	s.stopSnapshotStreamConsumers()
 	s.influxClient.Close()
 	if sqlDB, err := s.postgres.DB(); err == nil {
 		sqlDB.Close()

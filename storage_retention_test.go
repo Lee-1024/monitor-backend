@@ -8,15 +8,6 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestRetentionConfigSnapshotCleanupDefaultsDisabled(t *testing.T) {
-	if (RetentionConfig{}).SnapshotCleanupEnabled {
-		t.Fatal("SnapshotCleanupEnabled should default to false")
-	}
-	if !(RetentionConfig{SnapshotCleanupEnabled: true}).SnapshotCleanupEnabled {
-		t.Fatal("SnapshotCleanupEnabled should support true")
-	}
-}
-
 func TestProcessSnapshotCleanupUsesTimestampCutoff(t *testing.T) {
 	got := cleanupBatchDeleteSQL("process_snapshots", "timestamp")
 	if !strings.Contains(got, "timestamp < ?") {

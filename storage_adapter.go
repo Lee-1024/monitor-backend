@@ -1531,8 +1531,16 @@ func (s *StorageAdapter) GetCrashAnalysis(hostID string) (*api.CrashAnalysis, er
 
 // GetProcesses 获取进程列表（去重，只返回每个PID的最新记录）
 func (s *StorageAdapter) GetProcesses(hostID string, limit int) ([]api.ProcessInfo, error) {
-	// 直接使用窗口函数方式，避免DISTINCT ON和子查询的字段映射问题
-	return s.getProcessesAlternative(hostID, limit)
+	processes, err := s.storage.GetCachedLatestProcesses(hostID)
+	if err != nil {
+		return nil, err
+	}
+	result := processSnapshotsToAPI(processes)
+	sort.Slice(result, func(i, j int) bool { return result[i].CPUPercent > result[j].CPUPercent })
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 // getProcessesAlternative 备用方法：使用窗口函数去重
@@ -1636,7 +1644,11 @@ func (s *StorageAdapter) getProcessesAlternative(hostID string, limit int) ([]ap
 
 // GetProcessesWithPagination 获取进程列表（支持分页）
 func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSize int) ([]api.ProcessInfo, int64, error) {
-	if cached, err := s.storage.GetCachedLatestProcesses(hostID); err == nil {
+	cached, err := s.storage.GetCachedLatestProcesses(hostID)
+	if err != nil {
+		return nil, 0, err
+	}
+	{
 		result := processSnapshotsToAPI(cached)
 		sort.Slice(result, func(i, j int) bool {
 			if result[i].CPUPercent != result[j].CPUPercent {
@@ -1650,56 +1662,6 @@ func (s *StorageAdapter) GetProcessesWithPagination(hostID string, page, pageSiz
 		total := int64(len(result))
 		return paginateProcessInfos(result, page, pageSize), total, nil
 	}
-
-	// 先获取总数（符合条件的活跃进程数）
-	var total int64
-	recentTime := time.Now().Add(-10 * time.Second)
-
-	countSql := "SELECT COUNT(*) FROM (SELECT DISTINCT host_id, pid FROM process_snapshots WHERE timestamp >= ?"
-	countArgs := []interface{}{recentTime}
-	if hostID != "" {
-		countSql += " AND host_id = ?"
-		countArgs = append(countArgs, hostID)
-	}
-	countSql += ") as distinct_processes"
-
-	if err := s.storage.postgres.Raw(countSql, countArgs...).Scan(&total).Error; err != nil {
-		log.Printf("Error counting processes: %v", err)
-		return nil, 0, err
-	}
-
-	// 获取去重后的进程列表（分页）
-	offset := (page - 1) * pageSize
-
-	sql := `
-		SELECT id, created_at, host_id, timestamp, pid, name, "user", cpu_percent, memory_percent, memory_bytes, status, command
-		FROM (
-			SELECT id, created_at, host_id, timestamp, pid, name, "user", cpu_percent, memory_percent, memory_bytes, status, command,
-				ROW_NUMBER() OVER (PARTITION BY host_id, pid ORDER BY timestamp DESC) as rn
-			FROM process_snapshots
-			WHERE timestamp >= ?`
-
-	args := []interface{}{recentTime}
-	if hostID != "" {
-		sql += " AND host_id = ?"
-		args = append(args, hostID)
-	}
-
-	sql += `
-		) as ranked
-		WHERE rn = 1
-		ORDER BY cpu_percent DESC, memory_percent DESC, timestamp DESC
-		LIMIT ? OFFSET ?`
-
-	args = append(args, pageSize, offset)
-
-	var processes []ProcessSnapshot
-	if err := s.storage.postgres.Raw(sql, args...).Scan(&processes).Error; err != nil {
-		log.Printf("Error executing pagaged process query: %v", err)
-		return nil, 0, err
-	}
-
-	return processSnapshotsToAPI(processes), total, nil
 }
 
 func processSnapshotsToAPI(processes []ProcessSnapshot) []api.ProcessInfo {
@@ -1746,98 +1708,80 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 		topN = 10
 	}
 
-	// 根据指标类型选择排序字段
-	orderBy := "cpu_percent"
-	if metricType == "memory" {
-		orderBy = "memory_percent"
-	}
-
-	// 趋势图按进程名展示连续曲线，PID 在历史点中展示当前采样命中的进程实例。
-	sql := fmt.Sprintf(`
-		SELECT name
-		FROM (
-			SELECT name, MAX(%s) as max_usage
-			FROM process_snapshots
-			WHERE timestamp >= ? AND timestamp <= ? AND %s > 0`, orderBy, orderBy)
-
-	args := []interface{}{start, end}
-	if hostID != "" {
-		sql += " AND host_id = ?"
-		args = append(args, hostID)
-	}
-
-	sql += fmt.Sprintf(`
-			GROUP BY name
-			ORDER BY max_usage DESC, name ASC
-			LIMIT %d
-		) as top_processes`, topN)
-
-	// 使用 Raw 查询获取进程名列表
-	type ProcessNameResult struct {
-		Name string `gorm:"column:name"`
-	}
-	var results []ProcessNameResult
-	err := s.storage.postgres.Raw(sql, args...).Scan(&results).Error
+	rows, err := s.storage.snapshotProcessHistory(context.Background(), hostID, start, end)
 	if err != nil {
-		log.Printf("Error querying top process names: %v, SQL: %s", err, sql)
-		return nil, fmt.Errorf("failed to get top process names: %v", err)
+		return nil, err
 	}
-
-	processNames := make([]string, 0, len(results))
-	for _, r := range results {
-		if r.Name != "" {
-			processNames = append(processNames, r.Name)
+	maxByName := make(map[string]float64)
+	for _, row := range rows {
+		value := row.CPUPercent
+		if metricType == "memory" {
+			value = row.MemoryPercent
+		}
+		if value > maxByName[row.Name] {
+			maxByName[row.Name] = value
 		}
 	}
-
-	Debugf("Found top %d process names by %s: %v", len(processNames), metricType, processNames)
-	return processNames, nil
+	type ranked struct {
+		name  string
+		value float64
+	}
+	rankedRows := make([]ranked, 0, len(maxByName))
+	for name, value := range maxByName {
+		if name != "" && value > 0 {
+			rankedRows = append(rankedRows, ranked{name, value})
+		}
+	}
+	sort.Slice(rankedRows, func(i, j int) bool {
+		if rankedRows[i].value == rankedRows[j].value {
+			return rankedRows[i].name < rankedRows[j].name
+		}
+		return rankedRows[i].value > rankedRows[j].value
+	})
+	if len(rankedRows) > topN {
+		rankedRows = rankedRows[:topN]
+	}
+	names := make([]string, len(rankedRows))
+	for i := range rankedRows {
+		names[i] = rankedRows[i].name
+	}
+	return names, nil
 }
 
 // GetProcessHistory 获取进程历史数据（按进程名分组，每个采样点保留命中的PID）
 func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int, metricType string) ([]api.ProcessHistoryPoint, error) {
-	var processes []ProcessSnapshot
-	orderBy := "cpu_percent"
-	if metricType == "memory" {
-		orderBy = "memory_percent"
-	}
-
-	sql := fmt.Sprintf(`
-		SELECT timestamp, name, pid, cpu_percent, memory_percent, memory_bytes
-		FROM (
-			SELECT timestamp, name, pid, cpu_percent, memory_percent, memory_bytes,
-				ROW_NUMBER() OVER (PARTITION BY timestamp, name ORDER BY %s DESC, pid ASC) AS rn
-			FROM process_snapshots
-			WHERE %s > 0`, orderBy, orderBy)
-	args := []interface{}{}
-	if hostID != "" {
-		sql += " AND host_id = ?"
-		args = append(args, hostID)
-	}
-
-	if !start.IsZero() {
-		sql += " AND timestamp >= ?"
-		args = append(args, start)
-	}
-
-	if !end.IsZero() {
-		sql += " AND timestamp <= ?"
-		args = append(args, end)
-	}
-
-	if len(processNames) > 0 {
-		sql += " AND name IN ?"
-		args = append(args, processNames)
-	}
-
-	sql += ") ranked WHERE rn = 1 ORDER BY timestamp ASC, name ASC"
-	if limit > 0 {
-		sql += fmt.Sprintf(" LIMIT %d", limit)
-	}
-
-	err := s.storage.postgres.Raw(sql, args...).Scan(&processes).Error
+	processes, err := s.storage.snapshotProcessHistory(context.Background(), hostID, start, end)
 	if err != nil {
 		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(processNames))
+	for _, name := range processNames {
+		allowed[name] = struct{}{}
+	}
+	filtered := processes[:0]
+	for _, p := range processes {
+		if len(allowed) > 0 {
+			if _, ok := allowed[p.Name]; !ok {
+				continue
+			}
+		}
+		value := p.CPUPercent
+		if metricType == "memory" {
+			value = p.MemoryPercent
+		}
+		if value > 0 {
+			filtered = append(filtered, p)
+		}
+	}
+	processes = filtered
+	sort.Slice(processes, func(i, j int) bool {
+		if processes[i].Timestamp.Equal(processes[j].Timestamp) {
+			return processes[i].Name < processes[j].Name
+		}
+		return processes[i].Timestamp.Before(processes[j].Timestamp)
+	})
+	if limit > 0 && len(processes) > limit {
+		processes = processes[:limit]
 	}
 
 	result := make([]api.ProcessHistoryPoint, len(processes))
@@ -1888,54 +1832,9 @@ func (s *StorageAdapter) GetDockerContainersWithPagination(hostID string, page, 
 		})
 		total := int64(len(result))
 		return paginateDockerContainerInfos(result, page, pageSize), total, nil
-	}
-
-	whereClause := ""
-	args := []interface{}{}
-	if hostID != "" {
-		whereClause = "WHERE host_id = ?"
-		args = append(args, hostID)
 	} else {
-		whereClause = "WHERE timestamp >= ?"
-		args = append(args, time.Now().Add(-10*time.Minute))
-	}
-
-	var total int64
-	countSQL := fmt.Sprintf(`
-		SELECT COUNT(*) FROM (
-			SELECT DISTINCT ON (host_id, container_id) id
-			FROM docker_container_snapshots
-			%s
-			ORDER BY host_id, container_id, id DESC
-		) latest
-	`, whereClause)
-	if err := s.storage.postgres.Raw(countSQL, args...).Scan(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	if total == 0 {
-		return []api.DockerContainerInfo{}, 0, nil
-	}
-
-	var snapshots []DockerContainerSnapshot
-	offset := (page - 1) * pageSize
-	queryArgs := append([]interface{}{}, args...)
-	queryArgs = append(queryArgs, pageSize, offset)
-	querySQL := fmt.Sprintf(`
-		SELECT latest.*
-		FROM (
-			SELECT DISTINCT ON (host_id, container_id) *
-			FROM docker_container_snapshots
-			%s
-			ORDER BY host_id, container_id, id DESC
-		) latest
-		ORDER BY latest.cpu_percent DESC, latest.memory_percent DESC, latest.timestamp DESC
-		LIMIT ? OFFSET ?
-	`, whereClause)
-	if err := s.storage.postgres.Raw(querySQL, queryArgs...).Scan(&snapshots).Error; err != nil {
-		return nil, 0, err
-	}
-
-	return dockerSnapshotsToAPI(snapshots), total, nil
 }
 
 func dockerSnapshotsToAPI(snapshots []DockerContainerSnapshot) []api.DockerContainerInfo {
@@ -1976,69 +1875,72 @@ func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, star
 	if topN <= 0 {
 		topN = 10
 	}
-	orderBy := "cpu_percent"
-	if metricType == "memory" {
-		orderBy = "memory_percent"
-	}
-
-	query := s.storage.postgres.Model(&DockerContainerSnapshot{}).
-		Select(fmt.Sprintf("name, MAX(%s) as max_usage", orderBy)).
-		Where(fmt.Sprintf("timestamp >= ? AND timestamp <= ? AND %s > 0", orderBy), start, end)
-	if hostID != "" {
-		query = query.Where("host_id = ?", hostID)
-	}
-
-	type row struct {
-		Name string
-	}
-	var rows []row
-	if err := query.Group("name").Order("max_usage DESC").Limit(topN).Scan(&rows).Error; err != nil {
+	rows, err := s.storage.snapshotDockerHistory(context.Background(), hostID, start, end)
+	if err != nil {
 		return nil, err
 	}
-
-	names := make([]string, 0, len(rows))
+	maxByName := make(map[string]float64)
 	for _, row := range rows {
-		if row.Name != "" {
-			names = append(names, row.Name)
+		value := row.CPUPercent
+		if metricType == "memory" {
+			value = row.MemoryPercent
 		}
+		if value > maxByName[row.Name] {
+			maxByName[row.Name] = value
+		}
+	}
+	type ranked struct {
+		name  string
+		value float64
+	}
+	rr := make([]ranked, 0, len(maxByName))
+	for name, value := range maxByName {
+		if name != "" && value > 0 {
+			rr = append(rr, ranked{name, value})
+		}
+	}
+	sort.Slice(rr, func(i, j int) bool { return rr[i].value > rr[j].value })
+	if len(rr) > topN {
+		rr = rr[:topN]
+	}
+	names := make([]string, len(rr))
+	for i := range rr {
+		names[i] = rr[i].name
 	}
 	return names, nil
 }
 
 func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames []string, start, end time.Time, limit int, metricType string) ([]api.DockerContainerHistoryPoint, error) {
-	var snapshots []DockerContainerSnapshot
-	query := s.storage.postgres.Model(&DockerContainerSnapshot{})
-	if hostID != "" {
-		query = query.Where("host_id = ?", hostID)
-	}
-	if !start.IsZero() {
-		query = query.Where("timestamp >= ?", start)
-	}
-	if !end.IsZero() {
-		query = query.Where("timestamp <= ?", end)
-	}
-	if len(containerNames) > 0 {
-		query = query.Where("name IN ?", containerNames)
-	}
-	if metricType == "memory" {
-		query = query.Where("memory_percent > 0")
-	} else {
-		query = query.Where("cpu_percent > 0")
-	}
-	// The Docker trend endpoint selects up to ten containers and needs all
-	// samples in the requested time window. Applying the generic 1000-row
-	// default here truncates older points when sampling is frequent, making a
-	// one-hour chart appear to contain only a few minutes of history. Keep an
-	// explicit caller limit, but leave the default query unbounded by time range.
-	if historyLimit := dockerHistoryQueryLimit(limit); historyLimit > 0 {
-		query = query.Limit(historyLimit)
-	}
-	if err := query.Order("timestamp DESC").Find(&snapshots).Error; err != nil {
+	snapshots, err := s.storage.snapshotDockerHistory(context.Background(), hostID, start, end)
+	if err != nil {
 		return nil, err
 	}
+	allowed := make(map[string]struct{}, len(containerNames))
+	for _, name := range containerNames {
+		allowed[name] = struct{}{}
+	}
+	filtered := snapshots[:0]
+	for _, row := range snapshots {
+		if len(allowed) > 0 {
+			if _, ok := allowed[row.Name]; !ok {
+				continue
+			}
+		}
+		value := row.CPUPercent
+		if metricType == "memory" {
+			value = row.MemoryPercent
+		}
+		if value > 0 {
+			filtered = append(filtered, row)
+		}
+	}
+	snapshots = filtered
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Timestamp.Before(snapshots[j].Timestamp)
 	})
+	if historyLimit := dockerHistoryQueryLimit(limit); historyLimit > 0 && len(snapshots) > historyLimit {
+		snapshots = snapshots[:historyLimit]
+	}
 
 	result := make([]api.DockerContainerHistoryPoint, len(snapshots))
 	for i, snapshot := range snapshots {

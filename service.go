@@ -253,8 +253,8 @@ func (s *CollectorService) ReportProcesses(ctx context.Context, req *pb.ProcessR
 		log.Printf("Failed to cache latest processes for host %s: %v", req.HostId, err)
 	}
 
-	if !s.storage.EnqueueProcessSnapshots(snapshots) {
-		return &pb.MetricsResponse{Success: true, Message: "Process snapshots cached; history queue is full"}, nil
+	if err := s.storage.AppendProcessSnapshotReport(ctx, snapshots); err != nil {
+		log.Printf("[SnapshotStream] Failed to append process report host=%s: %v", req.HostId, err)
 	}
 
 	return &pb.MetricsResponse{
@@ -406,8 +406,8 @@ func (s *CollectorService) ReportDockerContainers(ctx context.Context, req *pb.L
 		log.Printf("Failed to cache latest docker containers for host %s: %v", req.HostId, err)
 	}
 
-	if !s.storage.EnqueueDockerSnapshots(snapshots) {
-		return &pb.MetricsResponse{Success: true, Message: "Docker snapshots cached; history queue is full"}, nil
+	if err := s.storage.AppendDockerSnapshotReport(ctx, snapshots); err != nil {
+		log.Printf("[SnapshotStream] Failed to append docker report host=%s: %v", req.HostId, err)
 	}
 
 	return &pb.MetricsResponse{

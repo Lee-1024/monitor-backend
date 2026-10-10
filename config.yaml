@@ -22,9 +22,26 @@ redis:
   password: "admin123456"
   db: 0
 
+# 进程和 Docker 历史快照存储。ClickHouse 已部署时填写实际地址并启用。
+clickhouse:
+  enabled: false
+  address: "http://clickhouse:8123"
+  database: "monitor"
+  username: "default"
+  password: ""
+  dial_timeout_seconds: 5
+  write_timeout_seconds: 30
+  batch_rows: 5000
+  flush_interval_seconds: 5
+  retention_days: 30
+
+snapshot_storage:
+  redis_history_hours: 24
+  stream_max_len: 200000
+  consumer_group: "snapshot-clickhouse"
+  consumer_name: "monitor-backend"
+
 retention:
-  # 是否定期整体清空进程和 Docker 容器快照表。
-  snapshot_cleanup_enabled: false
   # 批量删除限流参数，供日志、服务状态等按 DELETE 清理的表使用。
   cleanup_batch_size: 500
   # 每一轮清理最多执行多少个删除批次，供按 DELETE 清理的表使用。
