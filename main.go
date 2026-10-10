@@ -5,16 +5,17 @@ package main
 
 import (
 	"log"
-	"monitor-backend/alerter"
-	"monitor-backend/analyzer"
-	"monitor-backend/api"
-	"monitor-backend/llm"
-	"monitor-backend/notifier"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"monitor-backend/alerter"
+	"monitor-backend/analyzer"
+	"monitor-backend/api"
+	"monitor-backend/llm"
+	"monitor-backend/notifier"
 
 	pb "monitor-backend/proto"
 
@@ -92,6 +93,7 @@ func main() {
 			AllowOrigins: []string{
 				"http://10.54.56.88:3000",
 				"http://10.54.56.88:8083",
+				"http://10.54.56.88:8081",
 				"http://10.54.56.88:5173", // Vite默认端口
 				"http://localhost:5173",
 				"http://127.0.0.1:5173",

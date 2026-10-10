@@ -1,4 +1,5 @@
 grpc_addr: ":50051"
+http_addr: ":18080"
 
 influxdb:
   url: "http://10.54.56.54:31106"
@@ -25,10 +26,10 @@ redis:
 # 进程和 Docker 历史快照存储。ClickHouse 已部署时填写实际地址并启用。
 clickhouse:
   enabled: false
-  address: "http://clickhouse:8123"
+  address: "http://10.54.56.59:8123"
   database: "monitor"
-  username: "default"
-  password: ""
+  username: "admin"
+  password: "admin123456"
   dial_timeout_seconds: 5
   write_timeout_seconds: 30
   batch_rows: 5000
