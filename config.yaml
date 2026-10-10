@@ -62,7 +62,7 @@ jwt_secret: "bbcceewwx1234567890"
 auth_required: true
 
 coroot:
-  enabled: false
+  enabled: true
   # Coroot 使用 --url-base-path=/coroot/ 时，后端地址也要包含 /coroot
   base_url: "http://10.40.0.184:8082/coroot"
   public_base_url: "/coroot/"

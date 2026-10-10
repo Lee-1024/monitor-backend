@@ -29,6 +29,7 @@ type AlertEngine struct {
 	// 告警抑制：记录每个告警的最后通知时间 key: ruleID:hostID
 	lastNotifyTime map[string]time.Time
 	notifyMu       sync.RWMutex
+	runningRules   sync.Map
 }
 
 const defaultHostDownRecoveryConfirmDuration = 60 * time.Second
@@ -248,7 +249,7 @@ func (e *AlertEngine) checkRules() {
 						log.Printf("[AlertEngine] service_port rule panicked: rule_id=%d name=%s panic=%v\n%s", rule.ID, rule.Name, recovered, debug.Stack())
 					}
 				}()
-				e.checkServicePortRule(rule, onlineAgents)
+				e.runExclusiveRule(rule, func() { e.checkServicePortRule(rule, onlineAgents) })
 			}(rule)
 			continue
 		}
@@ -282,12 +283,10 @@ func (e *AlertEngine) checkRules() {
 }
 
 func (e *AlertEngine) dispatchRule(slots chan struct{}, kind string, rule api.AlertRuleInfo, fn func()) bool {
-	select {
-	case slots <- struct{}{}:
-	default:
-		log.Printf("[AlertEngine] Skipping rule this cycle because worker pool is full: kind=%s rule_id=%d name=%s", kind, rule.ID, rule.Name)
-		return false
-	}
+	// Wait for a worker slot instead of dropping the rule. This preserves the
+	// guarantee that every enabled rule is eventually evaluated while keeping
+	// the number of concurrent database/service queries bounded.
+	slots <- struct{}{}
 	go func() {
 		defer func() { <-slots }()
 		defer func() {
@@ -295,9 +294,18 @@ func (e *AlertEngine) dispatchRule(slots chan struct{}, kind string, rule api.Al
 				log.Printf("[AlertEngine] Rule panicked: kind=%s rule_id=%d name=%s panic=%v\n%s", kind, rule.ID, rule.Name, recovered, debug.Stack())
 			}
 		}()
-		fn()
+		e.runExclusiveRule(rule, fn)
 	}()
 	return true
+}
+
+func (e *AlertEngine) runExclusiveRule(rule api.AlertRuleInfo, fn func()) {
+	if _, loaded := e.runningRules.LoadOrStore(rule.ID, struct{}{}); loaded {
+		log.Printf("[AlertEngine] Rule already running; reusing current evaluation: rule_id=%d name=%s", rule.ID, rule.Name)
+		return
+	}
+	defer e.runningRules.Delete(rule.ID)
+	fn()
 }
 
 func (e *AlertEngine) checkBackendHealthAlert(rules []api.AlertRuleInfo) {

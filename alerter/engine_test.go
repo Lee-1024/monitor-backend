@@ -40,6 +40,28 @@ func TestSpecialAlertStateRequiresDurationBeforeFiring(t *testing.T) {
 	}
 }
 
+func TestDispatchRuleQueuesInsteadOfDroppingWhenPoolIsFull(t *testing.T) {
+	engine := NewAlertEngine(nil, nil, time.Second)
+	slots := make(chan struct{}, 1)
+	slots <- struct{}{}
+	done := make(chan struct{})
+	go func() {
+		engine.dispatchRule(slots, "metric", api.AlertRuleInfo{ID: 1}, func() {})
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("rule dispatch should wait for an available worker")
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-slots
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("queued rule was not dispatched")
+	}
+}
+
 func TestHostDownRecoveryRequiresStableOnlinePeriod(t *testing.T) {
 	engine := NewAlertEngine(nil, nil, time.Second)
 	rule := api.AlertRuleInfo{ID: 1}
