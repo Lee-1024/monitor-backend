@@ -293,10 +293,7 @@ func (s *Storage) redisDockerHistory(ctx context.Context, hostID string, start, 
 func (s *Storage) consumeSnapshotStream(ctx context.Context, stream string, write func([][]byte) error) {
 	group, consumer := s.config.Snapshot.EffectiveConsumerGroup(), s.config.Snapshot.EffectiveConsumerName()
 	for ctx.Err() == nil {
-		result, err := s.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{stream, "0"}, Count: int64(s.config.ClickHouse.EffectiveBatchRows())}).Result()
-		if err == redis.Nil || (err == nil && len(result) == 0) {
-			result, err = s.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{stream, ">"}, Count: int64(s.config.ClickHouse.EffectiveBatchRows()), Block: time.Duration(s.config.ClickHouse.EffectiveFlushIntervalSeconds()) * time.Second}).Result()
-		}
+		result, err := s.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{stream, ">"}, Count: int64(s.config.ClickHouse.EffectiveBatchRows()), Block: time.Duration(s.config.ClickHouse.EffectiveFlushIntervalSeconds()) * time.Second}).Result()
 		if err == redis.Nil || ctx.Err() != nil {
 			continue
 		}
@@ -309,30 +306,28 @@ func (s *Storage) consumeSnapshotStream(ctx context.Context, stream string, writ
 		var payloads [][]byte
 		for _, sr := range result {
 			for _, msg := range sr.Messages {
-				value, ok := msg.Values["payload"]
-				if !ok {
-					ids = append(ids, msg.ID)
-					continue
-				}
-				payloads = append(payloads, []byte(fmt.Sprint(value)))
 				ids = append(ids, msg.ID)
+				if value, ok := msg.Values["payload"]; ok {
+					payloads = append(payloads, []byte(fmt.Sprint(value)))
+				}
 			}
 		}
-		if len(payloads) > 0 {
-			log.Printf("[SnapshotStream] batch received stream=%s reports=%d", stream, len(payloads))
-			if err := write(payloads); err != nil {
-				log.Printf("[SnapshotStream] ClickHouse write failed stream=%s reports=%d: %v", stream, len(payloads), err)
-				time.Sleep(10 * time.Second)
-				continue
-			}
-			log.Printf("[SnapshotStream] ClickHouse batch written stream=%s reports=%d rows=%d", stream, len(payloads), len(payloads))
+		if len(payloads) == 0 {
+			continue
 		}
-		if len(ids) > 0 {
-			if err := s.redis.XAck(ctx, stream, group, ids...).Err(); err != nil {
-				log.Printf("[SnapshotStream] ack failed stream=%s: %v", stream, err)
-			} else if err := s.redis.XDel(ctx, stream, ids...).Err(); err != nil {
-				log.Printf("[SnapshotStream] delete acknowledged entries failed stream=%s: %v", stream, err)
-			}
+		log.Printf("[SnapshotStream] batch received stream=%s reports=%d", stream, len(payloads))
+		if err := write(payloads); err != nil {
+			log.Printf("[SnapshotStream] ClickHouse write failed stream=%s reports=%d: %v", stream, len(payloads), err)
+			time.Sleep(10 * time.Second)
+			continue
 		}
+		if err := s.redis.XAck(ctx, stream, group, ids...).Err(); err != nil {
+			log.Printf("[SnapshotStream] ack failed stream=%s: %v", stream, err)
+			continue
+		}
+		if err := s.redis.XDel(ctx, stream, ids...).Err(); err != nil {
+			log.Printf("[SnapshotStream] delete acknowledged entries failed stream=%s: %v", stream, err)
+		}
+		log.Printf("[SnapshotStream] ClickHouse batch written stream=%s reports=%d", stream, len(payloads))
 	}
 }
