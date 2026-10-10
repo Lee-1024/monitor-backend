@@ -186,7 +186,7 @@ func (s *Storage) clickHouseProcessHistory(ctx context.Context, hostID string, s
 		User        string          `json:"user"`
 		CPU         float64         `json:"cpu_percent"`
 		Memory      float64         `json:"memory_percent"`
-		MemoryBytes uint64          `json:"memory_bytes"`
+		MemoryBytes json.RawMessage `json:"memory_bytes"`
 		Status      string          `json:"status"`
 		Command     string          `json:"command"`
 	}
@@ -202,7 +202,7 @@ func decodeClickHouseProcesses(data []byte) ([]ProcessSnapshot, error) {
 		User        string          `json:"user"`
 		CPU         float64         `json:"cpu_percent"`
 		Memory      float64         `json:"memory_percent"`
-		MemoryBytes uint64          `json:"memory_bytes"`
+		MemoryBytes json.RawMessage `json:"memory_bytes"`
 		Status      string          `json:"status"`
 		Command     string          `json:"command"`
 	}{})
@@ -217,7 +217,7 @@ func decodeClickHouseProcessesWithRow(data []byte, _ interface{}) ([]ProcessSnap
 		User        string          `json:"user"`
 		CPU         float64         `json:"cpu_percent"`
 		Memory      float64         `json:"memory_percent"`
-		MemoryBytes uint64          `json:"memory_bytes"`
+		MemoryBytes json.RawMessage `json:"memory_bytes"`
 		Status      string          `json:"status"`
 		Command     string          `json:"command"`
 	}
@@ -232,7 +232,11 @@ func decodeClickHouseProcessesWithRow(data []byte, _ interface{}) ([]ProcessSnap
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, ProcessSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(ms), PID: r.PID, Name: r.Name, User: r.User, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryBytes: r.MemoryBytes, Status: r.Status, Command: r.Command})
+		memoryBytes, err := clickHouseUint64(r.MemoryBytes)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ProcessSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(ms), PID: r.PID, Name: r.Name, User: r.User, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryBytes: memoryBytes, Status: r.Status, Command: r.Command})
 	}
 	return out, scan.Err()
 }
@@ -254,7 +258,7 @@ func (s *Storage) clickHouseDockerHistory(ctx context.Context, hostID string, st
 		Name        string          `json:"name"`
 		CPU         float64         `json:"cpu_percent"`
 		Memory      float64         `json:"memory_percent"`
-		MemoryUsage uint64          `json:"memory_usage"`
+		MemoryUsage json.RawMessage `json:"memory_usage"`
 	}
 	return decodeClickHouseDockerWithRow(data, row{})
 }
@@ -270,7 +274,7 @@ func decodeClickHouseDockerWithRow(data []byte, _ interface{}) ([]DockerContaine
 		Name        string          `json:"name"`
 		CPU         float64         `json:"cpu_percent"`
 		Memory      float64         `json:"memory_percent"`
-		MemoryUsage uint64          `json:"memory_usage"`
+		MemoryUsage json.RawMessage `json:"memory_usage"`
 	}
 	var out []DockerContainerSnapshot
 	scan := bufio.NewScanner(bytes.NewReader(data))
@@ -283,7 +287,11 @@ func decodeClickHouseDockerWithRow(data []byte, _ interface{}) ([]DockerContaine
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, DockerContainerSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(ms), ContainerID: r.ContainerID, Name: r.Name, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryUsage: r.MemoryUsage})
+		memoryUsage, err := clickHouseUint64(r.MemoryUsage)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, DockerContainerSnapshot{HostID: r.HostID, Timestamp: time.UnixMilli(ms), ContainerID: r.ContainerID, Name: r.Name, CPUPercent: r.CPU, MemoryPercent: r.Memory, MemoryUsage: memoryUsage})
 	}
 	return out, scan.Err()
 }
@@ -291,4 +299,9 @@ func decodeClickHouseDockerWithRow(data []byte, _ interface{}) ([]DockerContaine
 func clickHouseTimestampMillis(raw json.RawMessage) (int64, error) {
 	value := strings.Trim(string(raw), `"`)
 	return strconv.ParseInt(value, 10, 64)
+}
+
+func clickHouseUint64(raw json.RawMessage) (uint64, error) {
+	value := strings.Trim(string(raw), `"`)
+	return strconv.ParseUint(value, 10, 64)
 }
