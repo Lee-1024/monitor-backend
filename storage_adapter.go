@@ -2380,8 +2380,13 @@ func latestServiceStatusesByHostQuery(db *gorm.DB, hostID string) *gorm.DB {
 
 func (s *StorageAdapter) GetServiceStatus(hostID string) ([]api.ServiceInfo, error) {
 	if hostID != "" {
+		if cached, err := s.storage.GetCachedLatestServiceStatuses(hostID); err == nil && len(cached) > 0 {
+			return serviceStatusesToAPI(cached), nil
+		}
 		var services []ServiceStatus
-		if err := latestServiceStatusesByHostQuery(s.storage.postgres, hostID).Find(&services).Error; err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := latestServiceStatusesByHostQuery(s.storage.postgres.WithContext(ctx), hostID).Find(&services).Error; err != nil {
 			return nil, err
 		}
 		return serviceStatusesToAPI(services), nil

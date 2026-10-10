@@ -35,6 +35,12 @@ func (s *Storage) snapshotProcessHistory(ctx context.Context, hostID string, sta
 		if err != nil {
 			return nil, err
 		}
+		if len(rows) == 0 && s.clickhouse != nil {
+			rows, err = s.clickHouseProcessHistory(ctx, hostID, newerStart, end)
+			if err != nil {
+				return nil, err
+			}
+		}
 		result = append(result, rows...)
 	}
 	return result, nil
@@ -62,6 +68,12 @@ func (s *Storage) snapshotDockerHistory(ctx context.Context, hostID string, star
 		rows, err := s.redisDockerHistory(ctx, hostID, newerStart, end)
 		if err != nil {
 			return nil, err
+		}
+		if len(rows) == 0 && s.clickhouse != nil {
+			rows, err = s.clickHouseDockerHistory(ctx, hostID, newerStart, end)
+			if err != nil {
+				return nil, err
+			}
 		}
 		result = append(result, rows...)
 	}

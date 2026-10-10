@@ -83,21 +83,21 @@ func (s *Storage) appendSnapshotReport(ctx context.Context, stream, historyKey, 
 		ts = r.Timestamp
 	}
 	pipe := s.redis.TxPipeline()
-	// Do not trim the durable stream here: Redis can otherwise remove entries
-	// that are still pending while ClickHouse is unavailable.
-	pipe.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]interface{}{"payload": payload}})
-	pipe.ZAdd(ctx, historyKey, redis.Z{Score: float64(ts.UnixMilli()), Member: string(payload)})
-	pipe.SAdd(ctx, hostsKey, hostID)
-	cutoff := ts.Add(-time.Duration(s.config.Snapshot.EffectiveRedisHistoryHours()) * time.Hour).UnixMilli()
-	pipe.ZRemRangeByScore(ctx, historyKey, "-inf", strconv.FormatInt(cutoff, 10))
-	pipe.Expire(ctx, historyKey, time.Duration(s.config.Snapshot.EffectiveRedisHistoryHours()+1)*time.Hour)
+	// The Stream is the only durable short-history buffer. Keeping the same
+	// full report again in a ZSET doubled Redis memory and caused timeouts.
+	pipe.XAdd(ctx, &redis.XAddArgs{Stream: stream, MaxLen: s.config.Snapshot.EffectiveStreamMaxLen(), Approx: true, Values: map[string]interface{}{"payload": payload}})
 	_, err = pipe.Exec(ctx)
+	_ = historyKey
+	_ = hostsKey
+	_ = hostID
+	_ = ts
 	return err
 }
 
 func (s *Storage) startSnapshotStreamConsumers() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.snapshotCancel = cancel
+	s.cleanupLegacySnapshotHistory(ctx)
 	group := s.config.Snapshot.EffectiveConsumerGroup()
 	for _, stream := range []string{processSnapshotStream, dockerSnapshotStream} {
 		if err := s.redis.XGroupCreateMkStream(ctx, stream, group, "0").Err(); err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
@@ -108,6 +108,34 @@ func (s *Storage) startSnapshotStreamConsumers() {
 	log.Printf("[SnapshotStream] Consumers started group=%s process_stream=%s docker_stream=%s", group, processSnapshotStream, dockerSnapshotStream)
 	go s.consumeProcessSnapshots(ctx)
 	go s.consumeDockerSnapshots(ctx)
+}
+
+func (s *Storage) cleanupLegacySnapshotHistory(ctx context.Context) {
+	for _, pattern := range []string{processHistoryPrefix + "*", dockerHistoryPrefix + "*"} {
+		var cursor uint64
+		for {
+			keys, next, err := s.redis.Scan(ctx, cursor, pattern, 200).Result()
+			if err != nil {
+				log.Printf("[SnapshotStream] legacy history cleanup scan failed pattern=%s: %v", pattern, err)
+				break
+			}
+			if len(keys) > 0 {
+				if err := s.redis.Del(ctx, keys...).Err(); err != nil {
+					log.Printf("[SnapshotStream] legacy history cleanup failed pattern=%s: %v", pattern, err)
+				}
+			}
+			cursor = next
+			if cursor == 0 {
+				break
+			}
+		}
+	}
+	for _, stream := range []string{processSnapshotStream, dockerSnapshotStream} {
+		if err := s.redis.XTrimMaxLenApprox(ctx, stream, s.config.Snapshot.EffectiveStreamMaxLen(), 0).Err(); err != nil && err != redis.Nil {
+			log.Printf("[SnapshotStream] stream trim failed stream=%s: %v", stream, err)
+		}
+	}
+	log.Printf("[SnapshotStream] Legacy duplicate history cleanup completed")
 }
 
 func (s *Storage) stopSnapshotStreamConsumers() {
