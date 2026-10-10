@@ -10,7 +10,7 @@ influxdb:
 
 postgresql:
   host: "10.54.56.54"
-  port: 31060
+  port: 30907
   user: "admin"
   password: "secure_password"
   database: "myappdb"
