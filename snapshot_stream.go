@@ -32,14 +32,22 @@ func (s *Storage) AppendProcessSnapshotReport(ctx context.Context, rows []Proces
 	if len(rows) == 0 {
 		return nil
 	}
-	return s.appendSnapshotReport(ctx, processSnapshotStream, processHistoryPrefix+rows[0].HostID, processHistoryHosts, rows[0].HostID, snapshotReport[ProcessSnapshot]{rows[0].HostID, rows[0].Timestamp, rows})
+	appendCtx, cancel := snapshotAppendContext()
+	defer cancel()
+	return s.appendSnapshotReport(appendCtx, processSnapshotStream, processHistoryPrefix+rows[0].HostID, processHistoryHosts, rows[0].HostID, snapshotReport[ProcessSnapshot]{rows[0].HostID, rows[0].Timestamp, rows})
 }
 
 func (s *Storage) AppendDockerSnapshotReport(ctx context.Context, rows []DockerContainerSnapshot) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	return s.appendSnapshotReport(ctx, dockerSnapshotStream, dockerHistoryPrefix+rows[0].HostID, dockerHistoryHosts, rows[0].HostID, snapshotReport[DockerContainerSnapshot]{rows[0].HostID, rows[0].Timestamp, rows})
+	appendCtx, cancel := snapshotAppendContext()
+	defer cancel()
+	return s.appendSnapshotReport(appendCtx, dockerSnapshotStream, dockerHistoryPrefix+rows[0].HostID, dockerHistoryHosts, rows[0].HostID, snapshotReport[DockerContainerSnapshot]{rows[0].HostID, rows[0].Timestamp, rows})
+}
+
+func snapshotAppendContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 2*time.Second)
 }
 
 func (s *Storage) appendSnapshotReport(ctx context.Context, stream, historyKey, hostsKey, hostID string, report any) error {

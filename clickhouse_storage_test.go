@@ -31,7 +31,7 @@ func TestClickHouseSchemaUsesMergeTreeAndTTL(t *testing.T) {
 		t.Fatalf("statement count = %d, want 3", len(statements))
 	}
 	joined := strings.Join(statements, "\n")
-	for _, want := range []string{"CREATE DATABASE IF NOT EXISTS monitor", "MergeTree", "PARTITION BY toDate(timestamp)", "TTL timestamp + INTERVAL 30 DAY", "process_snapshots", "docker_container_snapshots"} {
+	for _, want := range []string{"CREATE DATABASE IF NOT EXISTS monitor", "MergeTree", "PARTITION BY toDate(timestamp)", "TTL toDateTime(timestamp) + INTERVAL 30 DAY", "process_snapshots", "docker_container_snapshots"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("schema missing %q", want)
 		}

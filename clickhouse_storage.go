@@ -23,8 +23,8 @@ func clickHouseSchemaStatements(database string, retentionDays int) []string {
 	db := sanitizeClickHouseIdentifier(database)
 	return []string{
 		fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", db),
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.process_snapshots (timestamp DateTime64(3), host_id String, pid Int32, name String, user String, cpu_percent Float64, memory_percent Float64, memory_bytes UInt64, status String, command String) ENGINE = MergeTree PARTITION BY toDate(timestamp) ORDER BY (host_id, timestamp, name) TTL timestamp + INTERVAL %d DAY`, db, retentionDays),
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.docker_container_snapshots (timestamp DateTime64(3), host_id String, container_id String, name String, image String, state String, status String, created_unix Int64, started_at DateTime64(3), restart_count Int32, ports String, cpu_percent Float64, memory_usage UInt64, memory_limit UInt64, memory_percent Float64, network_rx UInt64, network_tx UInt64, block_read UInt64, block_write UInt64) ENGINE = MergeTree PARTITION BY toDate(timestamp) ORDER BY (host_id, timestamp, name) TTL timestamp + INTERVAL %d DAY`, db, retentionDays),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.process_snapshots (timestamp DateTime64(3), host_id String, pid Int32, name String, user String, cpu_percent Float64, memory_percent Float64, memory_bytes UInt64, status String, command String) ENGINE = MergeTree PARTITION BY toDate(timestamp) ORDER BY (host_id, timestamp, name) TTL toDateTime(timestamp) + INTERVAL %d DAY`, db, retentionDays),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.docker_container_snapshots (timestamp DateTime64(3), host_id String, container_id String, name String, image String, state String, status String, created_unix Int64, started_at DateTime64(3), restart_count Int32, ports String, cpu_percent Float64, memory_usage UInt64, memory_limit UInt64, memory_percent Float64, network_rx UInt64, network_tx UInt64, block_read UInt64, block_write UInt64) ENGINE = MergeTree PARTITION BY toDate(timestamp) ORDER BY (host_id, timestamp, name) TTL toDateTime(timestamp) + INTERVAL %d DAY`, db, retentionDays),
 	}
 }
 
