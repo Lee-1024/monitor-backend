@@ -1708,6 +1708,12 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 		topN = 10
 	}
 
+	if s.storage.clickhouse != nil {
+		rows, err := s.storage.clickHouseTopNames(context.Background(), "process_snapshots", hostID, start, end, metricType, topN)
+		if err == nil {
+			return rows, nil
+		}
+	}
 	rows, err := s.storage.snapshotProcessHistory(context.Background(), hostID, start, end)
 	if err != nil {
 		return nil, err
@@ -1750,7 +1756,13 @@ func (s *StorageAdapter) GetTopProcessNamesByHistory(hostID string, start, end t
 
 // GetProcessHistory 获取进程历史数据（按进程名分组，每个采样点保留命中的PID）
 func (s *StorageAdapter) GetProcessHistory(hostID string, processNames []string, start, end time.Time, limit int, metricType string) ([]api.ProcessHistoryPoint, error) {
-	processes, err := s.storage.snapshotProcessHistory(context.Background(), hostID, start, end)
+	var processes []ProcessSnapshot
+	var err error
+	if s.storage.clickhouse != nil {
+		processes, err = s.storage.clickHouseProcessHistoryFiltered(context.Background(), hostID, start, end, processNames, metricType, limit)
+	} else {
+		processes, err = s.storage.snapshotProcessHistory(context.Background(), hostID, start, end)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1875,6 +1887,12 @@ func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, star
 	if topN <= 0 {
 		topN = 10
 	}
+	if s.storage.clickhouse != nil {
+		rows, err := s.storage.clickHouseTopNames(context.Background(), "docker_container_snapshots", hostID, start, end, metricType, topN)
+		if err == nil {
+			return rows, nil
+		}
+	}
 	rows, err := s.storage.snapshotDockerHistory(context.Background(), hostID, start, end)
 	if err != nil {
 		return nil, err
@@ -1911,7 +1929,13 @@ func (s *StorageAdapter) GetTopDockerContainerNamesByHistory(hostID string, star
 }
 
 func (s *StorageAdapter) GetDockerContainerHistory(hostID string, containerNames []string, start, end time.Time, limit int, metricType string) ([]api.DockerContainerHistoryPoint, error) {
-	snapshots, err := s.storage.snapshotDockerHistory(context.Background(), hostID, start, end)
+	var snapshots []DockerContainerSnapshot
+	var err error
+	if s.storage.clickhouse != nil {
+		snapshots, err = s.storage.clickHouseDockerHistoryFiltered(context.Background(), hostID, start, end, containerNames, metricType, limit)
+	} else {
+		snapshots, err = s.storage.snapshotDockerHistory(context.Background(), hostID, start, end)
+	}
 	if err != nil {
 		return nil, err
 	}
