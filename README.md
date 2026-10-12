@@ -305,6 +305,7 @@ coroot:
   timeout_seconds: 3
   cache_enabled: true
 ```
+部署coroot要注意各个服务器的时间，时间不一致会造成节点状态错误
 
 推荐通过环境变量传入 API Key：
 

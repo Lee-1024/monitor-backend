@@ -1,0 +1,140 @@
+name: coroot
+services:
+  coroot:
+    restart: always
+    image: uhub.service.ucloud.cn/mypublic/coroot:latest # set 'coroot-ee' as the image if LICENSE_KEY is defined
+    pull_policy: always
+    user: root
+    volumes:
+      - coroot_data:/data
+    ports:
+      - 8082:8080
+    command:
+      - '--data-dir=/data'
+      - '--url-base-path=/coroot/'
+      - '--bootstrap-prometheus-url=http://prometheus:9090'
+      - '--bootstrap-refresh-interval=15s'
+      - '--bootstrap-clickhouse-address=clickhouse:9000'
+      - '--auth-anonymous-role=Viewer'
+    environment:
+      - LICENSE_KEY=${LICENSE_KEY:-}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+
+  node-agent:
+    restart: always
+    image: uhub.service.ucloud.cn/mypublic/coroot-node-agent:latest
+    pull_policy: always
+    privileged: true
+    pid: "host"
+    volumes:
+      - /sys/kernel/tracing:/sys/kernel/tracing
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/fs/cgroup:/host/sys/fs/cgroup
+      - node_agent_data:/data
+    command:
+      - '--collector-endpoint=http://coroot:8080'
+      - '--cgroupfs-root=/host/sys/fs/cgroup'
+      - '--wal-dir=/data'
+
+  cluster-agent:
+    restart: always
+    image: uhub.service.ucloud.cn/mypublic/coroot-cluster-agent:latest
+    pull_policy: always
+    volumes:
+      - cluster_agent_data:/data
+    command:
+      - '--coroot-url=http://coroot:8080'
+      - '--metrics-scrape-interval=15s'
+      - '--metrics-wal-dir=/data'
+    depends_on:
+      - coroot
+
+  prometheus:
+    restart: always
+    image: uhub.service.ucloud.cn/mypublic/prometheus:v2.53.5
+    volumes:
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'
+    ports:
+      - '127.0.0.1:9092:9090'
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  clickhouse:
+    restart: always
+    image: uhub.service.ucloud.cn/mypublic/clickhouse-server:24.3
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    ports:
+      - '127.0.0.1:9003:9000'
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    configs:
+      - source: clickhouse_logging
+        target: /etc/clickhouse-server/config.d/logging_rules.xml
+      - source: clickhouse_user_logging
+        target: /etc/clickhouse-server/config.d/user_logging.xml
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  prometheus_data: {}
+  clickhouse_data: {}
+  clickhouse_logs: {}
+  coroot_data: {}
+  node_agent_data: {}
+  cluster_agent_data: {}
+
+configs:
+  clickhouse_logging:
+    content: |
+      <clickhouse>
+        <logger>
+            <level>warning</level>
+            <console>true</console>
+        </logger>
+        <query_thread_log remove="remove"/>
+        <query_log remove="remove"/>
+        <text_log remove="remove"/>
+        <trace_log remove="remove"/>
+        <metric_log remove="remove"/>
+        <asynchronous_metric_log remove="remove"/>
+        <session_log remove="remove"/>
+        <part_log remove="remove"/>
+        <latency_log remove="remove"/>
+        <processors_profile_log remove="remove"/>
+      </clickhouse>
+  clickhouse_user_logging:
+    content: |
+      <clickhouse>
+        <profiles>
+          <default>
+            <log_queries>0</log_queries>
+            <log_query_threads>0</log_query_threads>
+            <log_processors_profiles>0</log_processors_profiles>
+          </default>
+        </profiles>
+      </clickhouse>
