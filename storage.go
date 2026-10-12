@@ -79,11 +79,7 @@ func NewStorage(config *Config) *Storage {
 		processLast:        make(map[string]time.Time),
 		dockerLast:         make(map[string]time.Time),
 	}
-	SetSnapshotCleanupThrottle(
-		config.Retention.EffectiveCleanupBatchSize(),
-		config.Retention.EffectiveCleanupMaxBatchesPerRun(),
-		config.Retention.EffectiveCleanupIntervalSeconds(),
-	)
+	SetSnapshotCleanupThrottle(500, 1, 60)
 
 	// 初始化InfluxDB
 	storage.influxClient = influxdb2.NewClient(
@@ -1710,27 +1706,12 @@ func SetLogRetentionDays(days int) {
 	}
 }
 
-var processSnapshotCleanupBatchSize = 500
-var snapshotCleanupMaxBatchesPerRun = 1
-var snapshotCleanupInterval = time.Minute
+const processSnapshotCleanupBatchSize = 500
+const snapshotCleanupMaxBatchesPerRun = 1
+const snapshotCleanupInterval = time.Minute
 
 func SetSnapshotCleanupThrottle(batchSize int, maxBatchesPerRun int, intervalSeconds int) {
-	if batchSize > 0 && batchSize <= 100000 {
-		processSnapshotCleanupBatchSize = batchSize
-		dockerSnapshotCleanupBatchSize = batchSize
-	}
-	if maxBatchesPerRun > 0 && maxBatchesPerRun <= 1000 {
-		snapshotCleanupMaxBatchesPerRun = maxBatchesPerRun
-	}
-	if intervalSeconds > 0 {
-		snapshotCleanupInterval = time.Duration(intervalSeconds) * time.Second
-	}
-	log.Printf(
-		"[SnapshotCleanup] Throttle configured: batch_size=%d max_batches_per_run=%d interval=%s",
-		processSnapshotCleanupBatchSize,
-		snapshotCleanupMaxBatchesPerRun,
-		snapshotCleanupInterval,
-	)
+	// Snapshot cleanup is disabled; legacy callers are intentionally ignored.
 }
 
 func (s *Storage) StartProcessSnapshotCleanup() {
@@ -1755,7 +1736,7 @@ func (s *Storage) cleanupOldProcessSnapshots() {
 
 var serviceStatusRetentionDays = 30
 
-var dockerSnapshotCleanupBatchSize = 500
+const dockerSnapshotCleanupBatchSize = 500
 
 func (s *Storage) StartDockerSnapshotCleanup() {
 	go s.cleanupOldDockerSnapshots()

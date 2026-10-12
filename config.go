@@ -196,31 +196,7 @@ func (c SnapshotStorageConfig) EffectiveConsumerName() string {
 }
 
 type RetentionConfig struct {
-	CleanupBatchSize           int `yaml:"cleanup_batch_size"`
-	CleanupMaxBatchesPerRun    int `yaml:"cleanup_max_batches_per_run"`
-	CleanupIntervalSeconds     int `yaml:"cleanup_interval_seconds"`
 	BackendStartupGraceSeconds int `yaml:"backend_startup_grace_seconds"`
-}
-
-func (c RetentionConfig) EffectiveCleanupBatchSize() int {
-	if c.CleanupBatchSize > 0 {
-		return c.CleanupBatchSize
-	}
-	return 500
-}
-
-func (c RetentionConfig) EffectiveCleanupMaxBatchesPerRun() int {
-	if c.CleanupMaxBatchesPerRun > 0 {
-		return c.CleanupMaxBatchesPerRun
-	}
-	return 1
-}
-
-func (c RetentionConfig) EffectiveCleanupIntervalSeconds() int {
-	if c.CleanupIntervalSeconds > 0 {
-		return c.CleanupIntervalSeconds
-	}
-	return 60
 }
 
 func (c RetentionConfig) EffectiveBackendStartupGraceSeconds() int {
@@ -267,9 +243,6 @@ func LoadConfig() *Config {
 			DB:       0,
 		},
 		Retention: RetentionConfig{
-			CleanupBatchSize:           500,
-			CleanupMaxBatchesPerRun:    1,
-			CleanupIntervalSeconds:     60,
 			BackendStartupGraceSeconds: 180,
 		},
 		Coroot: coroot.Config{
