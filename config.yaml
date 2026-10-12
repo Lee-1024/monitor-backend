@@ -64,10 +64,10 @@ auth_required: true
 coroot:
   enabled: true
   # Coroot 使用 --url-base-path=/coroot/ 时，后端地址也要包含 /coroot
-  base_url: "http://10.40.0.184:8082/coroot"
+  base_url: "http://10.54.56.59:8082/coroot"
   public_base_url: "/coroot/"
-  project_id: "92faob1m"
-  api_key: ""
+  project_id: "epak5es1"
+  api_key: "2eDCqE_tKyMF5yEM9TXaf8PrZUmovzCz"
   webhook_secret: ""
   timeout_seconds: 3
   cache_enabled: true
