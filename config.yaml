@@ -66,8 +66,8 @@ coroot:
   # Coroot 使用 --url-base-path=/coroot/ 时，后端地址也要包含 /coroot
   base_url: "http://10.54.56.59:8082/coroot"
   public_base_url: "/coroot/"
-  project_id: "epak5es1"
-  api_key: "2eDCqE_tKyMF5yEM9TXaf8PrZUmovzCz"
+  project_id: "xs8uzdy9"
+  api_key: "IuZRmMyr5BzOqyVDOXI1SodWYlAIVsb5"
   webhook_secret: ""
   timeout_seconds: 3
   cache_enabled: true
