@@ -83,6 +83,39 @@ func TestConvertMapToInspectionRecordInfoConvertsServiceCountsFromInt64(t *testi
 	}
 }
 
+func TestConvertMapToInspectionReportInfoConvertsTextBytes(t *testing.T) {
+	report := convertMapToInspectionReportInfo(map[string]interface{}{
+		"status":          []byte("completed"),
+		"report_content":  []byte("# 系统巡检日报\n今日正常"),
+		"summary":         []byte("今日正常"),
+		"key_findings":    []byte("无异常"),
+		"recommendations": []byte("持续观察"),
+	})
+
+	if report.ReportContent != "# 系统巡检日报\n今日正常" {
+		t.Fatalf("report content = %q, want decoded text", report.ReportContent)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+	if report.Summary != "今日正常" || report.KeyFindings != "无异常" || report.Recommendations != "持续观察" {
+		t.Fatalf("text fields were not decoded: %#v", report)
+	}
+}
+
+func TestStripInspectionThinkingKeepsFinalReport(t *testing.T) {
+	got := stripInspectionThinking("<think>internal plan</think>\n# 系统巡检日报\n正文")
+	if got != "# 系统巡检日报\n正文" {
+		t.Fatalf("cleaned report = %q", got)
+	}
+}
+
+func TestStripInspectionThinkingDropsReasoningOnlyContent(t *testing.T) {
+	if got := stripInspectionThinking("<think>internal plan</think>"); got != "" {
+		t.Fatalf("reasoning-only report = %q, want empty", got)
+	}
+}
+
 func TestSummarizeServerProbeTargetsCountsEnabledStatuses(t *testing.T) {
 	targets := []ServerProbeTargetInfo{
 		{Name: "api", Enabled: true, LastStatus: "up"},

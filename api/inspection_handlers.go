@@ -1290,6 +1290,13 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 		log.Printf("[API] 流式输出内容为空，不保存到数据库")
 		return
 	}
+	// Reasoning models may put the entire response inside <think>. Do not
+	// persist that internal trace as a successful user-facing report.
+	fullContent = stripInspectionThinking(fullContent)
+	if strings.TrimSpace(fullContent) == "" {
+		log.Printf("[API] 流式输出仅包含思考内容，没有可展示的日报正文，不保存到数据库")
+		return
+	}
 
 	log.Printf("[API] ========== 保存日报内容 ==========")
 	log.Printf("[API] ReportID=%d", b.reportID)
@@ -1378,6 +1385,25 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 			}
 		}
 	}
+}
+
+func stripInspectionThinking(content string) string {
+	content = strings.TrimSpace(content)
+	for {
+		lower := strings.ToLower(content)
+		start := strings.Index(lower, "<think>")
+		if start < 0 {
+			break
+		}
+		rest := content[start+len("<think>"):]
+		end := strings.Index(strings.ToLower(rest), "</think>")
+		if end < 0 {
+			content = content[:start]
+			break
+		}
+		content = content[:start] + rest[end+len("</think>"):]
+	}
+	return strings.TrimSpace(content)
 }
 
 // extractReportSections 从报告内容中提取各个部分
@@ -1484,9 +1510,7 @@ func convertMapToInspectionReportInfo(m map[string]interface{}) InspectionReport
 		}
 	}
 
-	if v, ok := m["status"].(string); ok {
-		info.Status = v
-	}
+	info.Status = inspectionTextValue(m["status"])
 
 	// 转换 total_hosts
 	if v, ok := m["total_hosts"].(int); ok {
@@ -1533,27 +1557,28 @@ func convertMapToInspectionReportInfo(m map[string]interface{}) InspectionReport
 		info.CriticalHosts = int(v)
 	}
 
-	if v, ok := m["summary"].(string); ok {
-		info.Summary = v
-	}
-
-	if v, ok := m["report_content"].(string); ok {
-		info.ReportContent = v
-	}
-
-	if v, ok := m["key_findings"].(string); ok {
-		info.KeyFindings = v
-	}
-
-	if v, ok := m["recommendations"].(string); ok {
-		info.Recommendations = v
-	}
-
-	if v, ok := m["generated_by"].(string); ok {
-		info.GeneratedBy = v
-	}
+	info.Summary = inspectionTextValue(m["summary"])
+	info.ReportContent = inspectionTextValue(m["report_content"])
+	info.KeyFindings = inspectionTextValue(m["key_findings"])
+	info.Recommendations = inspectionTextValue(m["recommendations"])
+	info.GeneratedBy = inspectionTextValue(m["generated_by"])
 
 	return info
+}
+
+// inspectionTextValue normalizes PostgreSQL text values returned by map scans.
+// Depending on the driver and query path, text may be string or []byte.
+func inspectionTextValue(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case json.RawMessage:
+		return string(v)
+	default:
+		return ""
+	}
 }
 
 // 辅助函数：转换map到InspectionRecordInfo

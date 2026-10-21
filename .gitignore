@@ -1,0 +1,20 @@
+# Go build and test output
+.gocache/
+.gomodcache/
+bin/
+*.test
+coverage.out
+coverage.html
+
+# Local runtime output
+.tmp/
+tmp/
+logs/
+*.log
+
+# Local environment and editor files
+.env
+.env.*
+.vscode/
+.idea/
+*.local

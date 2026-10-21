@@ -881,7 +881,8 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 ## 八、后续行动
 （列出需要立即处理的问题和后续跟进事项）
 
-请用中文撰写，内容要专业、详细、可操作。`,
+	请用中文撰写，内容要专业、详细、可操作。
+只输出最终的Markdown日报正文，不要输出思考过程、分析草稿或 <think> 标签；即使模型启用了思考能力，也必须在思考结束后输出完整的最终日报正文。`,
 		totalHosts, onlineHosts, offlineHosts, warningHosts, criticalHosts,
 		serverProbeTotal, serverProbeUp, serverProbeDown, serverProbeUnknown,
 		recordsText, portServicesText, serverProbeTargetsText, inspectionDateStr)
@@ -1032,8 +1033,8 @@ func (c *LLMClient) streamOpenAICompatible(prompt string, writer io.Writer) erro
 
 	// 对于巡检日报，需要更长的输出，确保max_tokens足够大
 	maxTokens := c.config.MaxTokens
-	if maxTokens == 0 || maxTokens < 4000 {
-		maxTokens = 8000 // 巡检日报需要更长的输出，默认8000 tokens
+	if maxTokens == 0 || maxTokens < 16000 {
+		maxTokens = 16000 // 巡检日报包含详细服务明细，需为思考和正文预留足够空间
 		log.Printf("[LLM Stream] max_tokens配置为0或太小，使用默认值: %d", maxTokens)
 	}
 
