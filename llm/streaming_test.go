@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestInspectionReportPromptRequiresCompleteServiceInventory(t *testing.T) {
+func TestInspectionReportPromptDelegatesServiceInventoryToBackend(t *testing.T) {
 	client := NewLLMClient(LLMConfig{})
 	prompt := client.buildInspectionReportPrompt(map[string]interface{}{
 		"report": map[string]interface{}{
@@ -17,9 +17,9 @@ func TestInspectionReportPromptRequiresCompleteServiceInventory(t *testing.T) {
 	})
 
 	for _, phrase := range []string{
-		"完整覆盖",
-		"不得省略",
-		"每一项",
+		"完整服务明细由后端插入",
+		"不要展开服务明细",
+		"必须继续生成第六至第八章",
 	} {
 		if !strings.Contains(prompt, phrase) {
 			t.Fatalf("prompt does not require complete inventory (%q): %s", phrase, prompt)

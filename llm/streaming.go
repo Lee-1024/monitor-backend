@@ -858,9 +858,7 @@ func (c *LLMClient) buildInspectionReportPrompt(inspectionData map[string]interf
 （详细列出发现的问题、警告和严重告警，按严重程度分类）
 
 ## 五、服务状态
-（不要写主机在线/离线状态。本节只统计“配置端口服务状态”和“服务端探测目标状态”。
-- 配置端口服务必须完整覆盖输入数据中的每一项，按服务名称、主机、端口、运行状态、端口是否可访问逐行列出，不得省略正常项、合并主机、使用“其余略”等缩写；输入有多少项就输出多少项。
-- 服务端探测目标必须完整覆盖输入数据中的每一项，按目标名称、类型、地址、最近状态、延迟、错误信息逐行列出，不得省略正常项。）
+（完整服务明细由后端插入。这里只输出“## 五、服务状态”标题和一句总体判断，不要展开服务明细、不要生成表格；必须继续生成第六至第八章。）
 
 ## 六、关键发现
 （总结本次巡检的关键发现，包括但不限于：
@@ -928,8 +926,13 @@ func formatPortServicesForInspectionReport(services []map[string]interface{}) st
 	}
 	text += fmt.Sprintf("- 运行且端口可访问: %d\n", running)
 	text += fmt.Sprintf("- 异常或端口不可访问: %d\n", abnormal)
-	text += "- 明细:\n"
+	text += "- 异常明细:\n"
 	for _, service := range services {
+		status := mapString(service["status"])
+		accessible := mapBool(service["port_accessible"])
+		if status == "running" && accessible {
+			continue
+		}
 		text += fmt.Sprintf("  - %s / %s:%d，状态=%s，端口可访问=%t\n",
 			mapString(service["host_id"]),
 			mapString(service["name"]),
@@ -962,8 +965,11 @@ func formatServerProbeTargetsForInspectionReport(targets []map[string]interface{
 	text += fmt.Sprintf("- 正常: %d\n", up)
 	text += fmt.Sprintf("- 失败: %d\n", down)
 	text += fmt.Sprintf("- 未知: %d\n", unknown)
-	text += "- 明细:\n"
+	text += "- 失败或未知明细:\n"
 	for _, target := range targets {
+		if mapString(target["last_status"]) == "up" {
+			continue
+		}
 		text += fmt.Sprintf("  - %s，类型=%s，地址=%s，状态=%s，延迟=%dms，错误=%s\n",
 			mapString(target["name"]),
 			mapString(target["type"]),

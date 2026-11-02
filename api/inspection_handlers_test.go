@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -113,6 +114,60 @@ func TestStripInspectionThinkingKeepsFinalReport(t *testing.T) {
 func TestStripInspectionThinkingDropsReasoningOnlyContent(t *testing.T) {
 	if got := stripInspectionThinking("<think>internal plan</think>"); got != "" {
 		t.Fatalf("reasoning-only report = %q, want empty", got)
+	}
+}
+
+func TestFinalizeInspectionReportReplacesServiceSectionAndRequiresAllChapters(t *testing.T) {
+	content := `# 系统巡检日报
+## 一、巡检概览
+概览
+## 二、主机状态统计
+统计
+## 三、资源使用分析
+分析
+## 四、问题与告警
+告警
+## 五、服务状态
+模型生成的不完整服务列表
+## 六、关键发现
+发现
+## 七、优化建议
+建议
+## 八、后续行动
+行动`
+	serviceSection := "## 五、服务状态\n| 服务 | 状态 |\n|---|---|\n| nginx | running |"
+
+	got, err := finalizeInspectionReport(content, serviceSection)
+	if err != nil {
+		t.Fatalf("finalize report: %v", err)
+	}
+	if !strings.Contains(got, "| nginx | running |") {
+		t.Fatalf("finalized report does not contain deterministic service section: %s", got)
+	}
+	if strings.Contains(got, "模型生成的不完整服务列表") {
+		t.Fatalf("model-generated service section was not replaced: %s", got)
+	}
+
+	if _, err := finalizeInspectionReport("# 系统巡检日报\n## 一、巡检概览", serviceSection); err == nil {
+		t.Fatal("truncated report was accepted")
+	}
+}
+
+func TestBuildInspectionServiceSectionIncludesEveryItem(t *testing.T) {
+	section := buildInspectionServiceSection(
+		[]map[string]interface{}{
+			{"name": "nginx", "host_id": "web-1", "port": 80, "status": "running", "port_accessible": true},
+			{"name": "postgres", "host_id": "db-1", "port": 5432, "status": "running", "port_accessible": true},
+		},
+		[]map[string]interface{}{
+			{"name": "api", "type": "tcp", "address": "10.0.0.1:443", "last_status": "up", "last_latency_ms": int64(3), "last_error": ""},
+		},
+	)
+
+	for _, expected := range []string{"nginx", "postgres", "web-1", "db-1", "10.0.0.1:443"} {
+		if !strings.Contains(section, expected) {
+			t.Fatalf("service section missing %q: %s", expected, section)
+		}
 	}
 }
 

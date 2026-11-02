@@ -1053,6 +1053,10 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 		"port_services":        portServicePayload(services),
 		"server_probe_targets": serverProbeTargetPayload(probeTargets),
 	}
+	serviceSection := buildInspectionServiceSection(
+		inspectionData["port_services"].([]map[string]interface{}),
+		inspectionData["server_probe_targets"].([]map[string]interface{}),
+	)
 
 	// 通过反射调用流式方法
 	type ClientGetter interface {
@@ -1091,13 +1095,14 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 
 	// 创建缓冲Writer，用于收集完整内容并在完成后保存到数据库
 	bufferWriter := &bufferedStreamWriter{
-		writer:       c.Writer,
-		contentBuf:   &strings.Builder{},
-		sseBuffer:    &strings.Builder{},
-		reportID:     uint(reportID),
-		db:           db,
-		chunkCount:   0,
-		totalContent: 0,
+		writer:         c.Writer,
+		contentBuf:     &strings.Builder{},
+		sseBuffer:      &strings.Builder{},
+		reportID:       uint(reportID),
+		db:             db,
+		chunkCount:     0,
+		totalContent:   0,
+		serviceSection: serviceSection,
 	}
 
 	log.Printf("[API] 使用流式生成巡检日报: ReportID=%d", reportID)
@@ -1138,14 +1143,15 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 
 // bufferedStreamWriter 缓冲流式写入器，同时写入响应和缓冲区
 type bufferedStreamWriter struct {
-	writer       io.Writer
-	contentBuf   *strings.Builder
-	reportID     uint
-	db           *gorm.DB
-	mu           sync.Mutex
-	sseBuffer    *strings.Builder // 用于累积SSE消息
-	chunkCount   int              // 统计处理的chunk数量
-	totalContent int              // 统计累积的内容长度
+	writer         io.Writer
+	contentBuf     *strings.Builder
+	reportID       uint
+	db             *gorm.DB
+	mu             sync.Mutex
+	sseBuffer      *strings.Builder // 用于累积SSE消息
+	chunkCount     int              // 统计处理的chunk数量
+	totalContent   int              // 统计累积的内容长度
+	serviceSection string           // 后端按原始数据生成的完整服务状态章节
 }
 
 // Write 实现io.Writer接口
@@ -1297,6 +1303,12 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 		log.Printf("[API] 流式输出仅包含思考内容，没有可展示的日报正文，不保存到数据库")
 		return
 	}
+	var finalizeErr error
+	fullContent, finalizeErr = finalizeInspectionReport(fullContent, b.serviceSection)
+	if finalizeErr != nil {
+		log.Printf("[API] 巡检日报不完整，不保存到数据库: %v", finalizeErr)
+		return
+	}
 
 	log.Printf("[API] ========== 保存日报内容 ==========")
 	log.Printf("[API] ReportID=%d", b.reportID)
@@ -1404,6 +1416,78 @@ func stripInspectionThinking(content string) string {
 		content = content[:start] + rest[end+len("</think>"):]
 	}
 	return strings.TrimSpace(content)
+}
+
+func finalizeInspectionReport(content, serviceSection string) (string, error) {
+	content = strings.TrimSpace(content)
+	serviceStart := strings.Index(content, "## 五、服务状态")
+	findingsStart := strings.Index(content, "## 六、关键发现")
+	if serviceStart < 0 || findingsStart <= serviceStart {
+		return "", fmt.Errorf("missing or invalid service/findings chapters")
+	}
+	content = strings.TrimSpace(content[:serviceStart]) + "\n\n" + strings.TrimSpace(serviceSection) + "\n\n" + strings.TrimSpace(content[findingsStart:])
+
+	required := []string{
+		"## 一、巡检概览",
+		"## 二、主机状态统计",
+		"## 三、资源使用分析",
+		"## 四、问题与告警",
+		"## 五、服务状态",
+		"## 六、关键发现",
+		"## 七、优化建议",
+		"## 八、后续行动",
+	}
+	for _, heading := range required {
+		if !strings.Contains(content, heading) {
+			return "", fmt.Errorf("missing required chapter %q", heading)
+		}
+	}
+	return content, nil
+}
+
+func buildInspectionServiceSection(services, targets []map[string]interface{}) string {
+	var out strings.Builder
+	out.WriteString("## 五、服务状态\n\n### 5.1 配置端口服务\n\n")
+	fmt.Fprintf(&out, "共 %d 项。\n\n| 序号 | 服务名称 | 主机 | 端口 | 运行状态 | 端口可访问 |\n|---:|---|---|---:|---|---|\n", len(services))
+	for i, service := range services {
+		fmt.Fprintf(&out, "| %d | %s | %s | %d | %s | %s |\n",
+			i+1,
+			inspectionMarkdownCell(service["name"]),
+			inspectionMarkdownCell(service["host_id"]),
+			inspectionNumber(service["port"]),
+			inspectionMarkdownCell(service["status"]),
+			map[bool]string{true: "是", false: "否"}[inspectionBool(service["port_accessible"])])
+	}
+
+	out.WriteString("\n### 5.2 服务端探测目标\n\n")
+	fmt.Fprintf(&out, "共 %d 项。\n\n| 序号 | 目标名称 | 类型 | 地址 | 最近状态 | 延迟(ms) | 错误信息 |\n|---:|---|---|---|---|---:|---|\n", len(targets))
+	for i, target := range targets {
+		fmt.Fprintf(&out, "| %d | %s | %s | %s | %s | %d | %s |\n",
+			i+1,
+			inspectionMarkdownCell(target["name"]),
+			inspectionMarkdownCell(target["type"]),
+			inspectionMarkdownCell(target["address"]),
+			inspectionMarkdownCell(target["last_status"]),
+			inspectionNumber(target["last_latency_ms"]),
+			inspectionMarkdownCell(target["last_error"]))
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func inspectionMarkdownCell(value interface{}) string {
+	text := inspectionTextValue(value)
+	text = strings.ReplaceAll(text, "|", "\\|")
+	text = strings.ReplaceAll(text, "\r", " ")
+	return strings.ReplaceAll(text, "\n", " ")
+}
+
+func inspectionNumber(value interface{}) int {
+	return reportInt(map[string]interface{}{"value": value}, "value")
+}
+
+func inspectionBool(value interface{}) bool {
+	v, _ := value.(bool)
+	return v
 }
 
 // extractReportSections 从报告内容中提取各个部分
