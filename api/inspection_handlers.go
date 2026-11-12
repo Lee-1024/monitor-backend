@@ -1111,9 +1111,6 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 		reflect.ValueOf(bufferWriter),
 	})
 
-	// 标记是否已经保存过，避免重复保存
-	saved := false
-
 	if len(results) > 0 && !results[0].IsNil() {
 		if err, ok := results[0].Interface().(error); ok && err != nil {
 			log.Printf("[API] 流式生成巡检日报失败: %v", err)
@@ -1125,20 +1122,20 @@ func (s *APIServer) streamInspectionReport(c *gin.Context) {
 			data, _ := json.Marshal(errorChunk)
 			fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
 			c.Writer.Flush()
-		} else {
-			// 流式输出成功完成，保存内容到数据库（只保存一次）
-			if !saved {
-				bufferWriter.saveToDatabase()
-				saved = true
-			}
-		}
-	} else {
-		// 流式输出成功完成，保存内容到数据库（只保存一次）
-		if !saved {
-			bufferWriter.saveToDatabase()
-			saved = true
+			return
 		}
 	}
+
+	// LLM 的 done 事件由 bufferedStreamWriter 拦截。只有数据库保存完成后，
+	// 才向前端发送最终完成信号，避免前端刷新到旧日报。
+	bufferWriter.saveToDatabase()
+	finalChunk := map[string]interface{}{"content": "", "done": true}
+	if bufferWriter.saveErr != nil {
+		finalChunk["error"] = bufferWriter.saveErr.Error()
+	}
+	data, _ := json.Marshal(finalChunk)
+	fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
+	c.Writer.Flush()
 }
 
 // bufferedStreamWriter 缓冲流式写入器，同时写入响应和缓冲区
@@ -1152,6 +1149,7 @@ type bufferedStreamWriter struct {
 	chunkCount     int              // 统计处理的chunk数量
 	totalContent   int              // 统计累积的内容长度
 	serviceSection string           // 后端按原始数据生成的完整服务状态章节
+	saveErr        error            // 内容校验或数据库保存错误
 }
 
 // Write 实现io.Writer接口
@@ -1159,8 +1157,13 @@ func (b *bufferedStreamWriter) Write(p []byte) (n int, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// 写入原始响应
-	n, err = b.writer.Write(p)
+	// LLM 会在数据库保存前发送 done=true。拦截该内部完成事件，API handler
+	// 会在保存成功后发送唯一的最终完成信号。
+	if isInspectionDoneEvent(p) {
+		n = len(p)
+	} else {
+		n, err = b.writer.Write(p)
+	}
 
 	// 同时处理缓冲区（提取实际内容）
 	if n > 0 {
@@ -1248,6 +1251,17 @@ func (b *bufferedStreamWriter) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
+func isInspectionDoneEvent(data []byte) bool {
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, "data:") {
+		return false
+	}
+	var chunk struct {
+		Done bool `json:"done"`
+	}
+	return json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &chunk) == nil && chunk.Done
+}
+
 // Flush 刷新输出
 func (b *bufferedStreamWriter) Flush() {
 	if flusher, ok := b.writer.(http.Flusher); ok {
@@ -1259,6 +1273,7 @@ func (b *bufferedStreamWriter) Flush() {
 func (b *bufferedStreamWriter) saveToDatabase() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.saveErr = nil
 
 	// 处理最后可能残留的SSE消息
 	remainingBuffer := b.sseBuffer.String()
@@ -1294,6 +1309,7 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 	fullContent := b.contentBuf.String()
 	if fullContent == "" {
 		log.Printf("[API] 流式输出内容为空，不保存到数据库")
+		b.saveErr = fmt.Errorf("模型没有生成日报内容")
 		return
 	}
 	// Reasoning models may put the entire response inside <think>. Do not
@@ -1301,12 +1317,14 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 	fullContent = stripInspectionThinking(fullContent)
 	if strings.TrimSpace(fullContent) == "" {
 		log.Printf("[API] 流式输出仅包含思考内容，没有可展示的日报正文，不保存到数据库")
+		b.saveErr = fmt.Errorf("模型仅生成了思考内容，没有生成日报正文")
 		return
 	}
 	var finalizeErr error
 	fullContent, finalizeErr = finalizeInspectionReport(fullContent, b.serviceSection)
 	if finalizeErr != nil {
 		log.Printf("[API] 巡检日报不完整，不保存到数据库: %v", finalizeErr)
+		b.saveErr = fmt.Errorf("巡检日报生成不完整: %w", finalizeErr)
 		return
 	}
 
@@ -1354,6 +1372,7 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 
 		// 尝试直接使用Update单个字段
 		if err2 := b.db.Table("inspection_reports").Where("id = ?", b.reportID).Update("report_content", fullContent).Error; err2 != nil {
+			b.saveErr = fmt.Errorf("保存巡检日报失败: %w", err2)
 			log.Printf("[API] 使用Update单个字段也失败: %v", err2)
 			// 如果是因为内容太长，尝试截断保存
 			if strings.Contains(err2.Error(), "too long") || strings.Contains(err2.Error(), "value too long") {
@@ -1365,17 +1384,20 @@ func (b *bufferedStreamWriter) saveToDatabase() {
 						log.Printf("[API] 截断后保存仍然失败: %v", err3)
 					} else {
 						log.Printf("[API] 成功保存截断后的日报内容到数据库，ReportID=%d", b.reportID)
+						b.saveErr = nil
 					}
 				}
 			}
 		} else {
 			log.Printf("[API] 使用Update单个字段成功保存，ReportID=%d", b.reportID)
 			// 继续保存其他字段
-			b.db.Table("inspection_reports").Where("id = ?", b.reportID).Updates(map[string]interface{}{
+			if err3 := b.db.Table("inspection_reports").Where("id = ?", b.reportID).Updates(map[string]interface{}{
 				"summary":         summary,
 				"key_findings":    keyFindings,
 				"recommendations": recommendations,
-			})
+			}).Error; err3 != nil {
+				b.saveErr = fmt.Errorf("保存巡检日报摘要失败: %w", err3)
+			}
 		}
 	} else {
 		log.Printf("[API] 成功保存日报内容到数据库，ReportID=%d, 内容长度=%d", b.reportID, len(fullContent))

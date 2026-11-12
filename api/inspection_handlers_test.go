@@ -1,10 +1,36 @@
 package api
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestBufferedStreamWriterDefersDoneEvent(t *testing.T) {
+	var output bytes.Buffer
+	writer := &bufferedStreamWriter{
+		writer:     &output,
+		contentBuf: &strings.Builder{},
+		sseBuffer:  &strings.Builder{},
+	}
+
+	contentEvent := []byte("data: {\"content\":\"正文\",\"done\":false}\n\n")
+	doneEvent := []byte("data: {\"content\":\"\",\"done\":true}\n\n")
+	if _, err := writer.Write(contentEvent); err != nil {
+		t.Fatalf("write content event: %v", err)
+	}
+	if _, err := writer.Write(doneEvent); err != nil {
+		t.Fatalf("write done event: %v", err)
+	}
+
+	if !strings.Contains(output.String(), "正文") {
+		t.Fatalf("content event was not forwarded: %q", output.String())
+	}
+	if strings.Contains(output.String(), `"done":true`) {
+		t.Fatalf("done event reached client before persistence: %q", output.String())
+	}
+}
 
 func TestActiveInspectionAgentsExcludesSoftDeletedAgents(t *testing.T) {
 	deletedAt := time.Now()
