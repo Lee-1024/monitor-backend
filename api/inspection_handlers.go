@@ -1442,29 +1442,50 @@ func stripInspectionThinking(content string) string {
 
 func finalizeInspectionReport(content, serviceSection string) (string, error) {
 	content = strings.TrimSpace(content)
-	serviceStart := strings.Index(content, "## 五、服务状态")
-	findingsStart := strings.Index(content, "## 六、关键发现")
+	serviceStart := findInspectionChapter(content, "服务状态")
+	findingsStart := findInspectionChapter(content, "关键发现")
 	if serviceStart < 0 || findingsStart <= serviceStart {
 		return "", fmt.Errorf("missing or invalid service/findings chapters")
 	}
 	content = strings.TrimSpace(content[:serviceStart]) + "\n\n" + strings.TrimSpace(serviceSection) + "\n\n" + strings.TrimSpace(content[findingsStart:])
 
 	required := []string{
-		"## 一、巡检概览",
-		"## 二、主机状态统计",
-		"## 三、资源使用分析",
-		"## 四、问题与告警",
-		"## 五、服务状态",
-		"## 六、关键发现",
-		"## 七、优化建议",
-		"## 八、后续行动",
+		"巡检概览",
+		"主机状态统计",
+		"资源使用分析",
+		"问题与告警",
+		"服务状态",
+		"关键发现",
+		"优化建议",
+		"后续行动",
 	}
-	for _, heading := range required {
-		if !strings.Contains(content, heading) {
-			return "", fmt.Errorf("missing required chapter %q", heading)
+	previous := -1
+	for _, title := range required {
+		position := findInspectionChapter(content, title)
+		if position < 0 {
+			return "", fmt.Errorf("missing required chapter %q", title)
 		}
+		if position <= previous {
+			return "", fmt.Errorf("chapter %q is out of order", title)
+		}
+		previous = position
 	}
 	return content, nil
+}
+
+func findInspectionChapter(content, title string) int {
+	offset := 0
+	for _, line := range strings.SplitAfter(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+			if strings.Contains(heading, title) {
+				return offset
+			}
+		}
+		offset += len(line)
+	}
+	return -1
 }
 
 func buildInspectionServiceSection(services, targets []map[string]interface{}) string {

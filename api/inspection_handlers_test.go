@@ -179,6 +179,34 @@ func TestFinalizeInspectionReportReplacesServiceSectionAndRequiresAllChapters(t 
 	}
 }
 
+func TestFinalizeInspectionReportAcceptsAlternativeChapterNumbering(t *testing.T) {
+	content := `# 系统巡检日报
+## 1. 巡检概览
+概览
+## 2、主机状态统计
+统计
+## 资源使用分析
+分析
+## 四. 问题与告警
+告警
+## 5 服务状态
+模型服务内容
+## 6. 关键发现
+发现
+## 七、优化建议
+建议
+## 8 后续行动
+行动`
+
+	got, err := finalizeInspectionReport(content, "## 五、服务状态\n完整服务内容")
+	if err != nil {
+		t.Fatalf("alternative chapter numbering was rejected: %v", err)
+	}
+	if !strings.Contains(got, "完整服务内容") || strings.Contains(got, "模型服务内容") {
+		t.Fatalf("service section was not replaced: %s", got)
+	}
+}
+
 func TestBuildInspectionServiceSectionIncludesEveryItem(t *testing.T) {
 	section := buildInspectionServiceSection(
 		[]map[string]interface{}{
